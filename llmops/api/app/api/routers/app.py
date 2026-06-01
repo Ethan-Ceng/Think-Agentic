@@ -1,0 +1,313 @@
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, Query, Request
+from sqlalchemy.orm import Session
+
+from app.api.deps import get_app_service, get_current_account, get_db_session
+from app.models.account import Account
+from app.schemas.app import (
+    AppPageResponse,
+    AppResponse,
+    CreateAppRequest,
+    DebugChatRequest,
+    FallbackHistoryToDraftRequest,
+    GetAppsWithPageRequest,
+    GetDebugConversationMessagesWithPageRequest,
+    GetPublishHistoriesWithPageRequest,
+    PublishHistoryResponse,
+    UpdateAppRequest,
+    UpdateDebugConversationSummaryRequest,
+)
+from app.schemas.conversation import MessageResponse
+from app.services.app_service import AppService
+from app.shared.response import compact_generate_response, success_json, success_message
+
+router = APIRouter(prefix="/apps", tags=["app"])
+
+
+@router.post("")
+def create_app(
+    req: CreateAppRequest,
+    session: Session = Depends(get_db_session),
+    current_user: Account = Depends(get_current_account),
+    svc: AppService = Depends(get_app_service),
+):
+    app = svc.create_app(session, req, current_user)
+    return success_json({"id": app.id})
+
+
+@router.get("")
+def get_apps(
+    req: GetAppsWithPageRequest = Depends(),
+    session: Session = Depends(get_db_session),
+    current_user: Account = Depends(get_current_account),
+    svc: AppService = Depends(get_app_service),
+):
+    apps, total_record, total_page = svc.get_apps_with_page(session, req, current_user)
+    return success_json(
+        {
+            "list": [
+                AppPageResponse.from_app(app, svc.get_active_config_for_page(session, app)).model_dump()
+                for app in apps
+            ],
+            "total_page": total_page,
+            "total_record": total_record,
+            "current_page": req.page,
+            "page_size": req.page_size,
+        }
+    )
+
+
+@router.get("/{app_id}")
+def get_app(
+    app_id: UUID,
+    session: Session = Depends(get_db_session),
+    current_user: Account = Depends(get_current_account),
+    svc: AppService = Depends(get_app_service),
+):
+    app = svc.get_app(session, app_id, current_user)
+    return success_json(AppResponse.from_app(app, svc.get_or_create_draft_config(session, app)).model_dump())
+
+
+@router.put("/{app_id}")
+def update_app(
+    app_id: UUID,
+    req: UpdateAppRequest,
+    session: Session = Depends(get_db_session),
+    current_user: Account = Depends(get_current_account),
+    svc: AppService = Depends(get_app_service),
+):
+    svc.update_app(session, app_id, req, current_user)
+    return success_message("Update app success")
+
+
+@router.post("/{app_id}/copy")
+def copy_app(
+    app_id: UUID,
+    session: Session = Depends(get_db_session),
+    current_user: Account = Depends(get_current_account),
+    svc: AppService = Depends(get_app_service),
+):
+    app = svc.copy_app(session, app_id, current_user)
+    return success_json({"id": app.id})
+
+
+@router.delete("/{app_id}")
+def delete_app(
+    app_id: UUID,
+    session: Session = Depends(get_db_session),
+    current_user: Account = Depends(get_current_account),
+    svc: AppService = Depends(get_app_service),
+):
+    svc.delete_app(session, app_id, current_user)
+    return success_message("Delete app success")
+
+
+@router.get("/{app_id}/draft-app-config")
+def get_draft_app_config(
+    app_id: UUID,
+    session: Session = Depends(get_db_session),
+    current_user: Account = Depends(get_current_account),
+    svc: AppService = Depends(get_app_service),
+):
+    return success_json(svc.get_draft_app_config(session, app_id, current_user))
+
+
+@router.put("/{app_id}/draft-app-config")
+@router.post("/{app_id}/draft-app-config")
+async def update_draft_app_config(
+    app_id: UUID,
+    request: Request,
+    session: Session = Depends(get_db_session),
+    current_user: Account = Depends(get_current_account),
+    svc: AppService = Depends(get_app_service),
+):
+    svc.update_draft_app_config(session, app_id, await request.json(), current_user)
+    return success_message("Update app draft config success")
+
+
+@router.post("/{app_id}/publish")
+def publish_app(
+    app_id: UUID,
+    session: Session = Depends(get_db_session),
+    current_user: Account = Depends(get_current_account),
+    svc: AppService = Depends(get_app_service),
+):
+    svc.publish_draft_app_config(session, app_id, current_user)
+    return success_message("Publish app success")
+
+
+@router.post("/{app_id}/cancel-publish")
+def cancel_publish_app(
+    app_id: UUID,
+    session: Session = Depends(get_db_session),
+    current_user: Account = Depends(get_current_account),
+    svc: AppService = Depends(get_app_service),
+):
+    svc.cancel_publish_app_config(session, app_id, current_user)
+    return success_message("Cancel app publish success")
+
+
+@router.post("/{app_id}/fallback-history")
+def fallback_history_to_draft(
+    app_id: UUID,
+    req: FallbackHistoryToDraftRequest,
+    session: Session = Depends(get_db_session),
+    current_user: Account = Depends(get_current_account),
+    svc: AppService = Depends(get_app_service),
+):
+    svc.fallback_history_to_draft(session, app_id, req.app_config_version_id, current_user)
+    return success_message("Fallback app config history success")
+
+
+@router.get("/{app_id}/publish-histories")
+def get_publish_histories(
+    app_id: UUID,
+    req: GetPublishHistoriesWithPageRequest = Depends(),
+    session: Session = Depends(get_db_session),
+    current_user: Account = Depends(get_current_account),
+    svc: AppService = Depends(get_app_service),
+):
+    versions, total_record, total_page = svc.get_publish_histories_with_page(session, app_id, req, current_user)
+    return success_json(
+        {
+            "list": [PublishHistoryResponse.from_version(version).model_dump() for version in versions],
+            "total_page": total_page,
+            "total_record": total_record,
+            "current_page": req.page,
+            "page_size": req.page_size,
+        }
+    )
+
+
+@router.get("/{app_id}/published-config")
+def get_published_config(
+    app_id: UUID,
+    session: Session = Depends(get_db_session),
+    current_user: Account = Depends(get_current_account),
+    svc: AppService = Depends(get_app_service),
+):
+    return success_json(svc.get_published_config(session, app_id, current_user))
+
+
+@router.post("/{app_id}/regenerate-web-app-token")
+def regenerate_web_app_token(
+    app_id: UUID,
+    session: Session = Depends(get_db_session),
+    current_user: Account = Depends(get_current_account),
+    svc: AppService = Depends(get_app_service),
+):
+    return success_json({"token": svc.regenerate_web_app_token(session, app_id, current_user)})
+
+
+@router.get("/{app_id}/debug-conversation-summary")
+def get_debug_conversation_summary(
+    app_id: UUID,
+    session: Session = Depends(get_db_session),
+    current_user: Account = Depends(get_current_account),
+    svc: AppService = Depends(get_app_service),
+):
+    return success_json({"summary": svc.get_debug_conversation_summary(session, app_id, current_user)})
+
+
+@router.put("/{app_id}/debug-conversation-summary")
+def update_debug_conversation_summary(
+    app_id: UUID,
+    req: UpdateDebugConversationSummaryRequest,
+    session: Session = Depends(get_db_session),
+    current_user: Account = Depends(get_current_account),
+    svc: AppService = Depends(get_app_service),
+):
+    svc.update_debug_conversation_summary(session, app_id, req.summary, current_user)
+    return success_message("Update app debug conversation summary success")
+
+
+@router.delete("/{app_id}/debug-conversation")
+def delete_debug_conversation(
+    app_id: UUID,
+    session: Session = Depends(get_db_session),
+    current_user: Account = Depends(get_current_account),
+    svc: AppService = Depends(get_app_service),
+):
+    svc.delete_debug_conversation(session, app_id, current_user)
+    return success_message("Delete app debug conversation success")
+
+
+@router.post("/{app_id}/debug-chat")
+def debug_chat(
+    app_id: UUID,
+    req: DebugChatRequest,
+    session: Session = Depends(get_db_session),
+    current_user: Account = Depends(get_current_account),
+    svc: AppService = Depends(get_app_service),
+):
+    return compact_generate_response(svc.debug_chat(session, app_id, req, current_user))
+
+
+@router.post("/{app_id}/stop-debug-chat/{task_id}")
+def stop_debug_chat(
+    app_id: UUID,
+    task_id: UUID,
+    session: Session = Depends(get_db_session),
+    current_user: Account = Depends(get_current_account),
+    svc: AppService = Depends(get_app_service),
+):
+    svc.stop_debug_chat(session, app_id, task_id, current_user)
+    return success_message("Stop app debug chat success")
+
+
+@router.get("/{app_id}/debug-conversation-messages")
+def get_debug_conversation_messages(
+    app_id: UUID,
+    req: GetDebugConversationMessagesWithPageRequest = Depends(),
+    session: Session = Depends(get_db_session),
+    current_user: Account = Depends(get_current_account),
+    svc: AppService = Depends(get_app_service),
+):
+    messages, total_record, total_page = svc.get_debug_conversation_messages_with_page(
+        session,
+        app_id,
+        req,
+        current_user,
+    )
+    return success_json(
+        {
+            "list": [MessageResponse.from_message(message).model_dump() for message in messages],
+            "total_page": total_page,
+            "total_record": total_record,
+            "current_page": req.page,
+            "page_size": req.page_size,
+        }
+    )
+
+
+@router.get("/{app_id}/conversations/messages")
+def get_debug_conversation_messages_legacy_path(
+    app_id: UUID,
+    current_page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    created_at: int = Query(0, ge=0),
+    session: Session = Depends(get_db_session),
+    current_user: Account = Depends(get_current_account),
+    svc: AppService = Depends(get_app_service),
+):
+    req = GetDebugConversationMessagesWithPageRequest(
+        page=current_page,
+        page_size=page_size,
+        created_at=created_at,
+    )
+    messages, total_record, total_page = svc.get_debug_conversation_messages_with_page(
+        session,
+        app_id,
+        req,
+        current_user,
+    )
+    return success_json(
+        {
+            "list": [MessageResponse.from_message(message).model_dump() for message in messages],
+            "total_page": total_page,
+            "total_record": total_record,
+            "current_page": current_page,
+            "page_size": page_size,
+        }
+    )

@@ -1,0 +1,192 @@
+@import './markdown.css' layer(base);
+
+@import 'tailwindcss';
+
+/*
+  The default border color has changed to `currentcolor` in Tailwind CSS v4,
+  so we've added these compatibility styles to make sure everything still
+  looks the same as it did with Tailwind CSS v3.
+
+  If we ever want to remove these styles, we need to add an explicit border
+  color utility to any element that depends on these defaults.
+*/
+@layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: var(--color-gray-200, currentcolor);
+  }
+}
+
+@layer base {
+  .scrollbar-w-none {
+    scrollbar-width: none;
+  }
+
+  .scrollbar-w-none::-webkit-scrollbar {
+    display: none;
+  }
+
+  html,
+  body {
+    @apply min-h-[600px] min-w-[1200px] h-full w-full;
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
+  }
+
+  html:hover,
+  body:hover,
+  html.scrollbar-y-sleek--scrolling,
+  body.scrollbar-y-sleek--scrolling {
+    scrollbar-color: rgb(148 163 184 / 0.75) rgb(248 250 252);
+  }
+
+  html::-webkit-scrollbar,
+  body::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  html::-webkit-scrollbar-track,
+  body::-webkit-scrollbar-track {
+    background: transparent;
+    border-radius: 9999px;
+  }
+
+  html:hover::-webkit-scrollbar-track,
+  body:hover::-webkit-scrollbar-track,
+  html.scrollbar-y-sleek--scrolling::-webkit-scrollbar-track,
+  body.scrollbar-y-sleek--scrolling::-webkit-scrollbar-track {
+    background: rgb(248 250 252);
+  }
+
+  html::-webkit-scrollbar-thumb,
+  body::-webkit-scrollbar-thumb {
+    background: transparent;
+    border-radius: 9999px;
+    border: 2px solid transparent;
+  }
+
+  html:hover::-webkit-scrollbar-thumb,
+  body:hover::-webkit-scrollbar-thumb,
+  html.scrollbar-y-sleek--scrolling::-webkit-scrollbar-thumb,
+  body.scrollbar-y-sleek--scrolling::-webkit-scrollbar-thumb {
+    background: rgb(148 163 184 / 0.65);
+    border: 2px solid rgb(248 250 252);
+  }
+
+  html:hover::-webkit-scrollbar-thumb:hover,
+  body:hover::-webkit-scrollbar-thumb:hover,
+  html.scrollbar-y-sleek--scrolling::-webkit-scrollbar-thumb:hover,
+  body.scrollbar-y-sleek--scrolling::-webkit-scrollbar-thumb:hover {
+    background: rgb(100 116 139 / 0.85);
+  }
+}
+
+/* 内层滚动：默认隐藏，悬停或滚动（.scrollbar-y-sleek--scrolling）时显示 */
+@layer components {
+  .scrollbar-y-sleek {
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
+  }
+
+  .scrollbar-y-sleek:hover,
+  .scrollbar-y-sleek.scrollbar-y-sleek--scrolling {
+    scrollbar-color: rgb(148 163 184 / 0.75) rgb(241 245 249);
+  }
+
+  .scrollbar-y-sleek::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  .scrollbar-y-sleek::-webkit-scrollbar-track {
+    background: transparent;
+    border-radius: 9999px;
+  }
+
+  .scrollbar-y-sleek:hover::-webkit-scrollbar-track,
+  .scrollbar-y-sleek.scrollbar-y-sleek--scrolling::-webkit-scrollbar-track {
+    background: rgb(241 245 249);
+  }
+
+  .scrollbar-y-sleek::-webkit-scrollbar-thumb {
+    background: transparent;
+    border-radius: 9999px;
+    border: 2px solid transparent;
+  }
+
+  .scrollbar-y-sleek:hover::-webkit-scrollbar-thumb,
+  .scrollbar-y-sleek.scrollbar-y-sleek--scrolling::-webkit-scrollbar-thumb {
+    background: rgb(148 163 184 / 0.65);
+    border: 2px solid rgb(241 245 249);
+  }
+
+  .scrollbar-y-sleek:hover::-webkit-scrollbar-thumb:hover,
+  .scrollbar-y-sleek.scrollbar-y-sleek--scrolling::-webkit-scrollbar-thumb:hover {
+    background: rgb(100 116 139 / 0.85);
+  }
+
+  .scrollbar-y-sleek::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  /* Element Plus 多行输入（人设与回复逻辑） */
+  .preset-prompt-textarea textarea {
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
+  }
+
+  .preset-prompt-textarea textarea:hover,
+  .preset-prompt-textarea textarea.scrollbar-y-sleek--scrolling {
+    scrollbar-color: rgb(148 163 184 / 0.75) rgb(241 245 249);
+  }
+
+  .preset-prompt-textarea textarea::-webkit-scrollbar {
+    width: 8px;
+  }
+
+  .preset-prompt-textarea textarea::-webkit-scrollbar-track {
+    background: transparent;
+    border-radius: 9999px;
+  }
+
+  .preset-prompt-textarea textarea:hover::-webkit-scrollbar-track,
+  .preset-prompt-textarea textarea.scrollbar-y-sleek--scrolling::-webkit-scrollbar-track {
+    background: rgb(241 245 249);
+  }
+
+  .preset-prompt-textarea textarea::-webkit-scrollbar-thumb {
+    background: transparent;
+    border-radius: 9999px;
+    border: 2px solid transparent;
+  }
+
+  .preset-prompt-textarea textarea:hover::-webkit-scrollbar-thumb,
+  .preset-prompt-textarea textarea.scrollbar-y-sleek--scrolling::-webkit-scrollbar-thumb {
+    background: rgb(148 163 184 / 0.65);
+    border: 2px solid rgb(241 245 249);
+  }
+
+  .preset-prompt-textarea textarea:hover::-webkit-scrollbar-thumb:hover,
+  .preset-prompt-textarea textarea.scrollbar-y-sleek--scrolling::-webkit-scrollbar-thumb:hover {
+    background: rgb(100 116 139 / 0.85);
+  }
+}
+
+/* Workflow / Vue Flow: keep @apply here so SFCs don't need @reference "tailwindcss" */
+@layer components {
+  .selected .vue-flow__edge-path {
+    @apply stroke-blue-700!;
+  }
+
+  #start-node-info .el-textarea__inner {
+    @apply text-xs!;
+  }
+
+  .selected .selected-border {
+    @apply border-blue-700;
+  }
+}

@@ -1,0 +1,8 @@
+services:
+  manus-redis:
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+
+  manus-postgres:
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"

@@ -1,0 +1,201 @@
+# Backend Migration Current Status
+
+Updated: 2026-06-01
+
+## Completed In This Round
+
+- Completed M1 legacy settings convergence:
+  - mapped old `SQLALCHEMY_*`, `REDIS_*`, `CELERY_*`, `ASSISTANT_AGENT_ID`, `SERVICE_*`, `LOCAL_STORAGE_*`, `COS_*`, `DEFAULT_LLM_*`, provider, and Weaviate GRPC env vars into `pydantic-settings`
+  - kept explicit URL overrides while allowing old Redis/Celery split env vars to compose URLs
+  - moved backend runtime config reads off direct `os.getenv` / `os.environ`
+  - added regression tests for legacy env aliases, Redis/Celery URL composition, comma-separated CORS, provider base-url aliases, and default model config
+- Completed M3 Tool Capability adapter:
+  - added `ToolCapabilityAdapter` to wrap legacy Builtin/API Tools as capability descriptors
+  - descriptor metadata includes type, provider, target ref, input schema, and output schema
+  - AppService now builds runtime tool capabilities through the adapter while preserving legacy tool execution behavior
+- Completed M4 Workflow Capability adapter:
+  - published Workflows are now exposed as capability descriptors with workflow target refs and Start-node-derived input schema
+  - AppService now builds runtime Workflow capabilities through the adapter while preserving legacy Workflow execution behavior
+- Completed first-pass M8 Knowledge Capability adapter:
+  - configured Dataset/RAG collections are exposed as `knowledge_base` descriptors with dataset collection refs and query schema
+  - AppService now builds runtime Dataset capabilities through the adapter while preserving legacy DatasetService retrieval behavior
+- Completed first-pass M8 legacy Worker Agent classification:
+  - legacy App/AppConfig can now be represented as Worker Agent descriptors without writing new Agent tables
+  - Assistant Agent can now be represented as an assistant-category Worker Agent descriptor
+  - descriptor payloads preserve legacy model, prompt, worker config, and capability bindings for future Router/Agent manager integration
+- Completed first-pass M8 Task Engine state service:
+  - `TaskEngineService` now owns creation and deterministic status transitions for task, plan, step, worker call, and capability call records
+  - task status now covers created, running, waiting for approval, terminal success/failure/cancel states, and version increments
+  - worker/capability call records now preserve invocation/input, result/output, latency, cost, approval, and idempotency metadata for future policy and trace layers
+- Completed first-pass M8 Router Agent manager mode:
+  - added Router manager service and routes for creating Router Agents, binding Worker Agents, and creating manager-run task plans
+  - Router plans are validated for unique step ids, valid Worker ids, dependency references, and bound-worker scope
+  - manager runs persist `AgentTask` / `AgentPlan` / `AgentStep` through Task Engine without replacing legacy App/Worker execution paths
+- Completed first-pass M8 Approval / Policy / Audit Trace:
+  - added `approval_requests` and `trace_events` with Alembic revision `20260514_0002`
+  - `ApprovalService` can create approval requests, link them to `CapabilityCall.approval_id`, and approve/reject/cancel pending requests
+  - `PolicyService` provides deterministic capability decisions for enabled state, idempotency, risk, approval, and audit policy
+  - `TraceService` records Router / Task / Plan / Step / Capability / Approval events under a stable trace id
+  - added `/approvals` and `/traces` route entrypoints without replacing legacy App/Workflow/Tool execution
+- Connected Router manager runs to first-pass legacy App Worker execution:
+  - added `Agent.target_ref_type` / `target_ref_id` with Alembic revision `20260514_0003`
+  - added `/router-agents/workers/from-app` to persist a legacy App as a Worker Agent descriptor
+  - manager runs can opt into `execute=true`, execute Task Engine steps, record WorkerCall state, and invoke legacy App debug runtime through `AppService.debug_chat`
+  - manager runs now return `trace_id` and write `trace_events` for run creation, step start/success, worker call start/success/failure, and run success
+- Migrated language model provider metadata into `backend/app/core/language_model`.
+- Added legacy-compatible `/language-models` APIs and provider icon route.
+- Added no-LangChain OpenAI-compatible `ChatCompletionRuntime`.
+- Added first-pass `backend/app/core/agent` event and stop-flag primitives.
+- Added first-pass `backend/app/core/memory` conversation history reader.
+- Replaced App debug-chat placeholder with a working SSE runtime:
+  - creates debug conversation
+  - creates message
+  - emits agent events
+  - saves `MessageAgentThought`
+  - supports short-term memory, long-term memory, review config, and Dataset DB fallback context
+- Migrated first-pass OpenAPI service:
+  - `POST /openapi/chat`
+  - `EndUser` model mapping for the legacy `end_user` table
+  - streaming and non-stream response support
+- Migrated first-pass WebApp service:
+  - `GET /web-apps/{token}`
+  - `POST /web-apps/{token}/chat`
+  - `POST /web-apps/{token}/stop/{task_id}`
+  - `GET /web-apps/{token}/conversations`
+- Migrated first-pass Assistant Agent service:
+  - `POST /assistant-agent/chat`
+  - `POST /assistant-agent/stop/{task_id}`
+  - `GET /assistant-agent/messages`
+  - `DELETE /assistant-agent/conversation`
+- Migrated first-pass Builtin App service:
+  - `GET /builtin-apps/categories`
+  - `GET /builtin-apps`
+  - `POST /builtin-apps`
+  - YAML metadata under `backend/app/core/builtin_apps`
+- Migrated first-pass Analysis service:
+  - `GET /analysis/app/{app_id}`
+  - 7-day trend and overview metrics based on `message`
+- Migrated first-pass Platform/WeChat service:
+  - `GET /apps/{app_id}/platforms/wechat`
+  - `PUT /apps/{app_id}/platforms/wechat`
+  - `GET|POST /wechat/{app_id}`
+  - WeChat config, end-user, and message models mapped to legacy tables
+- Migrated first-pass AI helper service:
+  - `POST /ai/optimize-prompt`
+  - `POST /ai/suggested-questions`
+- Migrated first-pass Audio service:
+  - `POST /audio/to-text`
+  - `POST /audio/message-to-audio`
+- Upgraded Workflow debug runtime from placeholder replay to a lightweight node executor:
+  - Start
+  - Template Transform
+  - Code
+  - HTTP Request
+  - Tool
+  - Dataset Retrieval
+  - LLM
+  - End
+- Hardened Workflow graph semantics:
+  - publish validation now requires a single edge-defined start entry and a single edge-defined end exit
+  - variable refs are validated against upstream predecessors and referenced output names
+  - execution now uses edge-driven batches so join nodes wait for all predecessor branches before running
+  - added regression coverage for cyclic graphs, missing variable refs, and debug-time node failure stopping before downstream execution
+- Added first-pass App/Agent capability execution:
+  - configured builtin tools are executed and emitted as `agent_action`
+  - configured API tools are executable through the migrated API Tool runtime
+  - configured published workflows can run as capabilities and feed context back into LLM prompt
+  - tool/workflow observations are persisted through existing `MessageAgentThought`
+- Upgraded App/Agent runtime from one-shot capability context to iterative agent execution:
+  - OpenAI-compatible FunctionCall loop parses provider `tool_calls`
+  - ReAct fallback parses fenced JSON tool-call instructions for models without native tool calling
+  - builtin tool, API tool, dataset retrieval, and published workflow capabilities are exposed as runtime tools
+  - tool observations are appended back to the LLM message loop before final answer generation
+- Hardened App/Agent FunctionCall/ReAct compatibility:
+  - accepts OpenAI `tool_calls`, legacy `function_call`, single-object tool-call payloads, and LangChain-style `additional_kwargs.tool_calls`
+  - normalizes provider tool-call messages before feeding observations back to the LLM
+  - parses double-encoded, fenced, trailing-comma, and name/value-list tool arguments where safe
+  - malformed tool arguments now become a tool observation for LLM retry instead of silently executing with `{}` args
+  - TOOL_CALL models can fall back to ReAct fenced JSON when a provider returns JSON text instead of native `tool_calls`
+- Migrated App config tool normalization/display parity:
+  - draft update filters stale builtin/API tool references
+  - config reads return legacy provider/tool metadata instead of raw ids only
+- Migrated first-pass Dataset document indexing chain:
+  - local file extraction for uploaded documents
+  - process-rule text cleaning
+  - chunk splitting into `segment`
+  - keyword table refresh
+  - document status progression to `completed` / `error`
+  - Celery task entrypoints for document indexing and enabled-state sync
+- Upgraded PgSQL Dataset retrieval fallback:
+  - `full_text` uses `keyword_table` frequency ranking
+  - `semantic` uses lightweight lexical overlap ranking until vector retrieval is wired
+  - `hybrid` combines keyword and lexical scores
+  - hit responses now return per-segment fallback scores instead of a fixed score
+- Added first-pass Weaviate/vector retrieval path:
+  - no-new-dependency Weaviate REST/GraphQL vector store client under `backend/app/infrastructure/vector_store.py`
+  - default deterministic local hash embeddings for offline/dev smoke; optional OpenAI embeddings via `EMBEDDING_PROVIDER=openai`
+  - document indexing writes completed segments to Weaviate best-effort without breaking PgSQL fallback when vector store is unavailable
+  - semantic retrieval tries Weaviate first and falls back to lexical PgSQL scoring on unavailable/no-hit/error paths
+  - hybrid retrieval combines keyword-table score with vector score when available, otherwise keeps keyword + lexical fallback
+  - document/segment/dataset enable and delete flows now best-effort sync vector records
+- Added backend containerization and compose switch preparation:
+  - `backend/Dockerfile`
+  - backend API/Celery entrypoint
+  - compose `llmops-backend-api` / `llmops-backend-celery` services use the new `backend`
+  - backend API is published on host port `5011` and container port `5001`
+  - UI container nginx `/api` proxy now targets `llmops-backend-api:5001`
+  - old `llmops-api` / `llmops-celery` orphan containers were stopped after the new services passed health check
+  - Docker base image pinned to locally available `python:3.11-slim`
+  - FastAPI settings accept legacy database env aliases
+  - Dockerfile normalizes `entrypoint.sh` CRLF line endings during image build
+
+## Verification
+
+- `backend/.venv/Scripts/ruff.exe check app tests`: passed
+- `uv run pytest -q tests/test_task_engine_service.py tests/test_agent_adapter.py tests/test_capability_adapter.py`: 16 passed
+- `backend/.venv/Scripts/python.exe -m pytest tests/test_approval_policy_trace.py tests/test_router_agent_manager_service.py tests/test_task_engine_service.py -q`: 13 passed
+- `backend/.venv/Scripts/python.exe -m pytest tests/test_router_agent_manager_service.py tests/test_approval_policy_trace.py tests/test_task_engine_service.py -q`: 14 passed
+- `backend/.venv/Scripts/python.exe -m pytest -q`: 112 passed
+- `uv run ruff check app tests`: passed
+- `backend/.venv/Scripts/alembic.exe heads`: `20260514_0003 (head)`
+- `backend/.venv/Scripts/alembic.exe current`: `20260514_0003 (head)`
+- `docker compose -f docker/docker-compose.yaml up -d --build llmops-backend-api llmops-backend-celery`: image build completed after network recovered.
+- Docker runtime status: `llmops-backend-api`, `llmops-backend-celery`, `llmops-db`, `llmops-redis`, and `llmops-weaviate` are running.
+- Host `GET http://127.0.0.1:5011/healthz`: `{"status":"ok"}`
+
+## 2026-05-25 Audit
+
+- Code migration coverage is largely complete for the planned legacy API surface: old `api/app/api/routes` modules have corresponding `backend/app/api/routers` modules, and old `api/app/service` modules have corresponding `backend/app/services` modules for the migrated first-pass services.
+- Current local checks:
+  - `uv run ruff check app tests`: passed
+  - `uv run pytest -q --basetemp .pytest_tmp -o cache_dir=.pytest_cache_tmp`: 114 passed
+- Current Docker state is not the same as the 2026-05-14 runtime note:
+  - `docker compose -f docker/docker-compose.yaml ps -a`: no compose-managed services currently running
+  - `GET http://127.0.0.1:5011/healthz`: no response because the backend compose stack is not running
+- Fixed a migration cutover gap found during audit:
+  - `ui/docker/nginx/nginx.conf` no longer proxies `/api` to removed `llmops-api`; it now targets `llmops-backend-api:5001`.
+- Documentation drift found in this audit was resolved in the 2026-06-01 replacement pass below.
+
+## 2026-06-01 Replacement Audit
+
+- Completed runtime cutover cleanup for removing the old `api` service from normal operation:
+  - Route parity check found all 106 legacy `api/app/api/routes` method/path pairs available in `backend`; backend has 22 additional health, console, router-agent, trace, and compatibility routes.
+  - UI service calls now target the FastAPI `backend` REST routes and methods instead of historical `/delete`, `/summary`, `/audio/audio-to-text`, `/platform/{id}/wechat-config`, and `chat/{task_id}/stop` aliases.
+  - `backend` now serves the legacy `/ping` health probe with the old response shape.
+  - `backend` now serves local uploaded files through `GET /upload-files/{file_path}` so `LOCAL_STORAGE_BASE_URL=http://localhost:3000/api/upload-files` is usable through the UI nginx proxy.
+  - `backend` now registers replacement Celery tasks for `app.tasks.*` and legacy `app.task.*` document, dataset, and auto-create-app task names.
+  - Assistant Agent runtime now exposes the migrated `create_app` capability through backend `AppService.auto_create_app`.
+  - README startup, local development, CI backend job, storage path, model-provider path, and dev-account commands now reference `backend`, `llmops-backend-api`, `llmops-backend-celery`, and host API port `5011`.
+- Current local checks:
+  - `uv run ruff check app tests`: passed
+  - `uv run pytest -q --basetemp .pytest_tmp -o cache_dir=.pytest_cache_tmp`: 117 passed
+  - `pnpm build`: Vite build completed, but `vue-tsc` still fails on existing frontend type debt outside the backend cutover paths, including missing `github-markdown-css` declarations and several `unknown[]` / `string | number` type errors in hooks and workflow/app components.
+
+## Remaining Migration TODO
+
+- Run real-provider FunctionCall/ReAct smoke checks with credentials, including streaming chunks and provider-specific tool-call quirks.
+- Run Weaviate/vector retrieval smoke through backend API and real OpenAI embedding provider smoke.
+- Harden Router manager real-provider execution, approval cards in UI, and Docker smoke for `/router-agents`.
+- Harden Audio/WeChat/AI integrations with real provider credentials and end-to-end Docker smoke tests.
+- Run UI-to-backend end-to-end smoke checks through port `5011` and nginx `/api` proxy.
+- Clear existing frontend type-check debt so `pnpm build` exits cleanly instead of only completing the Vite bundle.

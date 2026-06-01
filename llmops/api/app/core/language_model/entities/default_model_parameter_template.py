@@ -1,0 +1,61 @@
+from typing import Any
+
+from .model_entity import ModelParameterType
+
+DEFAULT_MODEL_PARAMETER_TEMPLATE: dict[str, dict[str, Any]] = {
+    "temperature": {
+        "label": "Temperature",
+        "type": ModelParameterType.FLOAT,
+        "help": "Controls randomness. Lower values make output more deterministic.",
+        "required": False,
+        "default": 1,
+        "min": 0,
+        "max": 2,
+        "precision": 2,
+        "options": [],
+    },
+    "top_p": {
+        "label": "Top P",
+        "type": ModelParameterType.FLOAT,
+        "help": "Controls nucleus sampling diversity.",
+        "required": False,
+        "default": 0,
+        "min": 0,
+        "max": 1,
+        "precision": 2,
+        "options": [],
+    },
+    "presence_penalty": {
+        "label": "Presence Penalty",
+        "type": ModelParameterType.FLOAT,
+        "help": "Penalizes tokens already present in the generated text.",
+        "required": False,
+        "default": 0,
+        "min": -2.0,
+        "max": 2.0,
+        "precision": 2,
+        "options": [],
+    },
+    "frequency_penalty": {
+        "label": "Frequency Penalty",
+        "type": ModelParameterType.FLOAT,
+        "help": "Penalizes frequently repeated tokens in the generated text.",
+        "required": False,
+        "default": 0,
+        "min": -2.0,
+        "max": 2.0,
+        "precision": 2,
+        "options": [],
+    },
+    "max_tokens": {
+        "label": "Max Tokens",
+        "type": ModelParameterType.INT,
+        "help": "Maximum number of tokens to generate.",
+        "required": False,
+        "default": None,
+        "min": 1,
+        "max": 16384,
+        "precision": 0,
+        "options": [],
+    },
+}
