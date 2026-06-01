@@ -10,9 +10,7 @@ from app.models.conversation import Conversation, Message, MessageAgentThought
 from app.models.dataset import Dataset, DatasetQuery, Document, KeywordTable, ProcessRule, Segment
 from app.models.end_user import EndUser
 from app.models.platform import WechatConfig, WechatEndUser, WechatMessage
-from app.models.rbac import MemberRole, Permission, Role, RolePermission
 from app.models.task import AgentPlan, AgentStep, AgentTask, CapabilityCall, WorkerCall
-from app.models.tenant import Tenant, TenantMember
 from app.models.trace import TraceEvent
 from app.models.upload_file import UploadFile
 from app.models.workflow import Workflow, WorkflowResult
@@ -44,16 +42,10 @@ __all__ = [
     "Document",
     "EndUser",
     "KeywordTable",
-    "MemberRole",
     "Message",
     "MessageAgentThought",
-    "Permission",
     "ProcessRule",
-    "Role",
-    "RolePermission",
     "Segment",
-    "Tenant",
-    "TenantMember",
     "TimestampMixin",
     "TraceEvent",
     "UploadFile",

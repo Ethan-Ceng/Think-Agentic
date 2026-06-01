@@ -1,24 +1,20 @@
 from collections.abc import Generator
-from uuid import UUID
 
 from fastapi import Depends, Header, Request
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
 from app.core.errors import AppError
-from app.core.tenant import TenantContext
 from app.core.tools.builtin_tools.categories import BuiltinCategoryManager
 from app.core.tools.builtin_tools.providers import BuiltinProviderManager
 from app.infrastructure.db import get_session
 from app.models.account import Account
-from app.models.tenant import Tenant, TenantMember
 from app.services.account_service import AccountService
 from app.services.ai_service import AIService
 from app.services.analysis_service import AnalysisService
 from app.services.api_key_service import ApiKeyService
 from app.services.api_tool_service import ApiToolService
 from app.services.app_service import AppService
-from app.services.approval_service import ApprovalService
 from app.services.assistant_agent_service import AssistantAgentService
 from app.services.audio_service import AudioService
 from app.services.builtin_app_service import BuiltinAppService
@@ -31,9 +27,7 @@ from app.services.language_model_service import LanguageModelService
 from app.services.oauth_service import OAuthService
 from app.services.openapi_service import OpenAPIService
 from app.services.platform_service import PlatformService
-from app.services.router_agent_manager_service import RouterAgentManagerService
 from app.services.segment_service import SegmentService
-from app.services.trace_service import TraceService
 from app.services.upload_file_service import UploadFileService
 from app.services.web_app_service import WebAppService
 from app.services.wechat_service import WechatService
@@ -58,10 +52,6 @@ def get_account_service(jwt_service: JwtService = Depends(get_jwt_service)) -> A
 
 def get_api_key_service() -> ApiKeyService:
     return ApiKeyService()
-
-
-def get_approval_service() -> ApprovalService:
-    return ApprovalService()
 
 
 def get_analysis_service() -> AnalysisService:
@@ -139,14 +129,6 @@ def get_wechat_service() -> WechatService:
     return WechatService()
 
 
-def get_router_agent_manager_service() -> RouterAgentManagerService:
-    return RouterAgentManagerService()
-
-
-def get_trace_service() -> TraceService:
-    return TraceService()
-
-
 def get_workflow_service() -> WorkflowService:
     return WorkflowService(builtin_provider_manager=BuiltinProviderManager())
 
@@ -194,50 +176,3 @@ def get_api_key_account(
     if account is None:
         raise AppError("unauthorized", "API key account does not exist", status_code=401)
     return account
-
-
-def get_current_tenant(
-    x_tenant_id: str | None = Header(default=None, alias="X-Tenant-ID"),
-    session: Session = Depends(get_db_session),
-    settings: Settings = Depends(get_settings),
-) -> TenantContext:
-    tenant_id_raw = x_tenant_id or settings.default_tenant_id
-    if not tenant_id_raw:
-        raise AppError("tenant_required", "Missing tenant context", status_code=400)
-
-    try:
-        tenant_id = UUID(tenant_id_raw)
-    except ValueError as exc:
-        raise AppError("tenant_invalid", "Invalid tenant id", status_code=400) from exc
-
-    tenant = session.get(Tenant, tenant_id)
-    if tenant is None:
-        raise AppError("tenant_not_found", "Tenant not found", status_code=404)
-
-    return TenantContext(tenant_id=tenant.id)
-
-
-def get_current_member(
-    tenant: TenantContext = Depends(get_current_tenant),
-    x_user_id: str | None = Header(default=None, alias="X-User-ID"),
-    session: Session = Depends(get_db_session),
-) -> TenantMember:
-    if not x_user_id:
-        raise AppError("user_required", "Missing user context", status_code=401)
-    try:
-        user_id = UUID(x_user_id)
-    except ValueError as exc:
-        raise AppError("user_invalid", "Invalid user id", status_code=400) from exc
-
-    member = (
-        session.query(TenantMember)
-        .filter(
-            TenantMember.tenant_id == tenant.tenant_id,
-            TenantMember.user_id == user_id,
-            TenantMember.status == "active",
-        )
-        .one_or_none()
-    )
-    if member is None:
-        raise AppError("member_not_found", "Tenant member not found", status_code=403)
-    return member

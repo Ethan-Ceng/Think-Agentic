@@ -61,7 +61,6 @@ class Settings(BaseSettings):
 
     jwt_secret_key: str = "dev-jwt-secret-change-me-please-update"
     access_token_expire_minutes: int = 60 * 24 * 7
-    default_tenant_id: str | None = None
     assistant_agent_id: str = "6774fcef-b594-8008-b30c-a05b8190afe6"
 
     github_client_id: str = ""
