@@ -1,0 +1,29 @@
+model: deepseek-v4-pro
+label: DeepSeek-V4-Pro
+model_type: chat
+features:
+  - tool_call
+  - agent_thought
+context_window: 1048576
+max_output_tokens: 393216
+attributes:
+  model: deepseek-v4-pro
+  thinking:
+    type: enabled
+  reasoning_effort: high
+parameters:
+  - name: max_tokens
+    use_template: max_tokens
+    default: 8192
+    max: 393216
+metadata:
+  release_date: "2026-04-24"
+  thinking_mode: enabled
+  legacy_mapping:
+    - deepseek-reasoner
+  pricing:
+    input_cache_hit: 0.000025
+    input: 0.003
+    output: 0.006
+    unit: 0.001
+    currency: RMB

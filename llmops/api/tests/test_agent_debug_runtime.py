@@ -42,6 +42,28 @@ def test_chat_runtime_builds_multimodal_messages() -> None:
     assert messages[2]["content"][1]["image_url"]["url"] == "https://example.test/image.png"
 
 
+def test_chat_runtime_keeps_deepseek_v4_parameters_and_reasoning_content() -> None:
+    safe_parameters = ChatCompletionRuntime._safe_parameters(
+        {
+            "thinking": {"type": "enabled"},
+            "reasoning_effort": "high",
+            "response_format": {"type": "json_object"},
+            "temperature": 0.2,
+            "unsupported": "drop",
+        }
+    )
+
+    assert safe_parameters == {
+        "thinking": {"type": "enabled"},
+        "reasoning_effort": "high",
+        "response_format": {"type": "json_object"},
+        "temperature": 0.2,
+    }
+    assert ChatCompletionRuntime._normalize_assistant_message(
+        {"content": "", "reasoning_content": "thinking trace"}
+    )["reasoning_content"] == "thinking trace"
+
+
 def test_chat_runtime_parses_openai_tool_calls() -> None:
     tool_calls = ChatCompletionRuntime._parse_tool_calls(
         {

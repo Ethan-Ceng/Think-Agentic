@@ -41,7 +41,7 @@ def test_llm_provider_service_builds_system_specs_from_yaml_and_env() -> None:
             openai_api_key="openai-key",
             openai_base_url="https://openai-compatible.example.test/v1",
             default_llm_provider="deepseek",
-            default_llm_model="deepseek-chat",
+            default_llm_model="deepseek-v4-pro",
         )
     )
 
@@ -49,7 +49,7 @@ def test_llm_provider_service_builds_system_specs_from_yaml_and_env() -> None:
     openai = next(provider for provider in providers if provider["provider"] == "openai")
     deepseek = next(provider for provider in providers if provider["provider"] == "deepseek")
     gpt_4o_mini = next(model for model in openai["models"] if model["model"] == "gpt-4o-mini")
-    deepseek_chat = next(model for model in deepseek["models"] if model["model"] == "deepseek-chat")
+    deepseek_v4_pro = next(model for model in deepseek["models"] if model["model"] == "deepseek-v4-pro")
 
     assert openai["name"] == "OpenAI"
     assert openai["base_url"] == "https://openai-compatible.example.test/v1"
@@ -57,7 +57,9 @@ def test_llm_provider_service_builds_system_specs_from_yaml_and_env() -> None:
     assert gpt_4o_mini["context_window"] == 128000
     assert "tool_call" in gpt_4o_mini["features"]
     assert deepseek["is_default"] is True
-    assert deepseek_chat["is_default"] is True
+    assert deepseek_v4_pro["is_default"] is True
+    assert deepseek_v4_pro["context_window"] == 1048576
+    assert deepseek_v4_pro["default_parameters"]["reasoning_effort"] == "high"
 
 
 def test_language_models_route_keeps_legacy_payload_shape() -> None:

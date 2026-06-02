@@ -159,6 +159,9 @@ class ChatCompletionRuntime:
             "frequency_penalty",
             "max_tokens",
             "stop",
+            "thinking",
+            "reasoning_effort",
+            "response_format",
         }
         return {key: value for key, value in parameters.items() if key in allowed and value is not None}
 
@@ -168,6 +171,8 @@ class ChatCompletionRuntime:
             "role": "assistant",
             "content": message.get("content") or "",
         }
+        if message.get("reasoning_content"):
+            normalized["reasoning_content"] = message["reasoning_content"]
         tool_calls = [
             cls._to_assistant_tool_call_payload(tool_call)
             for tool_call in cls._normalize_tool_call_payloads(message)

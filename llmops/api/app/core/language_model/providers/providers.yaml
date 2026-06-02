@@ -29,7 +29,7 @@
     - chat
 - name: deepseek
   label: 深度求索
-  description: 幻方量化提供的LLM大语言模型，涵盖deepseek-chat和deepseek-reasoner等。
+  description: DeepSeek 提供的大语言模型，当前推荐 deepseek-v4-flash 和 deepseek-v4-pro。
   icon: icon.svg
   background: "#FFFFF"
   supported_model_types:
