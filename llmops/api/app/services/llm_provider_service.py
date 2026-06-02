@@ -30,9 +30,12 @@ class LLMProviderService(BaseService):
         )
 
     def ensure_system_providers(self, session: Session, account_id: UUID) -> None:
-        provider_count = session.query(LLMProvider).filter(LLMProvider.account_id == account_id).count()
-        if provider_count == 0:
+        providers = session.query(LLMProvider).filter(LLMProvider.account_id == account_id).all()
+        if not providers:
             self.sync_system_providers(session, account_id, reset=True)
+            return
+        if not any((provider.config or {}).get("source") == "system_yaml" for provider in providers):
+            self.sync_system_providers(session, account_id, reset=False)
 
     def sync_system_providers(self, session: Session, account_id: UUID, *, reset: bool = False) -> list[LLMProvider]:
         if reset:

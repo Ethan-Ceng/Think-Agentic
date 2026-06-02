@@ -20,7 +20,7 @@ def get_wechat_config(
     svc: PlatformService = Depends(get_platform_service),
 ):
     config = svc.get_wechat_config(session, app_id, current_user)
-    return success_json(WechatConfigResponse.from_config(config).model_dump())
+    return success_json(WechatConfigResponse.from_config(config, url=f"/wechat/{app_id}").model_dump())
 
 
 @router.put("/wechat")

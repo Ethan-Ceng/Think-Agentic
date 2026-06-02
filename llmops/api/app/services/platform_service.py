@@ -4,7 +4,6 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.core.app import AppStatus
-from app.core.exceptions import NotFoundException
 from app.core.platform import WechatConfigStatus
 from app.models.account import Account
 from app.models.platform import WechatConfig
@@ -20,7 +19,12 @@ class PlatformService(BaseService):
         app = self.app_service.get_app(session, app_id, account)
         wechat_config = session.query(WechatConfig).filter(WechatConfig.app_id == app.id).one_or_none()
         if wechat_config is None:
-            raise NotFoundException("Wechat config does not exist")
+            wechat_config = self.create(
+                session,
+                WechatConfig,
+                app_id=app.id,
+                status=WechatConfigStatus.UNCONFIGURED.value,
+            )
         return wechat_config
 
     def update_wechat_config(

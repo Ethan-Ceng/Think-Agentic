@@ -189,3 +189,22 @@ def test_debug_conversation_messages_accepts_legacy_ui_path() -> None:
     assert response.json()["data"]["current_page"] == 1
     assert response.json()["data"]["page_size"] == 5
     assert seen == {"app_id": app_id, "page": 1, "page_size": 5, "created_at": 0}
+
+
+def test_published_config_returns_web_app_status_for_draft_app(monkeypatch) -> None:
+    account = Account(id=uuid.uuid4(), name="tester", email="tester@example.test")
+    app_id = uuid.uuid4()
+    service = AppService()
+    draft_app = SimpleNamespace(
+        id=app_id,
+        account_id=account.id,
+        app_config_id=None,
+        token=None,
+        status="draft",
+    )
+
+    monkeypatch.setattr(service, "get_app", lambda session, target_app_id, current_user: draft_app)
+
+    response = service.get_published_config(SimpleNamespace(), app_id, account)
+
+    assert response == {"web_app": {"token": "", "status": "draft"}}

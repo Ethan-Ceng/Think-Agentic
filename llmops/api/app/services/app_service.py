@@ -282,12 +282,17 @@ class AppService(BaseService):
 
     def get_published_config(self, session: Session, app_id: UUID, account: Account) -> dict[str, Any]:
         app = self.get_app(session, app_id, account)
-        if not app.app_config_id:
-            raise NotFoundException("Published app config does not exist")
-        app_config = self.get(session, AppConfig, app.app_config_id)
-        if app_config is None:
-            raise NotFoundException("Published app config does not exist")
-        return self._config_to_response(session, app_config)
+        response: dict[str, Any] = {}
+        if app.app_config_id:
+            app_config = self.get(session, AppConfig, app.app_config_id)
+            if app_config:
+                response = self._config_to_response(session, app_config)
+
+        response["web_app"] = {
+            "token": app.token or "",
+            "status": AppStatus.PUBLISHED.value if app.status == AppStatus.PUBLISHED.value else AppStatus.DRAFT.value,
+        }
+        return response
 
     def regenerate_web_app_token(self, session: Session, app_id: UUID, account: Account) -> str:
         app = self.get_app(session, app_id, account)

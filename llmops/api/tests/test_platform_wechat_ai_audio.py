@@ -15,7 +15,9 @@ from app.api.deps import (
 )
 from app.app_factory import create_app
 from app.core.config import Settings
+from app.core.platform import WechatConfigStatus
 from app.models.account import Account
+from app.services.platform_service import PlatformService
 from app.services.wechat_service import WechatService
 
 
@@ -75,9 +77,55 @@ def test_platform_wechat_config_routes_keep_legacy_payload_shape() -> None:
         )
 
     assert get_response.status_code == 200
-    assert get_response.json()["data"]["status"] == "configured"
+    data = get_response.json()["data"]
+    assert data["status"] == "configured"
+    assert data["ip"] == ""
+    assert data["url"] == f"/wechat/{app_id}"
     assert put_response.status_code == 200
     assert put_response.json()["message"] == "Update app wechat config success"
+
+
+def test_platform_service_creates_default_wechat_config_when_missing(monkeypatch) -> None:
+    account = Account(id=uuid.uuid4(), name="tester", email="tester@example.test")
+    app_id = uuid.uuid4()
+    service = PlatformService()
+    created = {}
+
+    class FakeQuery:
+        def filter(self, *args):  # noqa: ANN001
+            return self
+
+        def one_or_none(self):
+            return None
+
+    class FakeSession:
+        def query(self, model):  # noqa: ANN001
+            return FakeQuery()
+
+    def fake_create(session, model, **kwargs):  # noqa: ANN001
+        created.update(kwargs)
+        return SimpleNamespace(
+            id=uuid.uuid4(),
+            app_id=kwargs["app_id"],
+            wechat_app_id="",
+            wechat_app_secret="",
+            wechat_token="",
+            status=kwargs["status"],
+            updated_at=None,
+            created_at=None,
+        )
+
+    monkeypatch.setattr(
+        service.app_service,
+        "get_app",
+        lambda session, target_app_id, current_user: SimpleNamespace(id=target_app_id, account_id=current_user.id),
+    )
+    monkeypatch.setattr(service, "create", fake_create)
+
+    config = service.get_wechat_config(FakeSession(), app_id, account)
+
+    assert created == {"app_id": app_id, "status": WechatConfigStatus.UNCONFIGURED.value}
+    assert config.status == WechatConfigStatus.UNCONFIGURED.value
 
 
 def test_wechat_signature_and_route() -> None:

@@ -12,6 +12,8 @@ class UpdateWechatConfigRequest(BaseModel):
 class WechatConfigResponse(BaseModel):
     id: UUID
     app_id: UUID
+    ip: str = ""
+    url: str = ""
     wechat_app_id: str = ""
     wechat_app_secret: str = ""
     wechat_token: str = ""
@@ -20,10 +22,12 @@ class WechatConfigResponse(BaseModel):
     created_at: int = 0
 
     @classmethod
-    def from_config(cls, config) -> "WechatConfigResponse":
+    def from_config(cls, config, *, ip: str = "", url: str = "") -> "WechatConfigResponse":
         return cls(
             id=config.id,
             app_id=config.app_id,
+            ip=ip,
+            url=url,
             wechat_app_id=config.wechat_app_id or "",
             wechat_app_secret=config.wechat_app_secret or "",
             wechat_token=config.wechat_token or "",

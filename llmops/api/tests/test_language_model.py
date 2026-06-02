@@ -1,4 +1,5 @@
 import uuid
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -67,6 +68,47 @@ def test_llm_provider_service_builds_system_specs_from_yaml_and_env() -> None:
         "qwen3.7-max",
         "qwen3.6-flash",
     ]
+
+
+def test_llm_provider_service_ensures_system_yaml_even_with_custom_providers() -> None:
+    class FakeQuery:
+        def __init__(self, providers) -> None:  # noqa: ANN001
+            self.providers = providers
+
+        def filter(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            return self
+
+        def all(self):
+            return self.providers
+
+    class FakeSession:
+        def __init__(self, providers) -> None:  # noqa: ANN001
+            self.providers = providers
+
+        def query(self, model):  # noqa: ANN001
+            return FakeQuery(self.providers)
+
+    class FakeService(LLMProviderService):
+        def __init__(self) -> None:
+            super().__init__()
+            self.sync_calls = []
+
+        def sync_system_providers(self, session, account_id, *, reset=False):  # noqa: ANN001
+            self.sync_calls.append(reset)
+            return []
+
+    service = FakeService()
+
+    service.ensure_system_providers(FakeSession([]), uuid.uuid4())
+    assert service.sync_calls == [True]
+
+    service.sync_calls.clear()
+    service.ensure_system_providers(FakeSession([SimpleNamespace(config={})]), uuid.uuid4())
+    assert service.sync_calls == [False]
+
+    service.sync_calls.clear()
+    service.ensure_system_providers(FakeSession([SimpleNamespace(config={"source": "system_yaml"})]), uuid.uuid4())
+    assert service.sync_calls == []
 
 
 def test_language_models_route_keeps_legacy_payload_shape() -> None:
