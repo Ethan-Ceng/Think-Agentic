@@ -8,7 +8,7 @@ import httpx
 
 from app.core.config import get_settings
 from app.core.exceptions import FailException
-from app.core.language_model.entities import BaseLanguageModel
+from app.core.language_model.entities import BaseLanguageModel, ModelFeature
 
 
 @dataclass(frozen=True)
@@ -74,6 +74,13 @@ class ChatCompletionRuntime:
         messages: list[dict[str, Any]] | None = None,
         timeout: float = 60.0,
     ) -> ChatCompletionResult:
+        payload_messages = messages or self._build_messages(system_prompt, history or [], query, image_urls or [])
+        if self._messages_contain_image_input(payload_messages) and ModelFeature.IMAGE_INPUT not in model.features:
+            raise FailException(
+                f"Model {model.provider}/{model.model} does not support image input. "
+                "Please remove images or choose a model with image_input capability."
+            )
+
         runtime_config = model.metadata.get("runtime", {}) if isinstance(model.metadata, dict) else {}
         if runtime_config:
             api_key = str(runtime_config.get("api_key") or "")
@@ -100,7 +107,7 @@ class ChatCompletionRuntime:
 
         payload = {
             "model": model.model,
-            "messages": messages or self._build_messages(system_prompt, history or [], query, image_urls or []),
+            "messages": payload_messages,
             **self._safe_parameters(model.parameters),
         }
         if tools:
@@ -149,6 +156,17 @@ class ChatCompletionRuntime:
         else:
             messages.append({"role": "user", "content": query})
         return messages
+
+    @staticmethod
+    def _messages_contain_image_input(messages: list[dict[str, Any]]) -> bool:
+        for message in messages:
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            for part in content:
+                if isinstance(part, dict) and (part.get("type") == "image_url" or "image_url" in part):
+                    return True
+        return False
 
     @staticmethod
     def _safe_parameters(parameters: dict[str, Any]) -> dict[str, Any]:

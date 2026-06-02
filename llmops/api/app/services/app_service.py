@@ -1,3 +1,4 @@
+import base64
 import json
 import random
 import re
@@ -6,6 +7,7 @@ import time
 from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import unquote, urlparse
 from uuid import UUID, uuid4
 
 from sqlalchemy import delete as sql_delete
@@ -28,12 +30,14 @@ from app.models.api_tool import ApiTool
 from app.models.app import App, AppConfig, AppConfigVersion, AppDatasetJoin
 from app.models.conversation import Conversation, Message, MessageAgentThought
 from app.models.dataset import Dataset
+from app.models.file import File
 from app.models.workflow import Workflow
 from app.services.agent_adapter_service import LegacyAppWorkerAdapter, WorkerAgentDescriptor
 from app.services.base_service import BaseService
 from app.services.capability_adapter_service import ToolCapabilityAdapter
 from app.services.dataset_service import DatasetService
 from app.services.language_model_service import LanguageModelService
+from app.services.storage_service import StorageService
 from app.services.workflow_service import WorkflowService
 
 MAX_AGENT_ITERATION_RESPONSE = "Current agent iteration count exceeded the limit. Please retry."
@@ -53,6 +57,7 @@ class RuntimeCapability:
 class AppService(BaseService):
     capability_adapter: ToolCapabilityAdapter = field(default_factory=ToolCapabilityAdapter)
     worker_agent_adapter: LegacyAppWorkerAdapter = field(default_factory=LegacyAppWorkerAdapter)
+    storage_service: StorageService = field(default_factory=StorageService)
 
     def auto_create_app(self, session: Session, name: str, description: str, account_id: UUID) -> App:
         account = session.get(Account, account_id)
@@ -498,6 +503,11 @@ class AppService(BaseService):
                 return
             else:
                 llm = LanguageModelService().load_language_model(config.get("model_config", {}), session, account)
+                model_image_urls = (
+                    self._prepare_image_urls_for_model(session, account, image_urls)
+                    if image_urls and ModelFeature.IMAGE_INPUT in llm.features
+                    else image_urls
+                )
                 history = (
                     TokenBufferMemory(session, conversation_id).get_history_messages(config["dialog_round"])
                     if conversation_id
@@ -530,7 +540,7 @@ class AppService(BaseService):
                         session=session,
                         task_id=task_id,
                         query=query,
-                        image_urls=image_urls,
+                        image_urls=model_image_urls,
                         history=history,
                         system_prompt=system_prompt,
                         llm=llm,
@@ -544,7 +554,7 @@ class AppService(BaseService):
                 answer = ChatCompletionRuntime().complete(
                     model=llm,
                     query=query,
-                    image_urls=image_urls,
+                    image_urls=model_image_urls,
                     history=history,
                     system_prompt=system_prompt,
                 )
@@ -670,6 +680,40 @@ class AppService(BaseService):
     @staticmethod
     def _supports_iterative_capabilities(llm: BaseLanguageModel) -> bool:
         return ModelFeature.TOOL_CALL in llm.features or ModelFeature.AGENT_THOUGHT in llm.features
+
+    def _prepare_image_urls_for_model(self, session: Session, account: Account, image_urls: list[str]) -> list[str]:
+        return [self._prepare_image_url_for_model(session, account, image_url) for image_url in image_urls]
+
+    def _prepare_image_url_for_model(self, session: Session, account: Account, image_url: str) -> str:
+        if not image_url or image_url.startswith("data:"):
+            return image_url
+        upload_path = self._uploaded_file_path_from_url(image_url)
+        if not upload_path:
+            return image_url
+
+        file = (
+            session.query(File)
+            .filter(File.account_id == account.id, File.file_path == upload_path, File.status == "available")
+            .one_or_none()
+        )
+        if file is None:
+            raise NotFoundException("Image file does not exist")
+        if not (file.mime_type or "").startswith("image/"):
+            raise FailException("Image URL does not reference an image file")
+
+        content = self.storage_service.read(session, account.id, file.storage_provider, file.file_path)
+        encoded = base64.b64encode(content).decode("ascii")
+        return f"data:{file.mime_type};base64,{encoded}"
+
+    @staticmethod
+    def _uploaded_file_path_from_url(image_url: str) -> str:
+        parsed = urlparse(image_url)
+        path = parsed.path if parsed.scheme else image_url
+        for marker in ("/api/upload-files/", "/upload-files/"):
+            index = path.find(marker)
+            if index >= 0:
+                return unquote(path[index + len(marker) :]).lstrip("/")
+        return ""
 
     def _initial_iterative_messages(
         self,

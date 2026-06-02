@@ -1,5 +1,7 @@
 import uuid
+from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.api.deps import get_app_service, get_current_account, get_db_session
@@ -7,6 +9,7 @@ from app.app_factory import create_app
 from app.core.agent import AgentQueueManager
 from app.core.config import Settings
 from app.core.conversation import InvokeFrom
+from app.core.exceptions import FailException
 from app.core.language_model.chat_runtime import ChatCompletionResult, ChatCompletionRuntime, ChatToolCall
 from app.core.language_model.entities import BaseLanguageModel, ModelFeature
 from app.models.account import Account
@@ -40,6 +43,56 @@ def test_chat_runtime_builds_multimodal_messages() -> None:
     assert messages[1] == {"role": "assistant", "content": "hello"}
     assert messages[2]["content"][0] == {"type": "text", "text": "describe"}
     assert messages[2]["content"][1]["image_url"]["url"] == "https://example.test/image.png"
+
+
+def test_chat_runtime_rejects_image_input_for_text_only_model() -> None:
+    llm = BaseLanguageModel(provider="deepseek", model="deepseek-v4-pro", features=[])
+    messages = ChatCompletionRuntime._build_messages(
+        system_prompt="",
+        history=[],
+        query="describe",
+        image_urls=["https://example.test/image.png"],
+    )
+
+    with pytest.raises(FailException, match="does not support image input"):
+        ChatCompletionRuntime().create_response(model=llm, messages=messages)
+
+
+def test_app_service_converts_local_upload_image_url_to_data_url(monkeypatch) -> None:
+    account = Account(id=uuid.uuid4(), name="tester", email="tester@example.test")
+    service = AppService()
+    file = SimpleNamespace(
+        account_id=account.id,
+        file_path="2026/06/02/image.png",
+        storage_provider="local",
+        mime_type="image/png",
+        status="available",
+    )
+
+    class FakeQuery:
+        def filter(self, *args):  # noqa: ANN001
+            return self
+
+        def one_or_none(self):
+            return file
+
+    class FakeSession:
+        def query(self, model):  # noqa: ANN001
+            return FakeQuery()
+
+    monkeypatch.setattr(
+        service.storage_service,
+        "read",
+        lambda session, account_id, storage_provider, file_path: b"\x89PNG",
+    )
+
+    image_urls = service._prepare_image_urls_for_model(  # noqa: SLF001
+        FakeSession(),
+        account,
+        ["/api/upload-files/2026/06/02/image.png"],
+    )
+
+    assert image_urls == ["data:image/png;base64,iVBORw=="]
 
 
 def test_chat_runtime_keeps_deepseek_v4_parameters_and_reasoning_content() -> None:
