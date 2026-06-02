@@ -1,8 +1,34 @@
 import { del, get, patch, post, upload } from '@/utils/request'
-import type { FileResponse, GetFilesResponse } from '@/models/file'
+import type {
+  FileBatchResponse,
+  FileResponse,
+  GetFileFolderTreeResponse,
+  GetFilesResponse,
+  GetFilesWithPageResponse,
+} from '@/models/file'
 
-export const getFiles = (params: { parent_id?: string; search_word?: string } = {}) => {
+export type GetFilesParams = {
+  parent_id?: string
+  search_word?: string
+  file_kind?: string
+  source?: string
+}
+
+export type GetFilesWithPageParams = GetFilesParams & {
+  current_page: number
+  page_size: number
+}
+
+export const getFiles = (params: GetFilesParams = {}) => {
   return get<GetFilesResponse>('/files', { params })
+}
+
+export const getFilesWithPage = (params: GetFilesWithPageParams) => {
+  return get<GetFilesWithPageResponse>('/files', { params })
+}
+
+export const getFileFolderTree = () => {
+  return get<GetFileFolderTreeResponse>('/files/folders/tree')
 }
 
 export const createFolder = (body: { name: string; parent_id?: string | null }) => {
@@ -15,6 +41,14 @@ export const updateFile = (fileId: string, body: { name?: string; parent_id?: st
 
 export const deleteFile = (fileId: string) => {
   return del<FileResponse>(`/files/${fileId}`)
+}
+
+export const batchMoveFiles = (body: { file_ids: string[]; parent_id?: string | null }) => {
+  return post<FileBatchResponse>('/files/batch-move', { body })
+}
+
+export const batchDeleteFiles = (fileIds: string[]) => {
+  return post<FileBatchResponse>('/files/batch-delete', { body: { file_ids: fileIds } })
 }
 
 export const uploadManagedFile = (file: File, parentId?: string | null) => {

@@ -4,14 +4,22 @@ import { useRoute, useRouter } from 'vue-router'
 import type { UploadRequestOptions } from 'element-plus'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { FileItem } from '@/models/file'
-import { createFolder, deleteFile, getFiles, updateFile, uploadManagedFile } from '@/services/file'
+import {
+  batchDeleteFiles,
+  batchMoveFiles,
+  createFolder,
+  getFileFolderTree,
+  getFilesWithPage,
+  updateFile,
+  uploadManagedFile,
+} from '@/services/file'
 
 type ViewMode = 'table' | 'grid'
 type FileKind = 'folder' | 'image' | 'video' | 'audio' | 'document' | 'other'
 type FileKindFilter = 'all' | 'image' | 'video' | 'audio' | 'document' | 'other'
 type SourceFilter = 'all' | 'upload' | 'generated'
 type PathNode = { id: string | null; name: string }
-type MoveTarget = { id: string; name: string; depth: number }
+type MoveTarget = { id: string; parent_id: string | null; name: string; depth: number }
 
 const props = defineProps<{ createType?: string }>()
 const emit = defineEmits(['update:createType'])
@@ -26,6 +34,12 @@ const viewMode = ref<ViewMode>('table')
 const kindFilter = ref<FileKindFilter>('all')
 const sourceFilter = ref<SourceFilter>('all')
 const selectedIds = ref<string[]>([])
+const paginator = ref({
+  current_page: 1,
+  page_size: 20,
+  total_page: 0,
+  total_record: 0,
+})
 
 const renameDialogVisible = ref(false)
 const editingFile = ref<FileItem | null>(null)
@@ -60,9 +74,7 @@ const currentParentId = computed(() => pathStack.value[pathStack.value.length - 
 const currentDirectoryName = computed(() => pathStack.value[pathStack.value.length - 1]?.name ?? '全部文件')
 const searchWord = computed(() => String(route.query?.search_word ?? '').trim())
 
-const filteredFiles = computed(() =>
-  files.value.filter((file) => matchesKind(file, kindFilter.value) && matchesSource(file, sourceFilter.value)),
-)
+const filteredFiles = computed(() => files.value)
 const selectedFiles = computed(() => files.value.filter((file) => selectedIds.value.includes(file.id)))
 const allVisibleSelected = computed(
   () => filteredFiles.value.length > 0 && filteredFiles.value.every((file) => selectedIds.value.includes(file.id)),
@@ -73,18 +85,34 @@ const folderCount = computed(() => files.value.filter((file) => file.type === 'f
 const generatedCount = computed(() => files.value.filter((file) => file.type === 'file' && file.source !== 'upload').length)
 const totalSize = computed(() => files.value.reduce((sum, file) => sum + (file.type === 'file' ? file.size : 0), 0))
 
-const loadFiles = async () => {
+const loadFiles = async (page = paginator.value.current_page) => {
   loading.value = true
   try {
-    const res = await getFiles({
+    const res = await getFilesWithPage({
       parent_id: currentParentId.value || undefined,
       search_word: searchWord.value || undefined,
+      file_kind: kindFilter.value,
+      source: sourceFilter.value,
+      current_page: page,
+      page_size: paginator.value.page_size,
     })
-    files.value = res.data
+    if (page > 1 && res.data.list.length === 0 && res.data.paginator.total_record > 0) {
+      paginator.value.current_page = res.data.paginator.total_page
+      await loadFiles(res.data.paginator.total_page)
+      return
+    }
+    files.value = res.data.list
+    paginator.value = res.data.paginator
     pruneSelection()
   } finally {
     loading.value = false
   }
+}
+
+const resetAndLoadFiles = async () => {
+  selectedIds.value = []
+  paginator.value.current_page = 1
+  await loadFiles(1)
 }
 
 const openCreateFolder = async () => {
@@ -93,7 +121,7 @@ const openCreateFolder = async () => {
   })
   await createFolder({ name: String(value || ''), parent_id: currentParentId.value })
   ElMessage.success('目录已创建')
-  await loadFiles()
+  await resetAndLoadFiles()
 }
 
 const openRename = (file: FileItem) => {
@@ -121,17 +149,20 @@ const loadMoveTargets = async () => {
   moveTargetLoading.value = true
   try {
     const selectedSet = new Set(selectedIds.value)
-    const targets: MoveTarget[] = [{ id: '', name: '全部文件', depth: 0 }]
-    const walk = async (parentId: string | null, depth: number) => {
-      const res = await getFiles({ parent_id: parentId || undefined })
-      for (const file of res.data) {
-        if (file.type !== 'folder' || selectedSet.has(file.id)) continue
-        targets.push({ id: file.id, name: file.name, depth })
-        await walk(file.id, depth + 1)
+    const res = await getFileFolderTree()
+    const folderMap = new Map(res.data.map((folder) => [folder.id, folder]))
+    const isDescendantOfSelected = (folder: MoveTarget) => {
+      let parentId = folder.parent_id
+      while (parentId) {
+        if (selectedSet.has(parentId)) return true
+        parentId = folderMap.get(parentId)?.parent_id || null
       }
+      return false
     }
-    await walk(null, 1)
-    moveTargets.value = targets
+    moveTargets.value = [
+      { id: '', parent_id: null, name: '全部文件', depth: 0 },
+      ...res.data.filter((folder) => !selectedSet.has(folder.id) && !isDescendantOfSelected(folder)),
+    ]
     moveTargetId.value = currentParentId.value || ''
   } finally {
     moveTargetLoading.value = false
@@ -140,8 +171,12 @@ const loadMoveTargets = async () => {
 
 const saveMove = async () => {
   if (!selectedFiles.value.length) return
-  await Promise.all(selectedFiles.value.map((file) => updateFile(file.id, { parent_id: moveTargetId.value || null })))
+  await batchMoveFiles({
+    file_ids: selectedFiles.value.map((file) => file.id),
+    parent_id: moveTargetId.value || null,
+  })
   moveDialogVisible.value = false
+  selectedIds.value = []
   ElMessage.success('文件已移动')
   await loadFiles()
 }
@@ -158,7 +193,7 @@ const removeFiles = async (targets: FileItem[]) => {
   if (!targets.length) return
   const name = targets.length === 1 ? targets[0].name : `${targets.length} 个文件或目录`
   await ElMessageBox.confirm(`删除 ${name}？目录中的文件也会被删除。`, '确认删除', { type: 'warning' })
-  await Promise.all(targets.map((file) => deleteFile(file.id)))
+  await batchDeleteFiles(targets.map((file) => file.id))
   selectedIds.value = []
   ElMessage.success('文件已删除')
   await loadFiles()
@@ -167,18 +202,18 @@ const removeFiles = async (targets: FileItem[]) => {
 const openFolder = async (file: FileItem) => {
   if (file.type !== 'folder') return
   pathStack.value = [...pathStack.value, { id: file.id, name: file.name }]
-  await loadFiles()
+  await resetAndLoadFiles()
 }
 
 const goToPath = async (index: number) => {
   pathStack.value = pathStack.value.slice(0, index + 1)
-  await loadFiles()
+  await resetAndLoadFiles()
 }
 
 const goParent = async () => {
   if (pathStack.value.length <= 1) return
   pathStack.value = pathStack.value.slice(0, -1)
-  await loadFiles()
+  await resetAndLoadFiles()
 }
 
 const handleUpload = (option: UploadRequestOptions) => {
@@ -188,7 +223,7 @@ const handleUpload = (option: UploadRequestOptions) => {
       const res = await uploadManagedFile(file as File, currentParentId.value)
       onSuccess(res.data)
       ElMessage.success('文件已上传')
-      await loadFiles()
+      await resetAndLoadFiles()
     } catch (error) {
       onError(error as any)
     }
@@ -238,6 +273,15 @@ const clearSearch = () => {
   router.push({ path: route.path, query })
 }
 
+const handlePageChange = async (page: number) => {
+  await loadFiles(page)
+}
+
+const handlePageSizeChange = async (pageSize: number) => {
+  paginator.value.page_size = pageSize
+  await resetAndLoadFiles()
+}
+
 const pruneSelection = () => {
   const visibleIds = new Set(filteredFiles.value.map((file) => file.id))
   selectedIds.value = selectedIds.value.filter((id) => visibleIds.has(id))
@@ -257,24 +301,6 @@ function getKind(file: FileItem): FileKind {
   if (mimeType.startsWith('audio/') || audioExts.has(extension)) return 'audio'
   if (documentExts.has(extension)) return 'document'
   return 'other'
-}
-
-function matchesKind(file: FileItem, filter: FileKindFilter) {
-  return filter === 'all' || getKind(file) === filter
-}
-
-function matchesSource(file: FileItem, filter: SourceFilter) {
-  if (filter === 'all') return true
-  if (filter === 'upload') return file.source === 'upload'
-  return file.type === 'file' && file.source !== 'upload'
-}
-
-function kindCount(filter: FileKindFilter) {
-  return files.value.filter((file) => matchesKind(file, filter)).length
-}
-
-function sourceCount(filter: SourceFilter) {
-  return files.value.filter((file) => matchesSource(file, filter)).length
 }
 
 function fileKindLabel(file: FileItem) {
@@ -339,10 +365,10 @@ watch(
 
 watch(
   () => route.query?.search_word,
-  () => loadFiles(),
+  () => resetAndLoadFiles(),
 )
 
-watch([kindFilter, sourceFilter], pruneSelection)
+watch([kindFilter, sourceFilter], () => resetAndLoadFiles())
 
 onMounted(loadFiles)
 </script>
@@ -363,7 +389,6 @@ onMounted(loadFiles)
             @click="kindFilter = item.value"
           >
             <span>{{ item.label }}</span>
-            <span class="text-xs text-gray-400">{{ kindCount(item.value) }}</span>
           </button>
         </div>
 
@@ -379,26 +404,29 @@ onMounted(loadFiles)
             @click="sourceFilter = item.value"
           >
             <span>{{ item.label }}</span>
-            <span class="text-xs text-gray-400">{{ sourceCount(item.value) }}</span>
           </button>
         </div>
 
         <div class="mt-6 space-y-2 border-t border-slate-100 pt-4 text-sm">
           <div class="flex items-center justify-between text-gray-500">
-            <span>文件</span>
+            <span>本页文件</span>
             <span class="font-medium text-gray-900">{{ fileCount }}</span>
           </div>
           <div class="flex items-center justify-between text-gray-500">
-            <span>目录</span>
+            <span>本页目录</span>
             <span class="font-medium text-gray-900">{{ folderCount }}</span>
           </div>
           <div class="flex items-center justify-between text-gray-500">
-            <span>生成文件</span>
+            <span>本页生成文件</span>
             <span class="font-medium text-gray-900">{{ generatedCount }}</span>
           </div>
           <div class="flex items-center justify-between text-gray-500">
-            <span>容量</span>
+            <span>本页容量</span>
             <span class="font-medium text-gray-900">{{ formatFileSize(totalSize) }}</span>
+          </div>
+          <div class="flex items-center justify-between text-gray-500">
+            <span>筛选总数</span>
+            <span class="font-medium text-gray-900">{{ paginator.total_record }}</span>
           </div>
         </div>
       </aside>
@@ -577,6 +605,18 @@ onMounted(loadFiles)
             </el-button>
           </el-upload>
         </el-empty>
+
+        <div v-if="paginator.total_record > 0" class="mt-4 flex justify-end">
+          <el-pagination
+            v-model:current-page="paginator.current_page"
+            v-model:page-size="paginator.page_size"
+            :page-sizes="[20, 50, 100]"
+            :total="paginator.total_record"
+            layout="total, sizes, prev, pager, next"
+            @current-change="handlePageChange"
+            @size-change="handlePageSizeChange"
+          />
+        </div>
       </main>
     </div>
 

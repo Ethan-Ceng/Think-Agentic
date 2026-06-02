@@ -1,4 +1,4 @@
-import type { BaseResponse } from '@/models/base'
+import type { BasePaginatorResponse, BaseResponse } from '@/models/base'
 
 export type FileItem = {
   id: string
@@ -19,5 +19,15 @@ export type FileItem = {
   updated_at: number
 }
 
+export type FileFolderTreeItem = {
+  id: string
+  parent_id: string | null
+  name: string
+  depth: number
+}
+
 export type GetFilesResponse = BaseResponse<FileItem[]>
+export type GetFilesWithPageResponse = BasePaginatorResponse<FileItem>
 export type FileResponse = BaseResponse<FileItem>
+export type FileBatchResponse = BaseResponse<FileItem[]>
+export type GetFileFolderTreeResponse = BaseResponse<FileFolderTreeItem[]>

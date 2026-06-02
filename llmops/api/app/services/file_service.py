@@ -1,9 +1,10 @@
+import math
 from dataclasses import dataclass, field
 from datetime import datetime
 from uuid import UUID
 
 from fastapi import UploadFile as FastAPIUploadFile
-from sqlalchemy import desc
+from sqlalchemy import desc, func, or_
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import FailException, NotFoundException
@@ -25,7 +26,69 @@ class FileService(BaseService):
         account: Account,
         parent_id: UUID | None = None,
         search_word: str = "",
+        file_kind: str = "all",
+        source_filter: str = "all",
     ) -> list[File]:
+        return list(self._list_files_query(session, account, parent_id, search_word, file_kind, source_filter).all())
+
+    def list_files_with_page(
+        self,
+        session: Session,
+        account: Account,
+        parent_id: UUID | None = None,
+        search_word: str = "",
+        file_kind: str = "all",
+        source_filter: str = "all",
+        current_page: int = 1,
+        page_size: int = 20,
+    ) -> tuple[list[File], int, int]:
+        query = self._list_files_query(session, account, parent_id, search_word, file_kind, source_filter)
+        total_record = query.count()
+        total_page = math.ceil(total_record / page_size) if total_record else 0
+        files = query.limit(page_size).offset((current_page - 1) * page_size).all()
+        return list(files), total_record, total_page
+
+    def list_folder_tree(self, session: Session, account: Account) -> list[dict]:
+        folders = (
+            session.query(File)
+            .filter(
+                File.account_id == account.id,
+                File.type == "folder",
+                File.status == "available",
+            )
+            .order_by(File.created_at.asc(), File.name.asc())
+            .all()
+        )
+        children_by_parent: dict[UUID | None, list[File]] = {}
+        for folder in folders:
+            children_by_parent.setdefault(folder.parent_id, []).append(folder)
+
+        result: list[dict] = []
+
+        def visit(parent_id: UUID | None, depth: int) -> None:
+            for folder in children_by_parent.get(parent_id, []):
+                result.append(
+                    {
+                        "id": folder.id,
+                        "parent_id": folder.parent_id,
+                        "name": folder.name,
+                        "depth": depth,
+                    }
+                )
+                visit(folder.id, depth + 1)
+
+        visit(None, 1)
+        return result
+
+    def _list_files_query(
+        self,
+        session: Session,
+        account: Account,
+        parent_id: UUID | None = None,
+        search_word: str = "",
+        file_kind: str = "all",
+        source_filter: str = "all",
+    ):
         query = session.query(File).filter(File.account_id == account.id, File.status == "available")
         if parent_id is None:
             query = query.filter(File.parent_id.is_(None))
@@ -33,7 +96,50 @@ class FileService(BaseService):
             query = query.filter(File.parent_id == parent_id)
         if search_word:
             query = query.filter(File.name.ilike(f"%{search_word}%"))
-        return list(query.order_by(File.type.desc(), desc(File.updated_at)).all())
+        if source_filter == "upload":
+            query = query.filter(File.source == "upload")
+        elif source_filter == "generated":
+            query = query.filter(File.type == "file", File.source != "upload")
+        query = self._apply_kind_filter(query, file_kind)
+        return query.order_by(File.type.desc(), desc(File.updated_at))
+
+    def _apply_kind_filter(self, query, file_kind: str):
+        if file_kind == "all":
+            return query
+        query = query.filter(File.type == "file")
+        if file_kind == "image":
+            return query.filter(self._kind_expr("image"))
+        if file_kind == "video":
+            return query.filter(self._kind_expr("video"))
+        if file_kind == "audio":
+            return query.filter(self._kind_expr("audio"))
+        if file_kind == "document":
+            return query.filter(self._kind_expr("document"))
+        if file_kind == "other":
+            known_expr = or_(
+                self._kind_expr("image"),
+                self._kind_expr("video"),
+                self._kind_expr("audio"),
+                self._kind_expr("document"),
+            )
+            return query.filter(~known_expr)
+        return query
+
+    @staticmethod
+    def _kind_expr(file_kind: str):
+        extension = func.lower(File.extension)
+        if file_kind == "image":
+            return or_(
+                File.mime_type.ilike("image/%"),
+                extension.in_(["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg"]),
+            )
+        if file_kind == "video":
+            return or_(File.mime_type.ilike("video/%"), extension.in_(["mp4", "webm", "mov", "m4v", "avi"]))
+        if file_kind == "audio":
+            return or_(File.mime_type.ilike("audio/%"), extension.in_(["mp3", "wav", "ogg", "m4a", "flac"]))
+        if file_kind == "document":
+            return extension.in_(["pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "md", "csv", "json"])
+        return File.type == "file"
 
     def create_folder(self, session: Session, account: Account, name: str, parent_id: UUID | None = None) -> File:
         name = name.strip()
@@ -99,6 +205,17 @@ class FileService(BaseService):
                 self._ensure_not_descendant(session, account, file, parent)
         return self.update(session, file, parent_id=parent_id)
 
+    def move_files(
+        self,
+        session: Session,
+        account: Account,
+        file_ids: list[UUID],
+        parent_id: UUID | None,
+    ) -> list[File]:
+        files = [self.move_file(session, account, file_id, parent_id) for file_id in file_ids]
+        session.flush()
+        return files
+
     def delete_file(self, session: Session, account: Account, file_id: UUID) -> File:
         file = self.get_file(session, account, file_id)
         deleted_at = datetime.now()
@@ -108,6 +225,22 @@ class FileService(BaseService):
         session.flush()
         session.refresh(file)
         return file
+
+    def delete_files(self, session: Session, account: Account, file_ids: list[UUID]) -> list[File]:
+        targets = [self.get_file(session, account, file_id) for file_id in file_ids]
+        deleted_at = datetime.now()
+        deleted: list[File] = []
+        seen: set[UUID] = set()
+        for target in targets:
+            for item in self._collect_descendants(session, account, target):
+                if item.id in seen:
+                    continue
+                item.status = "deleted"
+                item.deleted_at = deleted_at
+                deleted.append(item)
+                seen.add(item.id)
+        session.flush()
+        return targets
 
     def _ensure_not_descendant(self, session: Session, account: Account, source: File, target_parent: File) -> None:
         cursor: File | None = target_parent

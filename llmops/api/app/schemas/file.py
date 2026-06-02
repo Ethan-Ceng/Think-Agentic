@@ -14,6 +14,15 @@ class FileUpdateRequest(BaseModel):
     parent_id: UUID | None = None
 
 
+class FileBatchMoveRequest(BaseModel):
+    file_ids: list[UUID] = Field(..., min_length=1)
+    parent_id: UUID | None = None
+
+
+class FileBatchDeleteRequest(BaseModel):
+    file_ids: list[UUID] = Field(..., min_length=1)
+
+
 class FileResponse(BaseModel):
     id: UUID
     account_id: UUID
