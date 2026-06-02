@@ -398,7 +398,7 @@ onMounted(() => {
               size="mini"
               type="text"
               class="hidden group-hover:block shrink-0 ml-2 text-red-700! rounded-sm"
-              @click="() => removeDataset(idx)"
+              @click="() => removeDataset(Number(idx))"
             >
               <template #icon>
                 <icon-delete />

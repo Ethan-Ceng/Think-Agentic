@@ -1,4 +1,5 @@
 from app.models.account import Account, AccountOAuth
+from app.models.account_setting import AccountSetting
 from app.models.agent import Agent, AgentBinding, AgentVersion
 from app.models.api_key import ApiKey
 from app.models.api_tool import ApiTool, ApiToolProvider
@@ -9,6 +10,8 @@ from app.models.capability import AgentCapabilityBinding, Capability
 from app.models.conversation import Conversation, Message, MessageAgentThought
 from app.models.dataset import Dataset, DatasetQuery, Document, KeywordTable, ProcessRule, Segment
 from app.models.end_user import EndUser
+from app.models.file import File
+from app.models.llm_provider import LLMModel, LLMProvider
 from app.models.platform import WechatConfig, WechatEndUser, WechatMessage
 from app.models.task import AgentPlan, AgentStep, AgentTask, CapabilityCall, WorkerCall
 from app.models.trace import TraceEvent
@@ -18,6 +21,7 @@ from app.models.workflow import Workflow, WorkflowResult
 __all__ = [
     "Account",
     "AccountOAuth",
+    "AccountSetting",
     "Agent",
     "AgentBinding",
     "AgentCapabilityBinding",
@@ -41,7 +45,10 @@ __all__ = [
     "DatasetQuery",
     "Document",
     "EndUser",
+    "File",
     "KeywordTable",
+    "LLMModel",
+    "LLMProvider",
     "Message",
     "MessageAgentThought",
     "ProcessRule",

@@ -11,6 +11,8 @@ export type UploadFileResponse = BaseResponse<{
   account_id: string
   name: string
   key: string
+  file_path: string
+  storage_provider: string
   size: number
   extension: string
   mime_type: string

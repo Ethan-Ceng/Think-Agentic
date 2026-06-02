@@ -3,7 +3,7 @@ FROM node:20 AS builder
 WORKDIR /app/web
 
 COPY package.json pnpm-lock.yaml ./
-RUN corepack enable && pnpm install --frozen-lockfile
+RUN corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile
 
 COPY . .
 

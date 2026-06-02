@@ -234,38 +234,47 @@ Setting 底座确认后，再落地文件资产模块。
 
 ### 模块一：Setting 底座
 
-- [ ] 新增 `account_settings` 模型和迁移。
-- [ ] 新增 `SettingCrypto` 工具类。
-- [ ] 新增 `SettingService`。
-- [ ] 定义 `SECRET_FIELDS` 映射。
-- [ ] 新增 setting 管理 API。
-- [ ] 管理 API 读取时脱敏敏感字段。
-- [ ] runtime 使用时解密敏感字段。
-- [ ] 增加本地配置 fallback，未配置 DB 时继续读取现有 `.env / Settings`。
+- [x] 新增 `account_settings` 模型和迁移。
+- [x] 新增 `SettingCrypto` 工具类。
+- [x] 新增 `SettingService`。
+- [x] 定义 `SECRET_FIELDS` 映射。
+- [x] 新增 setting 管理 API。
+- [x] 管理 API 读取时脱敏敏感字段。
+- [x] runtime 使用时解密敏感字段。
+- [x] 增加本地配置 fallback，未配置 DB 时继续读取现有 `.env / Settings`。
 
 ### 模块二：Storage 配置
 
-- [ ] 把 local storage 的 root/base_url 接入 `account_settings`。
-- [ ] 增加 qcloud_cos 配置 schema。
-- [ ] 增加 aliyun_oss 配置 schema。
-- [ ] 重构上传服务，从 setting 中解析当前账号的默认 storage provider。
-- [ ] 保留现有本地上传能力，避免破坏已有接口。
+- [x] 把 local storage 的 root/base_url 接入 `account_settings`。
+- [x] 增加 qcloud_cos 配置 schema。
+- [x] 增加 aliyun_oss 配置 schema。
+- [x] 重构上传服务，从 setting 中解析当前账号的默认 storage provider。
+- [x] 保留现有本地上传能力，避免破坏已有接口。
+- [ ] 接入 qcloud_cos / aliyun_oss SDK，实现云存储真实上传、读取和签名下载。
 
 ### 模块三：LLM Provider 配置
 
-- [ ] 增加 LLM provider setting schema。
-- [ ] 支持 provider API Key 加密保存。
-- [ ] 支持管理页面脱敏展示。
-- [ ] Agent/App 配置中优先选择已配置 provider/model。
+- [x] 增加 LLM provider/model 独立表、API 和页面。
+- [x] 支持 provider API Key 加密保存。
+- [x] 支持管理页面脱敏展示。
+- [x] App/Workflow 配置中优先选择已配置 provider/model，未配置时回退 YAML/.env。
 
 ### 模块四：File Asset
 
-- [ ] 重新设计文件资产表，明确 `UploadFile`、`Artifact`、`DatasetDocument` 边界。
-- [ ] 文件列表支持类云盘管理。
-- [ ] 文件上传统一走 storage driver。
-- [ ] 文件可作为知识库来源。
+- [x] 新增 `files` 主表，文件记录使用 `storage_provider + file_path`，不落库绝对 URL。
+- [x] 文件列表支持类云盘管理。
+- [x] 文件上传统一走 storage driver。
+- [x] 文件可作为知识库来源。
 - [ ] 文件可作为 Agent task 输入。
 - [ ] Agent 产物登记为 Artifact。
+
+执行记录：
+
+- 已新增 `account_settings`、`files`、`llm_providers`、`llm_models` 迁移。
+- 已将新上传文件写入 `files`，并把 `Document.upload_file_id` 的实际读取逻辑切到 `files.id`。
+- 已保留 `/upload-files` 兼容 API 形状，前端现有上传流程不需要改调用方。
+- 已新增 Storage、LLM Provider、文件管理页面，并在知识库添加文件页支持从文件库选择。
+- 当前 COS/OSS 已支持配置保存、脱敏和 URL 解析；真实 SDK 上传/读取留到后续。
 
 ## 9. 后续迁移方向
 

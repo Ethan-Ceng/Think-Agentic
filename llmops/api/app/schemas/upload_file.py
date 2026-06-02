@@ -1,9 +1,8 @@
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel
-
-from app.models.upload_file import UploadFile
 
 
 def datetime_to_timestamp(value: datetime | None) -> int:
@@ -17,18 +16,23 @@ class UploadFileResponse(BaseModel):
     account_id: UUID
     name: str
     key: str
+    file_path: str = ""
+    storage_provider: str = "local"
     size: int
     extension: str
     mime_type: str
     created_at: int = 0
 
     @classmethod
-    def from_upload_file(cls, upload_file: UploadFile) -> "UploadFileResponse":
+    def from_upload_file(cls, upload_file: Any) -> "UploadFileResponse":
+        file_path = getattr(upload_file, "file_path", None) or getattr(upload_file, "key", "")
         return cls(
             id=upload_file.id,
             account_id=upload_file.account_id,
             name=upload_file.name,
-            key=upload_file.key,
+            key=file_path,
+            file_path=file_path,
+            storage_provider=getattr(upload_file, "storage_provider", "local"),
             size=upload_file.size,
             extension=upload_file.extension,
             mime_type=upload_file.mime_type,

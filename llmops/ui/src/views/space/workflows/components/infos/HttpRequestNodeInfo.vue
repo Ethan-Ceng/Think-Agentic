@@ -289,7 +289,7 @@ watch(
           <div class="w-[8%] text-right">
             <icon-minus-circle
               class="text-gray-500 hover:text-gray-700 cursor-pointer shrink-0"
-              @click="() => removeFormInputField('headers', idx)"
+              @click="() => removeFormInputField('headers', Number(idx))"
             />
           </div>
         </div>
@@ -353,7 +353,7 @@ watch(
           <div class="w-[8%] text-right">
             <icon-minus-circle
               class="text-gray-500 hover:text-gray-700 cursor-pointer shrink-0"
-              @click="() => removeFormInputField('params', idx)"
+              @click="() => removeFormInputField('params', Number(idx))"
             />
           </div>
         </div>
@@ -416,7 +416,7 @@ watch(
           <div class="w-[8%] text-right">
             <icon-minus-circle
               class="text-gray-500 hover:text-gray-700 cursor-pointer shrink-0"
-              @click="() => removeFormInputField('body', idx)"
+              @click="() => removeFormInputField('body', Number(idx))"
             />
           </div>
         </div>

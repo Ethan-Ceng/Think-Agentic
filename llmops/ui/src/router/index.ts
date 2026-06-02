@@ -43,6 +43,31 @@ const router = createRouter({
               name: 'space-datasets-list',
               component: () => import('@/views/space/datasets/ListView.vue'),
             },
+            {
+              path: 'files',
+              name: 'space-files-list',
+              component: () => import('@/views/space/files/ListView.vue'),
+            },
+          ],
+        },
+        {
+          path: 'settings',
+          component: () => import('@/views/settings/SettingsLayoutView.vue'),
+          children: [
+            {
+              path: '',
+              redirect: '/settings/storage',
+            },
+            {
+              path: 'storage',
+              name: 'settings-storage',
+              component: () => import('@/views/settings/StorageView.vue'),
+            },
+            {
+              path: 'llm-providers',
+              name: 'settings-llm-providers',
+              component: () => import('@/views/settings/LLMProvidersView.vue'),
+            },
           ],
         },
         {

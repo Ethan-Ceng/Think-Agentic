@@ -9,7 +9,7 @@ services:
     restart: always
     environment: [ ]
     ports:
-      - "3000:3000"
+      - "${UI_HOST_PORT:-3000}:3000"
   llmops-api:
     image: llmops-api:0.1.0
     build:
@@ -27,7 +27,7 @@ services:
       # 数据库迁移配置
       MIGRATION_ENABLED: 'true'
       # JWT 加密秘钥
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev-jwt-secret-change-me}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev-jwt-secret-change-me-please-rotate}
       # 服务配置
       SERVICE_IP: ${SERVICE_IP:-127.0.0.1}
       SERVICE_API_PREFIX: ${SERVICE_API_PREFIX:-http://localhost:5011}
@@ -111,7 +111,7 @@ services:
       # 谷歌 Serper 搜索 API 秘钥
       SERPER_API_KEY: ${SERPER_API_KEY:-}
     ports:
-      - "5011:5001"
+      - "${API_HOST_PORT:-5011}:5001"
     depends_on:
       - llmops-db
       - llmops-redis
@@ -135,7 +135,7 @@ services:
       SERVICE_IP: ${SERVICE_IP:-127.0.0.1}
       SERVICE_API_PREFIX: ${SERVICE_API_PREFIX:-http://localhost:5011}
       # JWT 加密秘钥
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev-jwt-secret-change-me}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev-jwt-secret-change-me-please-rotate}
       # CSRF 校验开关
       WTF_CSRF_ENABLED: 'false'
       # SQLAlchemy 数据库配置
@@ -230,7 +230,7 @@ services:
     healthcheck:
       test: [ "CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-llmops123456}", "ping" ]
     ports:
-      - "6379:6379"
+      - "${REDIS_HOST_PORT:-6379}:6379"
   llmops-db:
     image: postgres:15-alpine
     restart: always
@@ -253,7 +253,7 @@ services:
       timeout: 3s
       retries: 30
     ports:
-      - "5432:5432"
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
   llmops-weaviate:
     image: semitechnologies/weaviate:1.28.4
     container_name: llmops-weaviate
@@ -272,8 +272,8 @@ services:
     volumes:
       - ./volumes/weaviate:/var/lib/weaviate
     ports:
-      - "8080:8080"
-      - "50051:50051"
+      - "${WEAVIATE_HTTP_HOST_PORT:-8080}:8080"
+      - "${WEAVIATE_GRPC_HOST_PORT:-50051}:50051"
   llmops-nginx:
     image: nginx:latest
     profiles:
@@ -289,7 +289,7 @@ services:
       - llmops-ui
       - llmops-api
     ports:
-      - "80:80"
-      - "443:443"
+      - "${NGINX_HTTP_HOST_PORT:-80}:80"
+      - "${NGINX_HTTPS_HOST_PORT:-443}:443"
 
 

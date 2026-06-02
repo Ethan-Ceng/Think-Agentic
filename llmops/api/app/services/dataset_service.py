@@ -13,7 +13,7 @@ from app.core.exceptions import NotFoundException, ValidateErrorException
 from app.infrastructure.vector_store import VectorSearchHit, WeaviateVectorStore
 from app.models.account import Account
 from app.models.dataset import Dataset, DatasetQuery, Document, KeywordTable, ProcessRule, Segment
-from app.models.upload_file import UploadFile
+from app.models.file import File
 from app.schemas.dataset import DatasetStats
 from app.services.base_service import BaseService
 
@@ -212,8 +212,8 @@ class DatasetService(BaseService):
         documents = {document.id: document for document in document_rows}
         upload_files = {
             upload_file.id: upload_file
-            for upload_file in session.query(UploadFile).filter(
-                UploadFile.id.in_([document.upload_file_id for document in documents.values()])
+            for upload_file in session.query(File).filter(
+                File.id.in_([document.upload_file_id for document in documents.values()])
             )
         }
 
@@ -455,7 +455,7 @@ class DatasetService(BaseService):
     def _format_hit_result(
         segment: Segment,
         document: Document | None,
-        upload_files: dict[UUID, UploadFile],
+        upload_files: dict[UUID, File],
         score: float,
     ) -> dict:
         upload_file = upload_files.get(document.upload_file_id) if document else None

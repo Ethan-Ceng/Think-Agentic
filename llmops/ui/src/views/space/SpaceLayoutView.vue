@@ -8,7 +8,7 @@ const router = useRouter()
 const createType = ref<string>('')
 const searchWord = ref(String(route.query?.search_word ?? ''))
 
-type SpaceSection = 'apps' | 'tools' | 'workflows' | 'datasets'
+type SpaceSection = 'apps' | 'tools' | 'workflows' | 'datasets' | 'files'
 
 const activeSection = computed((): SpaceSection | null => {
   const p = route.path
@@ -16,6 +16,7 @@ const activeSection = computed((): SpaceSection | null => {
   if (p.startsWith('/space/tools')) return 'tools'
   if (p.startsWith('/space/workflows')) return 'workflows'
   if (p.startsWith('/space/datasets')) return 'datasets'
+  if (p.startsWith('/space/files')) return 'files'
   return null
 })
 
@@ -40,6 +41,11 @@ const pageHead = computed(() => {
       return {
         title: '知识库',
         subtitle: '文档分段与检索配置',
+      }
+    case 'files':
+      return {
+        title: '文件',
+        subtitle: '上传文件与目录管理',
       }
     default:
       return { title: '个人空间', subtitle: '管理你的 AI 资源' }
@@ -76,6 +82,7 @@ watch(
             <icon-tool v-else-if="activeSection === 'tools'" class="text-xl" />
             <icon-branch v-else-if="activeSection === 'workflows'" class="text-xl" />
             <icon-storage v-else-if="activeSection === 'datasets'" class="text-xl" />
+            <icon-file v-else-if="activeSection === 'files'" class="text-xl" />
             <icon-user v-else class="text-xl" />
           </div>
           <div class="min-w-0">
@@ -131,6 +138,17 @@ watch(
             </template>
             创建知识库
           </el-button>
+          <el-button
+            v-if="route.path.startsWith('/space/files')"
+            type="primary"
+            class="rounded-lg"
+            @click="createType = 'file-folder'"
+          >
+            <template #icon>
+              <icon-plus />
+            </template>
+            新建目录
+          </el-button>
         </div>
       </div>
 
@@ -166,6 +184,13 @@ watch(
             active-class="!bg-white !text-blue-700 !shadow-sm !font-medium"
           >
             知识库
+          </router-link>
+          <router-link
+            to="/space/files"
+            class="rounded-full px-3.5 py-1.5 text-sm text-gray-600 transition-colors hover:text-gray-900"
+            active-class="!bg-white !text-blue-700 !shadow-sm !font-medium"
+          >
+            文件
           </router-link>
         </nav>
 

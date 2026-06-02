@@ -67,7 +67,9 @@ export const useGetDatasetsWithPage = () => {
         paginator.value.page_size,
         search_word,
       )
-      const { list, paginator: pageMeta } = normalizeListPaginator(resp.data as Record<string, any>)
+      const { list, paginator: pageMeta } = normalizeListPaginator<Record<string, any>>(
+        resp.data as Record<string, any>,
+      )
 
       paginator.value = pageMeta
 
@@ -198,7 +200,9 @@ export const useGetDocumentsWithPage = () => {
       // 2.1 调用接口获取响应数据
       loading.value = true
       const resp = await getDocumentsWithPage(dataset_id, req)
-      const { list, paginator: pageMeta } = normalizeListPaginator(resp.data as Record<string, any>)
+      const { list, paginator: pageMeta } = normalizeListPaginator<Record<string, any>>(
+        resp.data as Record<string, any>,
+      )
 
       paginator.value = pageMeta
       documents.value = list
@@ -271,7 +275,7 @@ export const useGetSegmentsWithPage = () => {
   // 1.定义hooks所需数据
   const loading = ref(false)
   const loadingMore = ref(false)
-  const segments = ref<Record<string, any>>([])
+  const segments = ref<Record<string, any>[]>([])
   const defaultPaginator = {
     current_page: 1,
     page_size: 20,
@@ -306,7 +310,9 @@ export const useGetSegmentsWithPage = () => {
         page_size: paginator.value.page_size,
         search_word: search_word,
       })
-      const { list, paginator: pageMeta } = normalizeListPaginator(resp.data as Record<string, any>)
+      const { list, paginator: pageMeta } = normalizeListPaginator<Record<string, any>>(
+        resp.data as Record<string, any>,
+      )
 
       paginator.value = pageMeta
 

@@ -111,7 +111,7 @@ onMounted(() => {
           <el-card
             shadow="hover"
             class="cursor-pointer rounded-xl border border-slate-200/50 transition-shadow hover:border-slate-200 hover:shadow-md"
-            @click="showIdx = idx"
+            @click="showIdx = Number(idx)"
           >
             <div class="mb-3 flex items-center gap-3">
               <el-avatar

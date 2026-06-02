@@ -640,7 +640,7 @@ onMounted(() => {
                   <el-button
                     size="mini"
                     class="hidden group-hover:block rounded-sm px-1.5 shrink-0"
-                    @click="() => handleSelectTool(builtin_tool_idx, tool_idx)"
+                    @click="() => handleSelectTool(Number(builtin_tool_idx), Number(tool_idx))"
                   >
                     <template #icon>
                       <icon-plus />
@@ -687,7 +687,7 @@ onMounted(() => {
                     <el-button
                       size="mini"
                       class="hidden group-hover:block rounded-sm px-1.5 shrink-0"
-                      @click="() => handleSelectTool(Number(api_tool_provider_idx), tool_idx)"
+                      @click="() => handleSelectTool(Number(api_tool_provider_idx), Number(tool_idx))"
                     >
                       <template #icon>
                         <icon-plus />

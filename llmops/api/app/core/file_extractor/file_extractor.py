@@ -1,8 +1,11 @@
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
-from app.models.upload_file import UploadFile
+from sqlalchemy.orm import Session
+
+from app.models.file import File
+from app.services.storage_service import StorageService
 from app.services.upload_file_service import UploadFileService
 
 
@@ -10,7 +13,18 @@ from app.services.upload_file_service import UploadFileService
 class FileExtractor:
     """Local-storage first file extractor for the migration runtime."""
 
-    def load(self, upload_file: UploadFile) -> str:
+    storage_service: StorageService = field(default_factory=StorageService)
+
+    def load(self, session: Session, upload_file: File) -> str:
+        content = self.storage_service.read(
+            session,
+            upload_file.account_id,
+            upload_file.storage_provider,
+            upload_file.file_path,
+        )
+        return self.load_from_bytes(content, upload_file.extension)
+
+    def load_legacy_local(self, upload_file: File) -> str:
         file_path = UploadFileService.get_local_file_path(upload_file.key)
         return self.load_from_file(file_path)
 
@@ -20,6 +34,13 @@ class FileExtractor:
         content = path.read_bytes()
         text = cls._decode_bytes(content)
         if path.suffix.lower() in {".html", ".htm"}:
+            text = cls._strip_html(text)
+        return cls._clean_text(text)
+
+    @classmethod
+    def load_from_bytes(cls, content: bytes, extension: str = "") -> str:
+        text = cls._decode_bytes(content)
+        if extension.lower().lstrip(".") in {"html", "htm"}:
             text = cls._strip_html(text)
         return cls._clean_text(text)
 

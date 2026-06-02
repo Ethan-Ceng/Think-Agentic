@@ -11,7 +11,7 @@ from app.core.dataset import DEFAULT_PROCESS_RULE, DocumentStatus, SegmentStatus
 from app.core.file_extractor import FileExtractor
 from app.infrastructure.vector_store import WeaviateVectorStore
 from app.models.dataset import Document, KeywordTable, ProcessRule, Segment
-from app.models.upload_file import UploadFile
+from app.models.file import File
 from app.services.base_service import BaseService
 
 
@@ -31,11 +31,11 @@ class IndexingService(BaseService):
                     error="",
                     processing_started_at=datetime.now(),
                 )
-                upload_file = session.get(UploadFile, document.upload_file_id)
+                upload_file = session.get(File, document.upload_file_id)
                 if upload_file is None:
-                    raise FileNotFoundError("Upload file does not exist")
+                    raise FileNotFoundError("File does not exist")
 
-                text = self.file_extractor.load(upload_file)
+                text = self.file_extractor.load(session, upload_file)
                 process_rule = session.get(ProcessRule, document.process_rule_id)
                 rule = process_rule.rule if process_rule and process_rule.rule else DEFAULT_PROCESS_RULE["rule"]
 

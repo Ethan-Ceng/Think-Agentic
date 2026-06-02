@@ -359,7 +359,7 @@ onMounted(() => {
               size="small"
               link
               class="text-gray-700! rounded-sm"
-              @click="async () => await handleShowToolInfoModal(idx)"
+              @click="async () => await handleShowToolInfoModal(Number(idx))"
             >
               <template #icon>
                 <icon-settings />
@@ -370,7 +370,7 @@ onMounted(() => {
               size="small"
               link
               class="text-red-700! rounded-sm"
-              @click="async () => await handleDeleteTool(idx)"
+              @click="async () => await handleDeleteTool(Number(idx))"
             >
               <template #icon>
                 <icon-delete />
@@ -637,7 +637,7 @@ onMounted(() => {
                   <el-button
                     size="small"
                     class="hidden group-hover:block rounded-sm px-1.5 shrink-0"
-                    @click="async () => await handleSelectTool(builtin_tool_idx, tool_idx)"
+                    @click="async () => await handleSelectTool(Number(builtin_tool_idx), Number(tool_idx))"
                   >
                     <template #icon>
                       <icon-plus />
@@ -685,7 +685,7 @@ onMounted(() => {
                       size="small"
                       class="hidden group-hover:block rounded-sm px-1.5 shrink-0"
                       @click="
-                        async () => await handleSelectTool(Number(api_tool_provider_idx), tool_idx)
+                        async () => await handleSelectTool(Number(api_tool_provider_idx), Number(tool_idx))
                       "
                     >
                       <template #icon>

@@ -12,7 +12,7 @@ from app.core.dataset import ALLOWED_DOCUMENT_EXTENSION, DEFAULT_PROCESS_RULE, D
 from app.core.exceptions import FailException, ForbiddenException, NotFoundException
 from app.models.account import Account
 from app.models.dataset import Dataset, Document, ProcessRule, Segment
-from app.models.upload_file import UploadFile
+from app.models.file import File
 from app.services.base_service import BaseService
 from app.services.indexing_service import IndexingService
 
@@ -30,8 +30,13 @@ class DocumentService(BaseService):
     ) -> tuple[list[Document], str]:
         dataset = self._get_dataset(session, dataset_id, account)
         upload_files = (
-            session.query(UploadFile)
-            .filter(UploadFile.account_id == account.id, UploadFile.id.in_(upload_file_ids))
+            session.query(File)
+            .filter(
+                File.account_id == account.id,
+                File.id.in_(upload_file_ids),
+                File.type == "file",
+                File.status == "available",
+            )
             .all()
         )
         upload_files = [
@@ -218,11 +223,11 @@ class DocumentService(BaseService):
         return dataset
 
     @staticmethod
-    def _get_upload_file_map(session: Session, documents: list[Document]) -> dict[UUID, UploadFile]:
+    def _get_upload_file_map(session: Session, documents: list[Document]) -> dict[UUID, File]:
         upload_file_ids = [document.upload_file_id for document in documents]
         return {
             upload_file.id: upload_file
-            for upload_file in session.query(UploadFile).filter(UploadFile.id.in_(upload_file_ids))
+            for upload_file in session.query(File).filter(File.id.in_(upload_file_ids))
         }
 
     @staticmethod

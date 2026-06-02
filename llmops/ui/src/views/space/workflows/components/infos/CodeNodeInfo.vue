@@ -259,7 +259,7 @@ watch(
           <div class="w-[8%] text-right">
             <icon-minus-circle
               class="text-gray-500 hover:text-gray-700 cursor-pointer shrink-0"
-              @click="() => removeFormInputField(idx)"
+              @click="() => removeFormInputField(Number(idx))"
             />
           </div>
         </div>
@@ -341,7 +341,7 @@ watch(
           <div class="w-[8%] text-right">
             <icon-minus-circle
               class="text-gray-500 hover:text-gray-700 cursor-pointer shrink-0"
-              @click="() => removeFormOutputField(idx)"
+              @click="() => removeFormOutputField(Number(idx))"
             />
           </div>
         </div>

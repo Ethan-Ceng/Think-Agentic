@@ -33,7 +33,7 @@ def upload_image(
     svc: UploadFileService = Depends(get_upload_file_service),
 ):
     upload_file_record = svc.upload_file(session, file, True, current_user)
-    return success_json({"image_url": svc.get_file_url(upload_file_record.key)})
+    return success_json({"image_url": svc.get_file_url_for_record(session, upload_file_record)})
 
 
 @router.get("/{file_path:path}")

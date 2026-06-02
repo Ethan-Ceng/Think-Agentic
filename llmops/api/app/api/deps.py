@@ -22,12 +22,15 @@ from app.services.builtin_tool_service import BuiltinToolService
 from app.services.conversation_service import ConversationService
 from app.services.dataset_service import DatasetService
 from app.services.document_service import DocumentService
+from app.services.file_service import FileService
 from app.services.jwt_service import JwtService
 from app.services.language_model_service import LanguageModelService
+from app.services.llm_provider_service import LLMProviderService
 from app.services.oauth_service import OAuthService
 from app.services.openapi_service import OpenAPIService
 from app.services.platform_service import PlatformService
 from app.services.segment_service import SegmentService
+from app.services.setting_service import SettingService
 from app.services.upload_file_service import UploadFileService
 from app.services.web_app_service import WebAppService
 from app.services.wechat_service import WechatService
@@ -90,8 +93,16 @@ def get_document_service() -> DocumentService:
     return DocumentService()
 
 
+def get_file_service() -> FileService:
+    return FileService()
+
+
 def get_segment_service() -> SegmentService:
     return SegmentService()
+
+
+def get_setting_service() -> SettingService:
+    return SettingService()
 
 
 def get_upload_file_service() -> UploadFileService:
@@ -111,6 +122,10 @@ def get_builtin_app_service() -> BuiltinAppService:
 
 def get_language_model_service(settings: Settings = Depends(get_settings)) -> LanguageModelService:
     return LanguageModelService(settings=settings)
+
+
+def get_llm_provider_service() -> LLMProviderService:
+    return LLMProviderService()
 
 
 def get_openapi_service() -> OpenAPIService:

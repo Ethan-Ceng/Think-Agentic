@@ -86,7 +86,7 @@ export const useGetAppsWithPage = () => {
         page_size: paginator.value.page_size,
         search_word: search_word,
       })
-      const { list: rawList, paginator: pageMeta } = normalizeListPaginator(
+      const { list: rawList, paginator: pageMeta } = normalizeListPaginator<Record<string, any>>(
         resp.data as Record<string, any>,
       )
 

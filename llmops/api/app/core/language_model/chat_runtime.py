@@ -74,16 +74,26 @@ class ChatCompletionRuntime:
         messages: list[dict[str, Any]] | None = None,
         timeout: float = 60.0,
     ) -> ChatCompletionResult:
-        runtime = PROVIDER_RUNTIMES.get(model.provider)
-        if runtime is None:
-            raise FailException(f"Unsupported language model provider: {model.provider}")
+        runtime_config = model.metadata.get("runtime", {}) if isinstance(model.metadata, dict) else {}
+        if runtime_config:
+            api_key = str(runtime_config.get("api_key") or "")
+            base_url = str(runtime_config.get("base_url") or "").rstrip("/")
+            requires_api_key = bool(runtime_config.get("requires_api_key", True))
+            if requires_api_key and not api_key:
+                raise FailException("Missing provider credential")
+            if not base_url:
+                raise FailException("Language model provider base URL is not configured")
+        else:
+            runtime = PROVIDER_RUNTIMES.get(model.provider)
+            if runtime is None:
+                raise FailException(f"Unsupported language model provider: {model.provider}")
 
-        settings = get_settings()
-        api_key = settings.provider_api_key(runtime.api_key_env)
-        if runtime.requires_api_key and not api_key:
-            raise FailException(f"Missing provider credential: {runtime.api_key_env}")
+            settings = get_settings()
+            api_key = settings.provider_api_key(runtime.api_key_env)
+            if runtime.requires_api_key and not api_key:
+                raise FailException(f"Missing provider credential: {runtime.api_key_env}")
 
-        base_url = settings.provider_base_url(runtime.base_url_env, runtime.default_base_url).rstrip("/")
+            base_url = settings.provider_base_url(runtime.base_url_env, runtime.default_base_url).rstrip("/")
         headers = {"Content-Type": "application/json"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"

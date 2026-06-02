@@ -7,6 +7,8 @@ import { useCreateDocuments, useGetDocumentsStatus } from '@/hooks/use-dataset'
 import { useUploadFile } from '@/hooks/use-upload-file'
 import { unescapeString } from '@/utils/helper'
 import type { CreateDocumentsRequest } from '@/models/dataset'
+import type { FileItem } from '@/models/file'
+import { getFiles } from '@/services/file'
 
 // 1.定义页面逻辑基础数据，涵盖定时器、路由、当前步骤书、表单信息等
 let timer: any = 0
@@ -33,6 +35,9 @@ const createDocumentsForm = ref<Record<string, any>>({
 })
 const customRuleFormRef = ref<FormInstance>()
 const documents = ref<Array<any>>([])
+const fileAssetDialogVisible = ref(false)
+const fileAssets = ref<FileItem[]>([])
+const selectedFileAssets = ref<FileItem[]>([])
 
 // 2.定义下一步处理函数
 const nextStep = async () => {
@@ -147,6 +152,34 @@ const stopTimer = () => {
   }
 }
 
+const openFileAssetDialog = async () => {
+  const res = await getFiles()
+  fileAssets.value = res.data.filter((item) => item.type === 'file')
+  selectedFileAssets.value = []
+  fileAssetDialogVisible.value = true
+}
+
+const confirmFileAssets = () => {
+  const existingIds = new Set(
+    createDocumentsForm.value.file_list.map((item: any) => String(item?.response?.id || '')),
+  )
+  for (const file of selectedFileAssets.value) {
+    if (existingIds.has(file.id)) continue
+    createDocumentsForm.value.file_list.push({
+      name: file.name,
+      status: 'success',
+      response: {
+        id: file.id,
+        name: file.name,
+        size: file.size,
+        extension: file.extension,
+        mime_type: file.mime_type,
+      },
+    })
+  }
+  fileAssetDialogVisible.value = false
+}
+
 // 6.页面卸载时同步卸载定时器
 onUnmounted(() => stopTimer())
 </script>
@@ -182,6 +215,9 @@ onUnmounted(() => stopTimer())
     <div class="min-h-[calc(100vh-160px)] p-[48px]">
       <!-- 上传页面 -->
       <div v-if="currentStep === 1" class="">
+        <div class="mb-3 flex justify-end">
+          <el-button @click="openFileAssetDialog">从文件库选择</el-button>
+        </div>
         <!-- 上传文件按钮 -->
         <el-upload
           v-model:file-list="createDocumentsForm.file_list"
@@ -358,6 +394,23 @@ onUnmounted(() => stopTimer())
         </div>
       </div>
     </div>
+    <el-dialog v-model="fileAssetDialogVisible" width="720px" title="从文件库选择">
+      <el-table
+        :data="fileAssets"
+        @selection-change="(rows: FileItem[]) => (selectedFileAssets = rows)"
+      >
+        <el-table-column type="selection" width="48" />
+        <el-table-column prop="name" label="文件名" min-width="220" />
+        <el-table-column prop="storage_provider" label="Storage" width="120" />
+        <el-table-column label="大小" width="120">
+          <template #default="{ row }">{{ (row.size / 1024).toFixed(1) }} KB</template>
+        </el-table-column>
+      </el-table>
+      <template #footer>
+        <el-button @click="fileAssetDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="confirmFileAssets">确认选择</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 

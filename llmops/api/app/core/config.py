@@ -60,6 +60,7 @@ class Settings(BaseSettings):
     celery_broker_connection_retry_on_startup: bool = True
 
     jwt_secret_key: str = "dev-jwt-secret-change-me-please-update"
+    setting_crypto_key: str = ""
     access_token_expire_minutes: int = 60 * 24 * 7
     assistant_agent_id: str = "6774fcef-b594-8008-b30c-a05b8190afe6"
 

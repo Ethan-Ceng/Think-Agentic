@@ -29,7 +29,8 @@ class WebAppService(BaseService):
     def get_web_app_info(self, session: Session, token: str) -> dict:
         app = self.get_web_app(session, token)
         config = self._get_published_runtime_config(session, app)
-        llm = LanguageModelService().load_language_model(config.get("model_config", {}))
+        app_account = session.get(Account, app.account_id)
+        llm = LanguageModelService().load_language_model(config.get("model_config", {}), session, app_account)
         return {
             "id": str(app.id),
             "icon": app.icon,

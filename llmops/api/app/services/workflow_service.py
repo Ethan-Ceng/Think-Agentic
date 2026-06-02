@@ -266,7 +266,7 @@ class WorkflowService(BaseService):
             elif node_type == NodeType.DATASET_RETRIEVAL.value:
                 inputs_dict, outputs = self._run_dataset_retrieval_node(session, node, state, account)
             elif node_type == NodeType.LLM.value:
-                inputs_dict, outputs = self._run_llm_node(node, state)
+                inputs_dict, outputs = self._run_llm_node(session, node, state, account)
             elif node_type == NodeType.END.value:
                 inputs_dict = {}
                 outputs = self._extract_variables(node.get("outputs", []), state)
@@ -307,10 +307,16 @@ class WorkflowService(BaseService):
             outputs[name] = self._coerce_variable_value(value, variable.get("type"))
         return outputs
 
-    def _run_llm_node(self, node: dict[str, Any], state: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    def _run_llm_node(
+        self,
+        session: Session,
+        node: dict[str, Any],
+        state: dict[str, Any],
+        account: Account,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         inputs_dict = self._extract_variables(node.get("inputs", []), state)
         prompt = self._render_template(str(node.get("prompt") or ""), inputs_dict)
-        llm = LanguageModelService().load_language_model(node.get("model_config") or {})
+        llm = LanguageModelService().load_language_model(node.get("model_config") or {}, session, account)
         answer = ChatCompletionRuntime().complete(
             model=llm,
             query=prompt,

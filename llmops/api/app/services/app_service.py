@@ -448,7 +448,7 @@ class AppService(BaseService):
                 )
                 return
             else:
-                llm = LanguageModelService().load_language_model(config.get("model_config", {}))
+                llm = LanguageModelService().load_language_model(config.get("model_config", {}), session, account)
                 history = TokenBufferMemory(session, conversation.id).get_history_messages(config["dialog_round"])
                 capability_context = ""
                 capabilities = self._build_runtime_capabilities(session, config, account)

@@ -143,7 +143,7 @@ watch(
                   size="mini"
                   type="text"
                   class="text-gray-700! shrink-0"
-                  @click="() => removeFormInputField(idx)"
+                  @click="() => removeFormInputField(Number(idx))"
                 >
                   <template #icon>
                     <icon-close />
