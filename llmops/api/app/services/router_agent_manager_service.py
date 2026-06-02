@@ -1,4 +1,3 @@
-import json
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -6,12 +5,12 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import FailException, NotFoundException
-from app.domain.agent_runtime.protocols import RouterPlan, RouterPlanStep
+from app.domain.agent_runtime.protocols import RouterPlan, RouterPlanStep, WorkerInvocation, WorkerResult
 from app.domain.agent_runtime.router_runtime import RouterRuntime
+from app.domain.agent_runtime.worker_runtime import WorkerRuntime
 from app.models.account import Account
 from app.models.agent import Agent, AgentBinding, AgentVersion
 from app.models.task import AgentPlan, AgentStep, AgentTask
-from app.schemas.app import DebugChatRequest
 from app.services.app_service import AppService
 from app.services.base_service import BaseService
 from app.services.task_engine_service import TaskEngineService, TaskStatus
@@ -41,12 +40,14 @@ class RouterAgentManagerService(BaseService):
         *,
         task_engine: TaskEngineService | None = None,
         router_runtime: RouterRuntime | None = None,
+        worker_runtime: WorkerRuntime | None = None,
         app_service: AppService | None = None,
         trace_service: TraceService | None = None,
     ) -> None:
         self.task_engine = task_engine or TaskEngineService()
         self.router_runtime = router_runtime or RouterRuntime()
         self.app_service = app_service or AppService()
+        self.worker_runtime = worker_runtime or WorkerRuntime(app_service=self.app_service)
         self.trace_service = trace_service or TraceService()
 
     def create_router_agent(
@@ -335,6 +336,7 @@ class RouterAgentManagerService(BaseService):
         for step in run.steps:
             self.task_engine.start_step(session, step)
             worker = self.get_worker_agent(session, run.task.tenant_id, step.worker_agent_id)
+            invocation = self._build_worker_invocation(run=run, step=step, worker=worker, account=account)
             self.trace_service.record(
                 session,
                 tenant_id=run.task.tenant_id,
@@ -347,12 +349,7 @@ class RouterAgentManagerService(BaseService):
             worker_call = self.task_engine.record_worker_call(
                 session,
                 step=step,
-                invocation_json={
-                    "worker_agent_id": str(worker.id),
-                    "target_ref_type": worker.target_ref_type,
-                    "target_ref_id": worker.target_ref_id,
-                    "input": step.input_json,
-                },
+                invocation_json=invocation.model_dump(mode="json"),
             )
             self.task_engine.start_worker_call(session, worker_call)
             self.trace_service.record(
@@ -367,10 +364,11 @@ class RouterAgentManagerService(BaseService):
                     "worker_agent_id": str(worker.id),
                     "target_ref_type": worker.target_ref_type,
                     "target_ref_id": worker.target_ref_id,
+                    "execution_agent_type": invocation.execution_policy.get("execution_agent_type"),
                 },
             )
             try:
-                output = self._invoke_worker(session, worker, step.input_json, account)
+                worker_result = self._invoke_worker(session, worker, invocation, account)
             except Exception as exc:
                 self.task_engine.complete_worker_call(
                     session,
@@ -407,6 +405,46 @@ class RouterAgentManagerService(BaseService):
                 )
                 return run
 
+            output = self._worker_result_to_output(worker_result)
+            self._record_agent_events(session, run=run, step=step, worker_call=worker_call, worker_result=worker_result)
+            if worker_result.status != TaskStatus.SUCCEEDED.value:
+                self.task_engine.complete_worker_call(
+                    session,
+                    worker_call,
+                    status=self._worker_terminal_status(worker_result),
+                    result_json=output,
+                )
+                self.task_engine.fail_step(
+                    session,
+                    step,
+                    error_code=worker_result.error_code or "worker_execution_failed",
+                    error_message=worker_result.summary or "Worker execution failed",
+                )
+                self.task_engine.fail_task(
+                    session,
+                    run.task,
+                    error_code=worker_result.error_code or "worker_execution_failed",
+                    error_message=worker_result.summary or "Worker execution failed",
+                    final_result={"step_key": step.step_key, "worker_result": output},
+                )
+                self.trace_service.record(
+                    session,
+                    tenant_id=run.task.tenant_id,
+                    event_type="worker.call.failed",
+                    task=run.task,
+                    plan=run.plan,
+                    step=step,
+                    worker_call=worker_call,
+                    payload={
+                        "step_key": step.step_key,
+                        "worker_agent_id": str(worker.id),
+                        "status": worker_result.status,
+                        "error_code": worker_result.error_code,
+                        "summary": worker_result.summary,
+                    },
+                )
+                return run
+
             self.task_engine.complete_worker_call(session, worker_call, result_json=output)
             self.task_engine.succeed_step(session, step, output_json=output)
             step_outputs.append({"step_key": step.step_key, "worker_agent_id": str(worker.id), "output": output})
@@ -422,6 +460,7 @@ class RouterAgentManagerService(BaseService):
                     "step_key": step.step_key,
                     "worker_agent_id": str(worker.id),
                     "answer_length": len(str(output.get("answer") or "")),
+                    "worker_result_status": worker_result.status,
                 },
             )
             self.trace_service.record(
@@ -495,38 +534,98 @@ class RouterAgentManagerService(BaseService):
         requested = {str(worker_id) for worker_id in requested_worker_ids}
         return [worker for worker in workers if str(worker.id) in requested]
 
+    def _build_worker_invocation(
+        self,
+        *,
+        run: RouterManagerRunResult,
+        step: AgentStep,
+        worker: Agent,
+        account: Account,
+    ) -> WorkerInvocation:
+        return WorkerInvocation(
+            trace_id=run.trace_id,
+            tenant_id=run.task.tenant_id,
+            account_id=account.id,
+            task_id=run.task.id,
+            plan_id=run.plan.id,
+            step_id=step.id,
+            router_id=str(run.task.router_agent_id),
+            worker_id=str(worker.id),
+            user={
+                "id": str(account.id),
+                "name": account.name,
+                "email": account.email,
+            },
+            task=step.input_json,
+            context={
+                "session_id": str(run.task.session_id) if run.task.session_id else None,
+                "conversation_id": str(run.task.conversation_id) if run.task.conversation_id else None,
+                "worker_name": worker.name,
+                "input_files": [],
+                "artifacts": [],
+            },
+            execution_policy={
+                "execution_agent_type": self._worker_execution_agent_type(worker),
+                "target_ref_type": worker.target_ref_type,
+                "target_ref_id": worker.target_ref_id,
+            },
+        )
+
     def _invoke_worker(
         self,
         session: Session,
         worker: Agent,
-        input_json: dict[str, Any],
+        invocation: WorkerInvocation,
         account: Account,
-    ) -> dict[str, Any]:
-        if worker.target_ref_type != "app":
-            raise FailException(f"Unsupported worker target: {worker.target_ref_type or 'empty'}")
-        try:
-            app_id = uuid.UUID(worker.target_ref_id)
-        except ValueError as exc:
-            raise FailException("Worker app target ref is invalid") from exc
+    ) -> WorkerResult:
+        return self.worker_runtime.invoke(
+            invocation,
+            session=session,
+            worker=worker,
+            account=account,
+        )
 
-        task = str(input_json.get("task") or input_json.get("user_input", {}).get("query") or "")
-        chunks = list(self.app_service.debug_chat(session, app_id, DebugChatRequest(query=task), account))
-        return {"answer": self._extract_answer_from_sse(chunks), "events": chunks}
+    def _record_agent_events(
+        self,
+        session: Session,
+        *,
+        run: RouterManagerRunResult,
+        step: AgentStep,
+        worker_call,
+        worker_result: WorkerResult,
+    ) -> None:
+        for event in worker_result.events:
+            self.trace_service.record(
+                session,
+                tenant_id=run.task.tenant_id,
+                event_type=f"worker.event.{event.event_type}",
+                task=run.task,
+                plan=run.plan,
+                step=step,
+                worker_call=worker_call,
+                payload=event.model_dump(mode="json"),
+            )
 
     @staticmethod
-    def _extract_answer_from_sse(chunks: list[str]) -> str:
-        answer_parts = []
-        for chunk in chunks:
-            for line in str(chunk).splitlines():
-                if not line.startswith("data:"):
-                    continue
-                try:
-                    payload = json.loads(line[5:])
-                except json.JSONDecodeError:
-                    continue
-                if payload.get("answer"):
-                    answer_parts.append(str(payload["answer"]))
-        return "".join(answer_parts)
+    def _worker_execution_agent_type(worker: Agent) -> str:
+        if worker.target_ref_type == "app":
+            return "react_worker"
+        return "react_worker"
+
+    @staticmethod
+    def _worker_result_to_output(worker_result: WorkerResult) -> dict[str, Any]:
+        output = worker_result.model_dump(mode="json")
+        output["answer"] = str(worker_result.data.get("answer") or worker_result.summary or "")
+        return output
+
+    @staticmethod
+    def _worker_terminal_status(worker_result: WorkerResult) -> TaskStatus:
+        try:
+            status = TaskStatus(worker_result.status)
+        except ValueError:
+            return TaskStatus.FAILED
+        terminal_statuses = {TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELLED}
+        return status if status in terminal_statuses else TaskStatus.FAILED
 
     @staticmethod
     def _next_agent_version(session: Session, agent_id: uuid.UUID) -> int:

@@ -2,11 +2,13 @@ import uuid
 
 import pytest
 
+from app.core.agent import AgentThought, QueueEvent
 from app.core.exceptions import FailException
 from app.domain.agent_runtime.protocols import RouterPlan, RouterPlanStep
 from app.domain.agent_runtime.router_runtime import RouterRuntime
 from app.models.account import Account
 from app.models.agent import Agent
+from app.models.task import WorkerCall
 from app.models.trace import TraceEvent
 from app.services.router_agent_manager_service import RouterAgentManagerService
 from app.services.task_engine_service import TaskStatus
@@ -168,10 +170,17 @@ def test_create_manager_task_waits_when_plan_requires_approval() -> None:
 
 def test_execute_manager_run_steps_invokes_legacy_app_worker() -> None:
     class FakeAppService:
-        def debug_chat(self, session, app_id, req, account):  # noqa: ANN001
-            assert req.query == "summarize sales notes"
-            yield 'event: agent_message\ndata:{"answer":"summary"}\n\n'
-            yield 'event: agent_end\ndata:{"answer":""}\n\n'
+        def run_app_worker(self, session, *, app_id, task_id, query, image_urls, account):  # noqa: ANN001
+            assert query == "summarize sales notes"
+            assert image_urls == []
+            yield AgentThought(
+                id=uuid.uuid4(),
+                task_id=task_id,
+                event=QueueEvent.AGENT_MESSAGE,
+                thought="summary",
+                answer="summary",
+            )
+            yield AgentThought(id=uuid.uuid4(), task_id=task_id, event=QueueEvent.AGENT_END)
 
     class FakeRouterService(RouterAgentManagerService):
         def get_worker_agent(self, session, tenant_id, agent_id):  # noqa: ANN001
@@ -211,12 +220,20 @@ def test_execute_manager_run_steps_invokes_legacy_app_worker() -> None:
     assert run.task.status == TaskStatus.SUCCEEDED
     assert run.steps[0].status == TaskStatus.SUCCEEDED
     assert run.steps[0].output_json["answer"] == "summary"
+    assert run.steps[0].output_json["schema_version"] == "worker_result_v1"
+    assert run.steps[0].output_json["data"]["answer"] == "summary"
     assert run.task.final_result["steps"][0]["output"]["answer"] == "summary"
+    worker_calls = [item for item in session.added if isinstance(item, WorkerCall)]
+    assert worker_calls[0].invocation_json["schema_version"] == "worker_invocation_v1"
+    assert worker_calls[0].invocation_json["execution_policy"]["execution_agent_type"] == "react_worker"
+    assert worker_calls[0].result_json["schema_version"] == "worker_result_v1"
     trace_events = [item for item in session.added if isinstance(item, TraceEvent)]
     assert [event.event_type for event in trace_events] == [
         "router.manager_run.created",
         "router.step.started",
         "worker.call.started",
+        "worker.event.agent_message",
+        "worker.event.agent_end",
         "worker.call.succeeded",
         "router.step.succeeded",
         "router.manager_run.succeeded",

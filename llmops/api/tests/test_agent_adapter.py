@@ -34,6 +34,7 @@ def test_legacy_app_worker_descriptor_classifies_app_as_worker_agent() -> None:
     assert descriptor.to_agent_payload()["visibility_scope"] == {"account_id": str(app.account_id)}
     assert descriptor.to_version_payload()["model_config"]["model"] == "gpt-4o-mini"
     assert descriptor.to_version_payload()["prompt_config"]["preset_prompt"] == "Help users"
+    assert descriptor.to_version_payload()["worker_config"]["execution_agent_type"] == "react_worker"
     assert [binding["type"] for binding in descriptor.capability_bindings] == [
         "tool",
         "workflow",

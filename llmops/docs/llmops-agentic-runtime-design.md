@@ -443,7 +443,344 @@ llmops Worker Agent
 - 不把 A2A 作为内部核心协议。
 - 不直接暴露 shell/browser/file 工具给 LLM，必须先经过平台 Capability、权限和审计设计。
 
-## 10. 结论
+### 9.7 更细代码调研：llmops 已有能力
+
+进一步看代码后，`llmops` 当前已经具备不少 ReActWorkerAgent 所需的执行能力。第一阶段不应重做这些能力，而应该把它们从 App 调试链路中抽成 Worker 执行链路。
+
+已有能力如下：
+
+| 能力 | 当前代码位置 | 当前实现 | 对 ReActWorkerAgent 的意义 |
+| --- | --- | --- | --- |
+| ReAct 式迭代执行 | `llmops/api/app/services/app_service.py::_run_iterative_agent()` | 支持 provider tool_call；也支持从模型文本中解析 JSON 工具调用；工具结果会追加回 messages | 可以作为 App-backed ReAct 执行内核，不需要从 `agentic` 重写一套 |
+| 工具 schema 构建 | `AppService._capabilities_to_openai_tools()`、`ToolCapabilityAdapter` | 把 runtime capability 转成 LLM tools schema | 可直接服务 ReActWorkerAgent 的工具声明 |
+| 工具执行 | `AppService._invoke_runtime_capability()` | 支持 builtin tool、api tool、dataset/knowledge_base、workflow、create_app | 第一阶段 ReActWorkerAgent 可以复用这些平台工具 |
+| Builtin Tool | `llmops/api/app/core/tools/builtin_tools/runtime.py` | `google_serper`、`duckduckgo_search`、`wikipedia_search`、`dalle3` 等通过 runtime tool 调用 | 已有基础搜索/生成类工具，不必搬 `agentic` SearchTool |
+| API Tool | `llmops/api/app/core/tools/api_tools/providers/api_provider_manager.py` | 按 API Tool 配置发起调用 | 外部 API 能力已是平台工具 |
+| RAG | `AppService._retrieve_dataset_context()`、`DatasetService.hit()` | 支持 semantic/full_text/hybrid，向量检索失败可回退词法检索 | 已可作为 knowledge_base capability |
+| Workflow | `WorkflowService.validate_publish_graph()`、`_ordered_nodes()`、`_execute_node()` | 支持 start、llm、tool、dataset_retrieval、code、end 等节点执行 | Workflow 可作为 ReActWorkerAgent 的一个 capability 或独立 target executor |
+| App -> Worker 描述 | `LegacyAppWorkerAdapter.app_to_worker_descriptor()` | 已把 App 的 model/prompt/tools/workflows/datasets 转成 WorkerAgentDescriptor | 已有 Worker Agent 资产化入口 |
+| Router manager 最小闭环 | `RouterAgentManagerService` | 可创建 router/worker、绑定 worker、生成规则计划、执行 app worker、写 task/step/worker_call/trace | 只需把 `_invoke_worker()` 换成标准 WorkerRuntime 入口 |
+
+因此，`llmops` 当前缺的不是“有没有工具调用/RAG/workflow”，而是：
+
+- App 调试执行和 Worker 执行没有分离。
+- `WorkerRuntime` 仍是 placeholder。
+- `WorkerCall.invocation_json/result_json` 还不是标准 `WorkerInvocation/WorkerResult`。
+- App 的 `QueueEvent/AgentThought` 还没有标准映射为 `AgentEvent`。
+- 文件输入和产物输出还没有进入 `WorkerInvocation.context` 和 `WorkerResult.artifacts`。
+
+### 9.8 更细代码调研：agentic 可借鉴能力
+
+`agentic` 的 ReAct 执行能力更完整，但它是围绕会话型自主 Agent 构建的，不适合整体搬进 `llmops`。
+
+| 能力 | 当前代码位置 | 实现特点 | 对 llmops 的处理 |
+| --- | --- | --- | --- |
+| ReAct 单步执行 | `agentic/api/app/core/agent/react.py::execute_step()` | 输入 plan/step/message，输出 StepEvent/ToolEvent/MessageEvent/WaitEvent/ErrorEvent | 借鉴事件语义，不直接复用 Plan/Step |
+| LLM/tool 循环 | `agentic/api/app/core/agent/base.py::invoke()` | LLM 每次最多取一个 tool_call；工具结果写回 memory；支持 max_iterations | llmops 已有类似循环，可补 max_tool_calls/execution_policy |
+| Memory | `BaseAgent._ensure_memory()`、`compact_memory()`、`roll_back()` | 按 session_id + agent.name 维护 memory；用户追问时处理未完成 tool_call | llmops 第一阶段可先不做长期 memory，只预留 waiting_user/roll_back 策略 |
+| 用户追问 | `MessageTool.message_ask_user()` + `WaitEvent` | 工具调用可中断任务等待用户输入 | llmops 需要区分 `waiting_user` 和 `waiting_approval` |
+| 文件/sandbox | `AgentTaskRunner._sync_message_attachments_to_sandbox()`、`_sync_message_attachments_to_storage()` | 用户附件进 sandbox，产物文件回存储 | llmops 应改成 Files + ArtifactRef，不暴露 sandbox path |
+| Browser/Shell/File 工具 | `agentic/api/app/core/tools/browser.py`、`shell.py`、`file.py` | 直接给 LLM 操作 sandbox/browser/shell/file | llmops 后续作为 SandboxExecutor/Capability 接入，需权限和审计 |
+| MCP | `agentic/api/app/core/tools/mcp.py` | 支持 stdio/sse/streamable_http，缓存 ClientSession 和 tool schema | llmops 可借鉴 manager/executor 结构，但配置和密钥要走平台 |
+| A2A | `agentic/api/app/core/tools/a2a.py` | 缓存 agent card，调用远程 agent | llmops 当前只预留 A2AExecutor，不把 A2A 放进内部核心协议 |
+| 事件流 | `PlannerReActFlow` + `AgentTaskRunner` | Redis Stream 输入输出，会话保存事件 | llmops 保留 SQL task/trace，SSE 只是展示传输 |
+
+`agentic` 最值得吸收的是四类结构：
+
+- ReAct 单步事件语义。
+- 用户等待/中断恢复语义。
+- sandbox 文件同步和产物回存储流程。
+- MCP/A2A 的 executor 管理思路。
+
+但 `agentic` 的 `PlannerReActFlow`、session memory、Redis Stream 任务模型、Plan/Step 实体都不应该直接替换 `llmops` 当前的平台模型。
+
+### 9.9 最小改动判断
+
+如果当前阶段只做 ReActWorkerAgent 对齐，`llmops` 改动应当是小到中等，且集中在少数后端文件。
+
+最小改动路径：
+
+1. 在 `protocols.py` 补齐协议字段和新实体。
+   - `WorkerInvocation.account_id` 或明确 `tenant_id` 兼容策略。
+   - `WorkerInvocation.context.input_files/artifacts`。
+   - `WorkerResult.events/artifacts/actions/evidence/errors`。
+   - `AgentEvent`、`ArtifactRef`。
+
+2. 从 `AppService.debug_chat()` 抽出可复用执行内核。
+   - 当前 `debug_chat()` 负责建 conversation/message、格式化 SSE、保存消息。
+   - 应新增内部执行方法，例如 `run_app_agent(...) -> list/iterator[AgentThought]`。
+   - `debug_chat()` 继续做 SSE 包装。
+   - `ReActWorkerAgent` 直接消费 `AgentThought`，不反解析 SSE。
+
+3. 新增 `ReActWorkerAgent` 和 executor 分层。
+
+```text
+WorkerRuntime
+  -> ReActWorkerAgent
+      -> AppExecutor        第一阶段真实实现
+      -> A2AExecutor        只预留接口和 target_ref_type
+      -> MCPToolExecutor    只预留接口和 target_ref_type
+      -> SandboxExecutor    后续接 browser/shell/file
+```
+
+4. 改 `WorkerRuntime.invoke()`。
+   - 从 placeholder 改为读取 `execution_agent_type`。
+   - 第一阶段只派发 `react_worker`。
+   - 错误返回结构化 `WorkerResult`。
+
+5. 改 `RouterAgentManagerService.execute_manager_run_steps()`。
+   - 保留当前 `manager_rule_v1` 规则计划。
+   - 把旧 `_invoke_worker()` 直接调用 AppService 的逻辑替换成 `WorkerInvocation -> WorkerRuntime.invoke()`。
+   - 保存标准 invocation/result 到 `WorkerCall`。
+   - 继续写现有 trace event。
+
+6. App 转 Worker 时增加执行配置。
+   - 在 `LegacyAppWorkerAdapter` 的 `worker_config` 中加 `execution_agent_type = react_worker`。
+   - 不需要新增 Agent 类型。
+
+不建议现在改：
+
+- 不改 Router plan 生成逻辑。
+- 不新建 PlannerAgent。
+- 不改 UI 大结构。
+- 不做完整 A2A/MCP/sandbox 实现。
+- 不迁移数据库表；优先使用现有 JSONB 字段承载 invocation/result/config。
+
+所以你的判断基本成立：`llmops` 已有不少能力，当前这一步改动不应大。真正要避免的是把 `ReActWorkerAgent` 做成“新的一整套 agentic runtime”。正确做法是把现有 `AppService` 的 ReAct 能力抽象为 Worker 执行内核，再把 `agentic` 的 sandbox/A2A/MCP 能力作为后续 executor 插件补进来。
+
+### 9.10 对后续 Planner 的影响
+
+如果当前阶段按上述方式完成，后续新增 Planner Agent 时，对 ReActWorkerAgent 的核心改动会很小：
+
+- Planner 只生成 `RouterPlan`。
+- Runtime 只把 plan step 转成 `WorkerInvocation`。
+- ReActWorkerAgent 继续只执行单步。
+- A2A/MCP/sandbox 只作为新的 executor/capability 增加。
+- WorkerResult 仍是 Planner 判断重试、跳过、重规划、汇总的唯一输入。
+
+也就是说，当前阶段只要把 `WorkerInvocation/WorkerResult/AgentEvent/ArtifactRef` 定稳，后续 Planner 接入不会推翻 ReActWorkerAgent。
+
+## 10. 当前阶段待执行落地计划
+
+本阶段目标只聚焦一件事：把 `llmops` 现有 Worker Agent 对齐到标准 ReActWorkerAgent 执行入口。Planner Agent 后续再做。
+
+### 10.1 产品与对外类型确认
+
+对外暴露的 AI 应用类型保持两类核心 Agent：
+
+```text
+AI 应用
+  -> Planner Agent App
+  -> Worker Agent App
+```
+
+其中：
+
+- `Planner Agent` 是面向用户的规划型 App，可发布、调试、调用，负责生成计划、调度 Worker、汇总结果。
+- `Worker Agent` 也是一种 App，可单独对外暴露，也可作为 Planner Agent 绑定的能力被调度。
+- `ReActWorkerAgent` 不作为第三类产品暴露，只作为 Worker Agent 背后的执行引擎。
+- 当前阶段不改 UI，先完成后端执行协议和运行入口。
+
+### 10.2 本阶段实施范围
+
+本阶段实施：
+
+1. 补齐 Worker 执行协议。
+2. 从现有 App 调试链路中抽出可复用执行内核。
+3. 新增 ReActWorkerAgent 执行层。
+4. 让 WorkerRuntime 从 placeholder 变成真实派发入口。
+5. 让 RouterAgentManagerService 通过标准 WorkerRuntime 调用 Worker。
+6. App 转 Worker 时标记执行引擎类型。
+7. 增加后端测试，保证现有 App Worker 行为兼容。
+
+本阶段不实施：
+
+- 不做 Planner Agent。
+- 不做 AutonomousAgentRuntime。
+- 不做 Agent Task 执行台 UI。
+- 不接完整 A2A/MCP/Sandbox。
+- 不改现有 AI 应用 UI。
+- 不新增大规模 DB migration；优先使用现有 JSONB 字段。
+
+### 10.3 后端任务清单
+
+#### 任务 1：协议补齐
+
+修改 `llmops/api/app/domain/agent_runtime/protocols.py`：
+
+- `WorkerInvocation` 增加或明确：
+  - `account_id`
+  - `context.input_files`
+  - `context.artifacts`
+  - `execution_policy.timeout`
+  - `execution_policy.max_tool_calls`
+  - `execution_policy.approval_policy`
+- `WorkerResult` 增加或明确：
+  - `status`
+  - `summary`
+  - `data`
+  - `actions`
+  - `evidence`
+  - `artifacts`
+  - `events`
+  - `retryable`
+  - `error_code`
+  - `errors`
+- 新增 `AgentEvent`。
+- 新增 `ArtifactRef`。
+
+状态建议：
+
+```text
+succeeded
+failed
+cancelled
+waiting_user
+waiting_approval
+```
+
+#### 任务 2：抽出 App 执行内核
+
+修改 `llmops/api/app/services/app_service.py`：
+
+- 保留 `debug_chat()` 作为 SSE 调试入口。
+- 从 `debug_chat()` / `_run_debug_agent()` 中抽出可复用内部方法，例如：
+
+```text
+run_app_agent(...) -> Iterator[AgentThought]
+```
+
+- `debug_chat()` 继续负责：
+  - 创建 debug conversation/message。
+  - 把 `AgentThought` 格式化为 SSE。
+  - 保存调试消息。
+- ReActWorkerAgent 直接消费 `AgentThought`，避免反解析 SSE 字符串。
+
+#### 任务 3：新增 ReActWorkerAgent
+
+新增执行层文件，建议路径：
+
+```text
+llmops/api/app/domain/agent_runtime/react_worker_agent.py
+```
+
+职责：
+
+- 接收 `WorkerInvocation`。
+- 加载 Worker Agent 与 AgentVersion。
+- 根据 `target_ref_type` 选择 executor。
+- 第一阶段只真实支持 `target_ref_type = app`。
+- 把 `AgentThought / QueueEvent` 映射为 `AgentEvent`。
+- 返回标准 `WorkerResult`。
+- 不创建、不修改、不重排全局计划。
+
+建议内部结构：
+
+```text
+ReActWorkerAgent
+  -> AppExecutor        第一阶段实现
+  -> A2AExecutor        只预留
+  -> MCPToolExecutor    只预留
+  -> SandboxExecutor    后续实现
+```
+
+#### 任务 4：改造 WorkerRuntime
+
+修改 `llmops/api/app/domain/agent_runtime/worker_runtime.py`：
+
+- 从 placeholder 改为真实派发。
+- 根据 `AgentVersion.worker_config.execution_agent_type` 选择执行引擎。
+- 第一阶段支持：
+
+```text
+execution_agent_type = react_worker
+```
+
+- 不支持的执行类型返回结构化失败 `WorkerResult`，不要让异常直接穿透 Router。
+
+#### 任务 5：改造 RouterAgentManagerService 调用路径
+
+修改 `llmops/api/app/services/router_agent_manager_service.py`：
+
+- 保留 `build_manager_plan()` 的 `manager_rule_v1` 规则计划。
+- `execute_manager_run_steps()` 中：
+  - 构造 `WorkerInvocation`。
+  - 保存到 `WorkerCall.invocation_json`。
+  - 调用 `WorkerRuntime.invoke()`。
+  - 保存 `WorkerResult` 到 `WorkerCall.result_json`。
+  - 将 `WorkerResult.status` 映射为 step/task 状态。
+  - 将关键 `AgentEvent` 写入 `TraceEvent`。
+
+保留兼容字段：
+
+- `output["answer"]` 继续存在，避免现有测试和调用方被破坏。
+
+#### 任务 6：App 转 Worker 标记执行引擎
+
+修改 `llmops/api/app/services/agent_adapter_service.py`：
+
+- 在 `LegacyAppWorkerAdapter._worker_config()` 中增加：
+
+```json
+{
+  "execution_agent_type": "react_worker"
+}
+```
+
+- `target_ref_type = app` 保持不变。
+- `runtime_type = worker` 保持不变。
+
+#### 任务 7：测试覆盖
+
+建议新增或更新测试：
+
+- `test_agent_adapter.py`
+  - App 转 Worker 后 `worker_config.execution_agent_type = react_worker`。
+- `test_worker_runtime.py`
+  - `WorkerRuntime` 能派发到 ReActWorkerAgent。
+  - AppExecutor 能把 `AgentThought` 转成 `WorkerResult`。
+- `test_router_agent_manager_service.py`
+  - `WorkerCall.invocation_json` 是标准 `WorkerInvocation`。
+  - `WorkerCall.result_json` 是标准 `WorkerResult`。
+  - 旧的 `answer` 字段仍兼容。
+- `test_agent_debug_runtime.py`
+  - `debug_chat()` 仍能正常 SSE 输出，避免抽内核破坏现有调试。
+
+### 10.4 验收标准
+
+本阶段完成后应满足：
+
+- 现有 App Worker 能通过 `WorkerRuntime.invoke()` 执行。
+- `RouterAgentManagerService` 不再直接调用 `AppService.debug_chat()` 执行 Worker。
+- `WorkerCall.invocation_json` 保存标准 `WorkerInvocation`。
+- `WorkerCall.result_json` 保存标准 `WorkerResult`。
+- App 调试入口 `debug_chat()` 行为保持兼容。
+- 工具调用、RAG、Workflow 调用事件能映射为 `AgentEvent`。
+- `WorkerResult` 中保留 `answer` 兼容字段。
+- 不改 UI 也能通过现有测试和后端调用完成执行闭环。
+
+### 10.5 实施顺序
+
+推荐按以下顺序实施：
+
+1. 协议补齐。
+2. 抽出 App 执行内核。
+3. 新增 ReActWorkerAgent 与 AppExecutor。
+4. 改 WorkerRuntime 派发。
+5. 改 RouterAgentManagerService 调用路径。
+6. App 转 Worker 增加 `execution_agent_type`。
+7. 补测试。
+8. 跑后端相关测试。
+
+### 10.6 风险点
+
+- 抽出 App 执行内核时不要破坏 `debug_chat()`、WebApp、OpenAPI、Assistant Agent 现有链路。
+- 不要把 `ReActWorkerAgent` 写成只会反解析 SSE 的包装器。
+- 不要让 Worker 修改全局计划。
+- 不要在本阶段把 A2A/MCP/Sandbox 做实，避免范围膨胀。
+- `tenant_id` 与 `account_id` 需要先兼容处理，避免牵出大规模迁移。
+
+## 11. 结论
 
 `llmops` 的 Agent 应该平台化，`agentic` 的 Agent 应该能力化。
 

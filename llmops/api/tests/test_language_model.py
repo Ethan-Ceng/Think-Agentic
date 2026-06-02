@@ -21,6 +21,7 @@ def test_language_model_manager_loads_yaml_metadata() -> None:
     assert model.model_name == "gpt-4o-mini"
     assert model.parameters[0].name == "temperature"
     assert model.parameters[0].default == 1
+    assert next(parameter for parameter in model.parameters if parameter.name == "top_p").default == 0.85
 
 
 def test_language_model_service_keeps_legacy_fields() -> None:

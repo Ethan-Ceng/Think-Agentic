@@ -21,6 +21,21 @@ def test_app_config_normalization_keeps_defaults() -> None:
     assert isinstance(config["workflows"][0], str)
 
 
+def test_app_config_normalization_repairs_invalid_top_p() -> None:
+    config = AppService._normalize_config(
+        {
+            "model_config": {
+                "provider": "deepseek",
+                "model": "deepseek-v4-pro",
+                "parameters": {"top_p": 0, "temperature": 1},
+            }
+        }
+    )
+
+    assert config["model_config"]["parameters"]["top_p"] == 0.85
+    assert config["model_config"]["parameters"]["temperature"] == 1
+
+
 def test_app_config_tool_metadata_keeps_legacy_shape() -> None:
     tools = AppService()._tool_metadata(  # noqa: SLF001
         None,

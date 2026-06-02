@@ -411,8 +411,52 @@ class AppService(BaseService):
         req,
         account: Account,
     ):
+        yield from self.run_app_agent(
+            session=session,
+            task_id=task_id,
+            config=config,
+            query=req.query,
+            image_urls=req.image_urls,
+            account=account,
+            conversation_id=conversation.id,
+            conversation_summary=conversation.summary,
+        )
+
+    def run_app_worker(
+        self,
+        session: Session,
+        *,
+        app_id: UUID,
+        task_id: UUID,
+        query: str,
+        image_urls: list[str],
+        account: Account,
+    ):
+        app = self.get_app(session, app_id, account)
+        config = self._config_to_dict(self.get_or_create_draft_config(session, app))
+        yield from self.run_app_agent(
+            session=session,
+            task_id=task_id,
+            config=config,
+            query=query,
+            image_urls=image_urls,
+            account=account,
+        )
+
+    def run_app_agent(
+        self,
+        session: Session,
+        *,
+        task_id: UUID,
+        config: dict[str, Any],
+        query: str,
+        image_urls: list[str],
+        account: Account,
+        conversation_id: UUID | None = None,
+        conversation_summary: str = "",
+    ):
         start_at = time.perf_counter()
-        long_term_memory = conversation.summary if config["long_term_memory"].get("enable", False) else ""
+        long_term_memory = conversation_summary if config["long_term_memory"].get("enable", False) else ""
         if long_term_memory:
             yield AgentThought(
                 id=uuid4(),
@@ -421,7 +465,7 @@ class AppService(BaseService):
                 observation=long_term_memory,
             )
 
-        dataset_context, dataset_hits = self._retrieve_dataset_context(session, config, req.query, account)
+        dataset_context, dataset_hits = self._retrieve_dataset_context(session, config, query, account)
         if dataset_hits:
             yield AgentThought(
                 id=uuid4(),
@@ -429,27 +473,31 @@ class AppService(BaseService):
                 event=QueueEvent.DATASET_RETRIEVAL,
                 observation=json.dumps(dataset_hits, ensure_ascii=False, default=str),
                 tool="dataset_retrieval",
-                tool_input={"query": req.query},
+                tool_input={"query": query},
             )
 
         if AgentQueueManager.is_stopped(task_id):
             yield AgentThought(id=uuid4(), task_id=task_id, event=QueueEvent.STOP)
             return
 
-        input_review_response = self._input_review_response(req.query, config["review_config"])
+        input_review_response = self._input_review_response(query, config["review_config"])
         try:
             if input_review_response is not None:
                 yield from self._yield_answer(
                     task_id=task_id,
-                    query=req.query,
+                    query=query,
                     answer=input_review_response,
                     start_at=start_at,
-                    messages=[{"role": "user", "content": req.query}],
+                    messages=[{"role": "user", "content": query}],
                 )
                 return
             else:
                 llm = LanguageModelService().load_language_model(config.get("model_config", {}), session, account)
-                history = TokenBufferMemory(session, conversation.id).get_history_messages(config["dialog_round"])
+                history = (
+                    TokenBufferMemory(session, conversation_id).get_history_messages(config["dialog_round"])
+                    if conversation_id
+                    else []
+                )
                 capability_context = ""
                 capabilities = self._build_runtime_capabilities(session, config, account)
                 if capabilities and not self._supports_iterative_capabilities(llm):
@@ -457,7 +505,7 @@ class AppService(BaseService):
                         session,
                         task_id,
                         config,
-                        req.query,
+                        query,
                         account,
                     )
                     yield from capability_thoughts
@@ -476,8 +524,8 @@ class AppService(BaseService):
                     yield from self._run_iterative_agent(
                         session=session,
                         task_id=task_id,
-                        query=req.query,
-                        image_urls=req.image_urls,
+                        query=query,
+                        image_urls=image_urls,
                         history=history,
                         system_prompt=system_prompt,
                         llm=llm,
@@ -490,17 +538,17 @@ class AppService(BaseService):
 
                 answer = ChatCompletionRuntime().complete(
                     model=llm,
-                    query=req.query,
-                    image_urls=req.image_urls,
+                    query=query,
+                    image_urls=image_urls,
                     history=history,
                     system_prompt=system_prompt,
                 )
                 yield from self._yield_answer(
                     task_id=task_id,
-                    query=req.query,
+                    query=query,
                     answer=self._apply_output_review(answer, config["review_config"]),
                     start_at=start_at,
-                    messages=[{"role": "user", "content": req.query}],
+                    messages=[{"role": "user", "content": query}],
                 )
                 return
         except Exception as exc:
@@ -1363,7 +1411,9 @@ class AppService(BaseService):
     @staticmethod
     def _config_to_dict(config) -> dict[str, Any]:
         return {
-            "model_config": config.model_config or deepcopy(DEFAULT_APP_CONFIG["model_config"]),
+            "model_config": AppService._normalize_model_config(
+                config.model_config or deepcopy(DEFAULT_APP_CONFIG["model_config"])
+            ),
             "dialog_round": config.dialog_round,
             "preset_prompt": config.preset_prompt or "",
             "tools": config.tools or [],
@@ -1395,9 +1445,34 @@ class AppService(BaseService):
     def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
         normalized = deepcopy(DEFAULT_APP_CONFIG)
         normalized.update(config or {})
+        normalized["model_config"] = AppService._normalize_model_config(normalized.get("model_config"))
         normalized["tools"] = normalized["tools"] if isinstance(normalized["tools"], list) else []
         normalized["workflows"] = [str(item) for item in normalized["workflows"] or []]
         normalized["datasets"] = [str(item) for item in normalized["datasets"] or []]
+        return normalized
+
+    @staticmethod
+    def _normalize_model_config(model_config: dict[str, Any] | None) -> dict[str, Any]:
+        default_model_config = deepcopy(DEFAULT_APP_CONFIG["model_config"])
+        if not isinstance(model_config, dict):
+            return default_model_config
+
+        normalized = dict(model_config)
+        normalized["provider"] = str(normalized.get("provider") or default_model_config["provider"])
+        normalized["model"] = str(normalized.get("model") or default_model_config["model"])
+        parameters = normalized.get("parameters") if isinstance(normalized.get("parameters"), dict) else {}
+        normalized["parameters"] = dict(parameters)
+
+        top_p = normalized["parameters"].get("top_p")
+        if top_p is not None:
+            try:
+                top_p_value = float(top_p)
+            except (TypeError, ValueError):
+                top_p_value = 0
+            if not (0 < top_p_value <= 1):
+                normalized["parameters"]["top_p"] = default_model_config["parameters"]["top_p"]
+            elif top_p_value != top_p:
+                normalized["parameters"]["top_p"] = top_p_value
         return normalized
 
     @staticmethod

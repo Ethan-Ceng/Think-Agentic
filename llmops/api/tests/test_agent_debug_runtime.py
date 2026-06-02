@@ -51,6 +51,8 @@ def test_chat_runtime_keeps_deepseek_v4_parameters_and_reasoning_content() -> No
             "thinking_budget": 4096,
             "response_format": {"type": "json_object"},
             "temperature": 0.2,
+            "top_p": 0,
+            "max_tokens": 0,
             "unsupported": "drop",
         }
     )

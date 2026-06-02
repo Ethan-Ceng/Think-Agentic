@@ -165,7 +165,46 @@ class ChatCompletionRuntime:
             "thinking_budget",
             "response_format",
         }
-        return {key: value for key, value in parameters.items() if key in allowed and value is not None}
+        safe_parameters = {key: value for key, value in parameters.items() if key in allowed and value is not None}
+        if "top_p" in safe_parameters and not ChatCompletionRuntime._is_number_between(
+            safe_parameters["top_p"],
+            min_value=0,
+            max_value=1,
+            include_min=False,
+        ):
+            safe_parameters.pop("top_p")
+        if "max_tokens" in safe_parameters and not ChatCompletionRuntime._is_number_between(
+            safe_parameters["max_tokens"],
+            min_value=0,
+            include_min=False,
+        ):
+            safe_parameters.pop("max_tokens")
+        return safe_parameters
+
+    @staticmethod
+    def _is_number_between(
+        value: Any,
+        *,
+        min_value: float | None = None,
+        max_value: float | None = None,
+        include_min: bool = True,
+        include_max: bool = True,
+    ) -> bool:
+        if isinstance(value, bool):
+            return False
+        if not isinstance(value, (int, float)):
+            return False
+        if min_value is not None:
+            if include_min and value < min_value:
+                return False
+            if not include_min and value <= min_value:
+                return False
+        if max_value is not None:
+            if include_max and value > max_value:
+                return False
+            if not include_max and value >= max_value:
+                return False
+        return True
 
     @classmethod
     def _normalize_assistant_message(cls, message: dict[str, Any]) -> dict[str, Any]:

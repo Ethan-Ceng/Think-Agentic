@@ -128,6 +128,7 @@ class LegacyAppWorkerAdapter:
     @staticmethod
     def _worker_config(config: dict[str, Any]) -> dict[str, Any]:
         return {
+            "execution_agent_type": "react_worker",
             "dialog_round": config.get("dialog_round", 3),
             "retrieval_config": config.get("retrieval_config") or {},
             "long_term_memory": config.get("long_term_memory") or {},
