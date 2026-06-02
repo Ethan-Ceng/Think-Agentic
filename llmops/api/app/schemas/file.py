@@ -10,7 +10,8 @@ class FileCreateFolderRequest(BaseModel):
 
 
 class FileUpdateRequest(BaseModel):
-    name: str
+    name: str | None = None
+    parent_id: UUID | None = None
 
 
 class FileResponse(BaseModel):

@@ -45,12 +45,16 @@ const baseFetch = <T>(url: string, fetchOptions: FetchOptionType): Promise<T> =>
   if (method === 'GET' && params) {
     const paramsArray: string[] = []
     Object.keys(params).forEach((key) => {
-      paramsArray.push(`${key}=${encodeURIComponent(params[key])}`)
+      const value = params[key]
+      if (value === undefined || value === null) return
+      paramsArray.push(`${key}=${encodeURIComponent(value)}`)
     })
-    if (urlWithPrefix.search(/\?/) === -1) {
-      urlWithPrefix += `?${paramsArray.join('&')}`
-    } else {
-      urlWithPrefix += `&${paramsArray.join('&')}`
+    if (paramsArray.length > 0) {
+      if (urlWithPrefix.search(/\?/) === -1) {
+        urlWithPrefix += `?${paramsArray.join('&')}`
+      } else {
+        urlWithPrefix += `&${paramsArray.join('&')}`
+      }
     }
 
     delete options.params

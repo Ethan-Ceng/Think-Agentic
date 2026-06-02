@@ -87,9 +87,52 @@ class FileService(BaseService):
             raise FailException("File name is required")
         return self.update(session, self.get_file(session, account, file_id), name=name)
 
+    def move_file(self, session: Session, account: Account, file_id: UUID, parent_id: UUID | None) -> File:
+        file = self.get_file(session, account, file_id)
+        if parent_id == file.id:
+            raise FailException("Cannot move file into itself")
+        if parent_id:
+            parent = self.get_file(session, account, parent_id)
+            if parent.type != "folder":
+                raise FailException("Parent must be a folder")
+            if file.type == "folder":
+                self._ensure_not_descendant(session, account, file, parent)
+        return self.update(session, file, parent_id=parent_id)
+
     def delete_file(self, session: Session, account: Account, file_id: UUID) -> File:
         file = self.get_file(session, account, file_id)
-        return self.update(session, file, status="deleted", deleted_at=datetime.now())
+        deleted_at = datetime.now()
+        for item in self._collect_descendants(session, account, file):
+            item.status = "deleted"
+            item.deleted_at = deleted_at
+        session.flush()
+        session.refresh(file)
+        return file
+
+    def _ensure_not_descendant(self, session: Session, account: Account, source: File, target_parent: File) -> None:
+        cursor: File | None = target_parent
+        while cursor is not None:
+            if cursor.id == source.id:
+                raise FailException("Cannot move folder into its child folder")
+            cursor = self.get_file(session, account, cursor.parent_id) if cursor.parent_id else None
+
+    def _collect_descendants(self, session: Session, account: Account, file: File) -> list[File]:
+        result = [file]
+        queue = [file.id]
+        while queue:
+            parent_id = queue.pop(0)
+            children = (
+                session.query(File)
+                .filter(
+                    File.account_id == account.id,
+                    File.parent_id == parent_id,
+                    File.status != "deleted",
+                )
+                .all()
+            )
+            result.extend(children)
+            queue.extend([child.id for child in children if child.type == "folder"])
+        return result
 
     def to_response(self, session: Session, file: File) -> dict:
         url = ""

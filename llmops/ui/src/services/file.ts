@@ -9,7 +9,7 @@ export const createFolder = (body: { name: string; parent_id?: string | null }) 
   return post<FileResponse>('/files/folders', { body })
 }
 
-export const updateFile = (fileId: string, body: { name: string }) => {
+export const updateFile = (fileId: string, body: { name?: string; parent_id?: string | null }) => {
   return patch<FileResponse>(`/files/${fileId}`, { body })
 }
 
