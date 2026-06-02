@@ -780,6 +780,54 @@ execution_agent_type = react_worker
 - 不要在本阶段把 A2A/MCP/Sandbox 做实，避免范围膨胀。
 - `tenant_id` 与 `account_id` 需要先兼容处理，避免牵出大规模迁移。
 
+### 10.7 本期完成记录
+
+记录日期：2026-06-02。
+
+本期可以判定为已完成落地，范围是“Worker Agent 对齐 ReActWorkerAgent 执行入口”。完成内容如下：
+
+- `WorkerRuntime -> ReActWorkerAgent -> AppExecutor` 已落地，`WorkerRuntime` 不再是占位实现。
+- `ReActWorkerAgent` 已支持 `target_ref_type = app`，通过 `AppService.run_app_worker()` 复用现有 App 的模型调用、工具调用、RAG、Workflow 和 ReAct 循环。
+- `AppService.debug_chat()` 继续作为调试 SSE 入口，内部执行能力抽出为 `run_app_agent()` / `run_app_worker()`，避免 Worker 执行反解析 SSE。
+- `RouterAgentManagerService` 已改为构造标准 `WorkerInvocation`，通过 `WorkerRuntime.invoke()` 调用 Worker，并把标准 `WorkerResult` 写入 `WorkerCall.result_json`。
+- `WorkerResult` 已包含 `answer` 兼容字段，以及 `actions`、`evidence`、`artifacts`、`events`、`errors` 等结构化字段。
+- `WorkerResult.events` 已映射为 trace event，事件类型使用 `worker.event.*`。
+- `LegacyAppWorkerAdapter` 已在 `worker_config` 中写入 `execution_agent_type = react_worker`。
+- `A2AExecutor`、`MCPToolExecutor`、`SandboxExecutor` 本期只保留边界，不做真实实现。
+- 本期未改 AI 应用 UI，Planner Agent、AutonomousAgentRuntime、Agent Task 执行台 UI 后续再做。
+
+本期涉及的主要代码文件：
+
+- `llmops/api/app/domain/agent_runtime/protocols.py`
+- `llmops/api/app/domain/agent_runtime/worker_runtime.py`
+- `llmops/api/app/domain/agent_runtime/react_worker_agent.py`
+- `llmops/api/app/services/app_service.py`
+- `llmops/api/app/services/router_agent_manager_service.py`
+- `llmops/api/app/services/agent_adapter_service.py`
+- `llmops/api/tests/test_worker_runtime.py`
+- `llmops/api/tests/test_router_agent_manager_service.py`
+- `llmops/api/tests/test_agent_adapter.py`
+
+验收结果：
+
+- 后端语法检查通过。
+- `ruff check` 通过。
+- 相关回归测试通过：`test_agent_adapter.py`、`test_router_agent_manager_service.py`、`test_worker_runtime.py`、`test_agent_debug_runtime.py`。
+- Docker 环境中 `llmops-api`、`llmops-celery` 已重启并正常运行。
+- 浏览器侧应用调试对话已验证可正常返回。
+
+本期额外修复的运行时问题：
+
+- 修复 `llmops-ui` nginx 在 `llmops-api` 容器 IP 变化后继续连接旧 upstream 导致 `/api/apps` 502 的问题。配置改为使用 Docker DNS 动态解析。
+- 修复 DeepSeek 调试对话中的 `Invalid top_p value` 问题。原因是模型参数模板默认 `top_p = 0` 被写入应用 draft 配置，已改为 `0.85`，并在运行时和应用配置归一化中增加非法参数防护。
+- 已修正当前数据库中 `app_config_version` 和 `app_config` 已落库的非法 `top_p`。
+
+后续进入 Planner Agent 阶段时，本期核心边界保持不变：
+
+- 对外仍只暴露 `Planner Agent App` 和 `Worker Agent App` 两类 AI 应用。
+- `ReActWorkerAgent` 是 Worker Agent 背后的执行引擎，不作为第三类产品类型暴露。
+- Planner Agent 后续只需要生成 `RouterPlan` 并通过同一套 `WorkerRuntime` 调度 Worker，不应推翻本期的 `WorkerInvocation / WorkerResult / AgentEvent / ArtifactRef` 协议。
+
 ## 11. 结论
 
 `llmops` 的 Agent 应该平台化，`agentic` 的 Agent 应该能力化。
