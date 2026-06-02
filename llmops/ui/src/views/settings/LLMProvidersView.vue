@@ -61,6 +61,7 @@ const featureOptions = [
 ]
 
 const selectedProvider = computed(() => providers.value.find((item) => item.id === selectedProviderId.value))
+const providerHasApiKey = (provider?: LLMProvider) => Boolean(provider?.api_key)
 
 const loadProviders = async () => {
   loading.value = true
@@ -194,9 +195,14 @@ onMounted(loadProviders)
         ]"
         @click="selectedProviderId = provider.id"
       >
-        <div class="flex items-center justify-between">
-          <span class="text-sm font-medium text-gray-900">{{ provider.name }}</span>
-          <el-tag v-if="provider.is_default" size="small">默认</el-tag>
+        <div class="flex items-start justify-between gap-2">
+          <span class="min-w-0 flex-1 truncate text-sm font-medium text-gray-900">{{ provider.name }}</span>
+          <div class="flex shrink-0 flex-wrap justify-end gap-1">
+            <el-tag v-if="provider.is_default" size="small">默认</el-tag>
+            <el-tag :type="providerHasApiKey(provider) ? 'success' : 'warning'" size="small">
+              密钥{{ providerHasApiKey(provider) ? '已配置' : '未配置' }}
+            </el-tag>
+          </div>
         </div>
         <div class="mt-1 truncate text-xs text-gray-500">{{ provider.provider }} · {{ provider.base_url }}</div>
       </button>
@@ -208,19 +214,30 @@ onMounted(loadProviders)
           <div class="min-w-0">
             <h2 class="truncate text-base font-semibold text-gray-900">{{ selectedProvider.name }}</h2>
             <p class="mt-1 truncate text-sm text-gray-500">{{ selectedProvider.base_url }}</p>
+            <div class="mt-2 text-sm text-gray-600">
+              <span>Provider: {{ selectedProvider.provider }}</span>
+            </div>
           </div>
-          <div class="flex gap-2">
-            <el-button
-              @click="
-                () => {
-                  resetProviderForm(selectedProvider)
-                  providerDialogVisible = true
-                }
-              "
-            >
-              编辑供应商
-            </el-button>
-            <el-button type="danger" plain @click="removeProvider(selectedProvider)">删除</el-button>
+          <div class="flex shrink-0 flex-col items-end gap-2">
+            <div class="flex flex-wrap justify-end gap-2">
+              <el-tag v-if="selectedProvider.is_default" size="small">默认</el-tag>
+              <el-tag :type="providerHasApiKey(selectedProvider) ? 'success' : 'warning'" size="small">
+                密钥{{ providerHasApiKey(selectedProvider) ? '已配置' : '未配置' }}
+              </el-tag>
+            </div>
+            <div class="flex gap-2">
+              <el-button
+                @click="
+                  () => {
+                    resetProviderForm(selectedProvider)
+                    providerDialogVisible = true
+                  }
+                "
+              >
+                编辑供应商
+              </el-button>
+              <el-button type="danger" plain @click="removeProvider(selectedProvider)">删除</el-button>
+            </div>
           </div>
         </div>
 
@@ -297,6 +314,9 @@ onMounted(loadProviders)
         </el-form-item>
         <el-form-item label="API Key">
           <el-input v-model="providerForm.api_key" show-password />
+          <p class="mt-1 text-xs text-gray-500">
+            已配置的密钥会显示为 ********；保存时保持 ******** 不会覆盖原密钥，清空后保存会删除密钥。
+          </p>
         </el-form-item>
         <div class="flex gap-6">
           <el-checkbox v-model="providerForm.enabled">启用</el-checkbox>
