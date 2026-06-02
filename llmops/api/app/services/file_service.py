@@ -1,3 +1,4 @@
+import hashlib
 import math
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -19,6 +20,7 @@ from app.services.upload_file_service import UploadFileService
 class FileService(BaseService):
     upload_file_service: UploadFileService = field(default_factory=UploadFileService)
     storage_service: StorageService = field(default_factory=StorageService)
+    agent_input_preview_bytes: int = 64 * 1024
 
     def list_files(
         self,
@@ -187,6 +189,61 @@ class FileService(BaseService):
             raise NotFoundException("File does not exist")
         return file
 
+    def to_agent_input_ref(self, session: Session, account: Account, file_id: UUID) -> dict:
+        file = self.get_file(session, account, file_id)
+        if file.type != "file":
+            raise FailException("Agent input must be a file")
+        data = self.to_response(session, file)
+        data["file_id"] = str(file.id)
+        if self._can_inline_text(file):
+            try:
+                content = self.storage_service.read(session, account.id, file.storage_provider, file.file_path)
+                text = content[: self.agent_input_preview_bytes].decode("utf-8", errors="replace")
+                data["content"] = text
+                data["content_truncated"] = len(content) > self.agent_input_preview_bytes
+            except (FailException, NotFoundException) as exc:
+                data["content_unavailable_reason"] = str(exc)
+        return data
+
+    def create_agent_artifact(
+        self,
+        session: Session,
+        account: Account,
+        *,
+        name: str,
+        content: str | bytes,
+        mime_type: str = "text/plain; charset=utf-8",
+        extension: str = "txt",
+        metadata: dict | None = None,
+    ) -> File:
+        filename = (name or "").strip() or "agent-artifact.txt"
+        if "." not in filename and extension:
+            filename = f"{filename}.{extension.lstrip('.')}"
+        raw = content.encode("utf-8") if isinstance(content, str) else content
+        if not raw:
+            raise FailException("Agent artifact content is empty")
+
+        file_path = UploadFileService._build_storage_key(extension.lstrip(".") or "txt")
+        stored = self.storage_service.save(session, account.id, file_path, raw)
+        return self.create(
+            session,
+            File,
+            account_id=account.id,
+            parent_id=None,
+            type="file",
+            name=filename,
+            file_path=stored.file_path,
+            storage_provider=stored.storage_provider,
+            size=len(raw),
+            extension=extension.lstrip(".") or "txt",
+            mime_type=mime_type,
+            hash=hashlib.sha3_256(raw).hexdigest(),
+            source="agent",
+            status="available",
+            meta=metadata or {},
+            created_by=account.id,
+        )
+
     def rename_file(self, session: Session, account: Account, file_id: UUID, name: str) -> File:
         name = name.strip()
         if not name:
@@ -292,6 +349,14 @@ class FileService(BaseService):
             "created_at": self._ts(file.created_at),
             "updated_at": self._ts(file.updated_at),
         }
+
+    @staticmethod
+    def _can_inline_text(file: File) -> bool:
+        if file.size <= 0:
+            return False
+        if file.mime_type.startswith("text/"):
+            return True
+        return file.extension.lower() in {"txt", "md", "csv", "json", "yaml", "yml", "log"}
 
     @staticmethod
     def _ts(value) -> int:

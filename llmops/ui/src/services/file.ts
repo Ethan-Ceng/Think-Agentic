@@ -19,12 +19,22 @@ export type GetFilesWithPageParams = GetFilesParams & {
   page_size: number
 }
 
+const cleanFileParams = <T extends Record<string, any>>(params: T): Partial<T> => {
+  return Object.fromEntries(
+    Object.entries(params).filter(([, value]) => {
+      if (value === undefined || value === null) return false
+      if (typeof value === 'string' && ['', 'undefined', 'null'].includes(value.trim().toLowerCase())) return false
+      return true
+    }),
+  ) as Partial<T>
+}
+
 export const getFiles = (params: GetFilesParams = {}) => {
-  return get<GetFilesResponse>('/files', { params })
+  return get<GetFilesResponse>('/files', { params: cleanFileParams(params) })
 }
 
 export const getFilesWithPage = (params: GetFilesWithPageParams) => {
-  return get<GetFilesWithPageResponse>('/files', { params })
+  return get<GetFilesWithPageResponse>('/files', { params: cleanFileParams(params) })
 }
 
 export const getFileFolderTree = () => {

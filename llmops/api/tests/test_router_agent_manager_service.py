@@ -1,10 +1,11 @@
 import uuid
+from types import SimpleNamespace
 
 import pytest
 
 from app.core.agent import AgentThought, QueueEvent
 from app.core.exceptions import FailException
-from app.domain.agent_runtime.protocols import RouterPlan, RouterPlanStep
+from app.domain.agent_runtime.protocols import ArtifactRef, RouterPlan, RouterPlanStep, WorkerResult
 from app.domain.agent_runtime.router_runtime import RouterRuntime
 from app.models.account import Account
 from app.models.agent import Agent
@@ -239,3 +240,196 @@ def test_execute_manager_run_steps_invokes_legacy_app_worker() -> None:
         "router.manager_run.succeeded",
     ]
     assert all(event.trace_id == run.trace_id for event in trace_events)
+
+
+def test_execute_manager_run_steps_passes_input_files_to_worker_context() -> None:
+    input_file_id = uuid.uuid4()
+
+    class FakeFileService:
+        def to_agent_input_ref(self, session, account, file_id):  # noqa: ANN001
+            assert file_id == input_file_id
+            return {
+                "id": file_id,
+                "file_id": str(file_id),
+                "name": "sales-notes.md",
+                "mime_type": "text/markdown",
+                "content": "Quarterly notes mention expansion revenue.",
+                "content_truncated": False,
+            }
+
+    class FakeAppService:
+        def run_app_worker(self, session, *, app_id, task_id, query, image_urls, account):  # noqa: ANN001
+            assert "summarize sales notes" in query
+            assert "Input files:" in query
+            assert "Quarterly notes mention expansion revenue." in query
+            yield AgentThought(
+                id=uuid.uuid4(),
+                task_id=task_id,
+                event=QueueEvent.AGENT_MESSAGE,
+                answer="summary",
+            )
+            yield AgentThought(id=uuid.uuid4(), task_id=task_id, event=QueueEvent.AGENT_END)
+
+    class FakeRouterService(RouterAgentManagerService):
+        def get_worker_agent(self, session, tenant_id, agent_id):  # noqa: ANN001
+            return Agent(
+                id=agent_id,
+                tenant_id=tenant_id,
+                name="Legacy App Worker",
+                runtime_type="worker",
+                product_category="custom",
+                status="published",
+                target_ref_type="app",
+                target_ref_id=str(app_id),
+            )
+
+    session = FakeSession()
+    tenant_id = uuid.uuid4()
+    router_agent_id = uuid.uuid4()
+    worker_agent_id = uuid.uuid4()
+    app_id = uuid.uuid4()
+    account = Account(id=uuid.uuid4(), name="tester", email="tester@example.test")
+    service = FakeRouterService(app_service=FakeAppService(), file_service=FakeFileService())
+    plan = RouterPlan(
+        router_id=str(router_agent_id),
+        user_intent="summarize sales notes",
+        steps=[RouterPlanStep(step_id="summarize", worker_id=str(worker_agent_id), task="summarize sales notes")],
+    )
+    run = service.create_manager_task_from_plan(
+        session,
+        tenant_id=tenant_id,
+        router_agent_id=router_agent_id,
+        plan=plan,
+        user_input={"query": "summarize sales notes", "input_file_ids": [str(input_file_id)]},
+    )
+
+    service.execute_manager_run_steps(session, run=run, account=account)
+
+    worker_calls = [item for item in session.added if isinstance(item, WorkerCall)]
+    input_files = worker_calls[0].invocation_json["context"]["input_files"]
+    assert input_files[0]["file_id"] == str(input_file_id)
+    assert input_files[0]["content"] == "Quarterly notes mention expansion revenue."
+
+
+def test_execute_manager_run_steps_registers_and_propagates_artifacts() -> None:
+    created_file_id = uuid.uuid4()
+
+    class FakeFileService:
+        def create_agent_artifact(self, session, account, *, name, content, mime_type, extension, metadata):  # noqa: ANN001
+            assert name == "analysis.txt"
+            assert content == "analysis report body"
+            assert metadata["step_key"] == "analyze"
+            assert "content" not in metadata
+            return SimpleNamespace(
+                id=created_file_id,
+                account_id=account.id,
+                parent_id=None,
+                type="file",
+                name=name,
+                extension=extension,
+                mime_type=mime_type,
+                size=len(content),
+                storage_provider="local",
+                file_path="agent/analysis.txt",
+                hash="hash",
+                source="agent",
+                status="available",
+                meta=metadata,
+                created_at=None,
+                updated_at=None,
+            )
+
+        def to_response(self, session, file):  # noqa: ANN001
+            return {
+                "id": file.id,
+                "name": file.name,
+                "extension": file.extension,
+                "mime_type": file.mime_type,
+                "size": file.size,
+                "storage_provider": file.storage_provider,
+                "file_path": file.file_path,
+                "source": file.source,
+                "download_url": "http://files/agent/analysis.txt",
+                "preview_url": "http://files/agent/analysis.txt",
+            }
+
+    class FakeWorkerRuntime:
+        def __init__(self) -> None:
+            self.invocations = []
+
+        def invoke(self, invocation, *, session, worker, account):  # noqa: ANN001
+            self.invocations.append(invocation)
+            if len(self.invocations) == 1:
+                return WorkerResult(
+                    trace_id=invocation.trace_id,
+                    task_id=invocation.task_id,
+                    step_id=invocation.step_id,
+                    worker_id=invocation.worker_id,
+                    status=TaskStatus.SUCCEEDED.value,
+                    summary="analysis complete",
+                    data={"answer": "analysis complete"},
+                    artifacts=[
+                        ArtifactRef(
+                            name="analysis.txt",
+                            summary="Analysis report",
+                            metadata={"content": "analysis report body"},
+                        )
+                    ],
+                )
+            assert self.invocations[1].context["artifacts"][0]["file_id"] == str(created_file_id)
+            return WorkerResult(
+                trace_id=invocation.trace_id,
+                task_id=invocation.task_id,
+                step_id=invocation.step_id,
+                worker_id=invocation.worker_id,
+                status=TaskStatus.SUCCEEDED.value,
+                summary="final complete",
+                data={"answer": "final complete"},
+            )
+
+    class FakeRouterService(RouterAgentManagerService):
+        def get_worker_agent(self, session, tenant_id, agent_id):  # noqa: ANN001
+            return Agent(
+                id=agent_id,
+                tenant_id=tenant_id,
+                name="Worker",
+                runtime_type="worker",
+                product_category="custom",
+                status="published",
+                target_ref_type="app",
+                target_ref_id=str(uuid.uuid4()),
+            )
+
+    session = FakeSession()
+    tenant_id = uuid.uuid4()
+    router_agent_id = uuid.uuid4()
+    first_worker_id = uuid.uuid4()
+    second_worker_id = uuid.uuid4()
+    account = Account(id=uuid.uuid4(), name="tester", email="tester@example.test")
+    worker_runtime = FakeWorkerRuntime()
+    service = FakeRouterService(worker_runtime=worker_runtime, file_service=FakeFileService())
+    plan = RouterPlan(
+        router_id=str(router_agent_id),
+        user_intent="analyze and write",
+        steps=[
+            RouterPlanStep(step_id="analyze", worker_id=str(first_worker_id), task="analyze"),
+            RouterPlanStep(step_id="write", worker_id=str(second_worker_id), task="write", dependencies=["analyze"]),
+        ],
+    )
+    run = service.create_manager_task_from_plan(
+        session,
+        tenant_id=tenant_id,
+        router_agent_id=router_agent_id,
+        plan=plan,
+        user_input={"query": "analyze and write"},
+    )
+
+    service.execute_manager_run_steps(session, run=run, account=account)
+
+    assert run.task.status == TaskStatus.SUCCEEDED
+    first_artifact = run.steps[0].output_json["artifacts"][0]
+    assert first_artifact["file_id"] == str(created_file_id)
+    assert first_artifact["metadata"]["file"]["file_path"] == "agent/analysis.txt"
+    assert "content" not in first_artifact["metadata"]
+    assert worker_runtime.invocations[1].context["artifacts"][0]["file_id"] == str(created_file_id)
+    assert run.task.final_result["artifacts"][0]["file_id"] == str(created_file_id)

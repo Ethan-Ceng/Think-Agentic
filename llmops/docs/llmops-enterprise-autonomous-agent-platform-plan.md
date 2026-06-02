@@ -948,8 +948,8 @@ ui/src/hooks/use-model-provider.ts
 
 1. 明确 Router Agent / Worker Agent 边界。
 2. 设计内部 `WorkerInvocation` / `WorkerResult` / `AgentEvent` 协议。
-3. 落地文件作为 Agent task 输入。
-4. 落地 Agent 产物 Artifact 登记和 `ArtifactRef`。
+3. 落地文件作为 Agent task 输入。后端 Runtime 已完成，任务页 UI 待产品化。
+4. 落地 Agent 产物 Artifact 登记和 `ArtifactRef`。后端 Runtime 已完成文本产物和已有 file_id 引用闭环，完整二进制/sandbox 产物待产品化。
 5. 设计 Capability Registry 第一版。
 6. 实现从现有 App 创建 Worker Agent。
 7. 新增 Router/Worker Agent 页面雏形。
@@ -962,6 +962,8 @@ ui/src/hooks/use-model-provider.ts
 - LLM Provider / Model 管理页面。
 - 系统设置页面、`account_settings` 表和敏感字段加密处理。
 - Files 文件资产管理基础能力。
+- Agent 输入文件后端接入：`input_file_ids` 会进入 `WorkerInvocation.context.input_files`。
+- ArtifactRef 后端接入：`WorkerResult.artifacts` 可登记 `files.source=agent` 文本产物，并传递给后续 step。
 
 ## 14. 最终目标
 

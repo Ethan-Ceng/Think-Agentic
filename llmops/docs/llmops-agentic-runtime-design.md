@@ -130,11 +130,11 @@ Files 模块已经具备进入 Agent 的基础：
 - 知识库来源。
 - 来源字段 `source`。
 
-下一步需要补：
+当前状态与下一步：
 
-- 文件作为 Agent task 输入。
-- Agent 输出登记为 Artifact。
-- Worker 步骤之间通过 `ArtifactRef` 传递文件。
+- 文件作为 Agent task 输入的后端 Runtime 已接入，任务页 UI 选择和展示待补。
+- Agent 文本产物和已有 `file_id` 引用已可登记为 Artifact，完整二进制/sandbox 产物同步待补。
+- Worker 步骤之间已可通过 `ArtifactRef` 传递文件引用。
 - 任务页展示输入文件、产物文件、执行日志和证据。
 
 建议 Artifact 最小结构：
@@ -792,6 +792,8 @@ execution_agent_type = react_worker
 - `RouterAgentManagerService` 已改为构造标准 `WorkerInvocation`，通过 `WorkerRuntime.invoke()` 调用 Worker，并把标准 `WorkerResult` 写入 `WorkerCall.result_json`。
 - `WorkerResult` 已包含 `answer` 兼容字段，以及 `actions`、`evidence`、`artifacts`、`events`、`errors` 等结构化字段。
 - `WorkerResult.events` 已映射为 trace event，事件类型使用 `worker.event.*`。
+- Agent 文件上下文已接入后端 Runtime：Router Manager 支持从 `user_input.input_file_ids` 读取 `files` 资产，校验账号归属后写入 `WorkerInvocation.context.input_files`；小型文本文件会内联内容预览给 ReAct Worker。
+- Agent Artifact 已接入后端 Runtime：`WorkerResult.artifacts` 支持已有 `file_id` 引用校验，也支持把 `metadata.content/text` 文本产物登记到 `files.source=agent`；成功 step 的 ArtifactRef 会进入后续 step 的 `WorkerInvocation.context.artifacts` 和 task `final_result.artifacts`。
 - `LegacyAppWorkerAdapter` 已在 `worker_config` 中写入 `execution_agent_type = react_worker`。
 - `A2AExecutor`、`MCPToolExecutor`、`SandboxExecutor` 本期只保留边界，不做真实实现。
 - 本期未改 AI 应用 UI，Planner Agent、AutonomousAgentRuntime、Agent Task 执行台 UI 后续再做。
@@ -813,6 +815,7 @@ execution_agent_type = react_worker
 - 后端语法检查通过。
 - `ruff check` 通过。
 - 相关回归测试通过：`test_agent_adapter.py`、`test_router_agent_manager_service.py`、`test_worker_runtime.py`、`test_agent_debug_runtime.py`。
+- 文件输入与 Artifact 传播回归测试已覆盖：`input_file_ids -> WorkerInvocation.context.input_files`、`WorkerResult.artifacts -> files.source=agent -> next step context.artifacts -> final_result.artifacts`。
 - Docker 环境中 `llmops-api`、`llmops-celery` 已重启并正常运行。
 - 浏览器侧应用调试对话已验证可正常返回。
 

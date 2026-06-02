@@ -5,7 +5,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import FailException, NotFoundException
-from app.domain.agent_runtime.protocols import RouterPlan, RouterPlanStep, WorkerInvocation, WorkerResult
+from app.domain.agent_runtime.protocols import ArtifactRef, RouterPlan, RouterPlanStep, WorkerInvocation, WorkerResult
 from app.domain.agent_runtime.router_runtime import RouterRuntime
 from app.domain.agent_runtime.worker_runtime import WorkerRuntime
 from app.models.account import Account
@@ -13,6 +13,7 @@ from app.models.agent import Agent, AgentBinding, AgentVersion
 from app.models.task import AgentPlan, AgentStep, AgentTask
 from app.services.app_service import AppService
 from app.services.base_service import BaseService
+from app.services.file_service import FileService
 from app.services.task_engine_service import TaskEngineService, TaskStatus
 from app.services.trace_service import TraceService
 
@@ -42,12 +43,14 @@ class RouterAgentManagerService(BaseService):
         router_runtime: RouterRuntime | None = None,
         worker_runtime: WorkerRuntime | None = None,
         app_service: AppService | None = None,
+        file_service: FileService | None = None,
         trace_service: TraceService | None = None,
     ) -> None:
         self.task_engine = task_engine or TaskEngineService()
         self.router_runtime = router_runtime or RouterRuntime()
         self.app_service = app_service or AppService()
         self.worker_runtime = worker_runtime or WorkerRuntime(app_service=self.app_service)
+        self.file_service = file_service or FileService()
         self.trace_service = trace_service or TraceService()
 
     def create_router_agent(
@@ -332,11 +335,39 @@ class RouterAgentManagerService(BaseService):
         run: RouterManagerRunResult,
         account: Account,
     ) -> RouterManagerRunResult:
+        try:
+            input_files = self._input_file_refs(session, account, run.task.user_input)
+        except Exception as exc:
+            self.task_engine.fail_task(
+                session,
+                run.task,
+                error_code="input_files_invalid",
+                error_message=str(exc),
+                final_result={"error": str(exc)},
+            )
+            self.trace_service.record(
+                session,
+                tenant_id=run.task.tenant_id,
+                event_type="router.input_files.failed",
+                task=run.task,
+                plan=run.plan,
+                payload={"error": str(exc)},
+            )
+            return run
+
         step_outputs = []
+        accumulated_artifacts: list[dict[str, Any]] = []
         for step in run.steps:
             self.task_engine.start_step(session, step)
             worker = self.get_worker_agent(session, run.task.tenant_id, step.worker_agent_id)
-            invocation = self._build_worker_invocation(run=run, step=step, worker=worker, account=account)
+            invocation = self._build_worker_invocation(
+                run=run,
+                step=step,
+                worker=worker,
+                account=account,
+                input_files=input_files,
+                artifacts=accumulated_artifacts,
+            )
             self.trace_service.record(
                 session,
                 tenant_id=run.task.tenant_id,
@@ -369,6 +400,14 @@ class RouterAgentManagerService(BaseService):
             )
             try:
                 worker_result = self._invoke_worker(session, worker, invocation, account)
+                worker_result = self._with_registered_artifacts(
+                    session,
+                    account=account,
+                    run=run,
+                    step=step,
+                    worker=worker,
+                    worker_result=worker_result,
+                )
             except Exception as exc:
                 self.task_engine.complete_worker_call(
                     session,
@@ -447,6 +486,8 @@ class RouterAgentManagerService(BaseService):
 
             self.task_engine.complete_worker_call(session, worker_call, result_json=output)
             self.task_engine.succeed_step(session, step, output_json=output)
+            step_artifacts = list(output.get("artifacts") or [])
+            accumulated_artifacts.extend(step_artifacts)
             step_outputs.append({"step_key": step.step_key, "worker_agent_id": str(worker.id), "output": output})
             self.trace_service.record(
                 session,
@@ -461,6 +502,7 @@ class RouterAgentManagerService(BaseService):
                     "worker_agent_id": str(worker.id),
                     "answer_length": len(str(output.get("answer") or "")),
                     "worker_result_status": worker_result.status,
+                    "artifact_count": len(step_artifacts),
                 },
             )
             self.trace_service.record(
@@ -473,7 +515,11 @@ class RouterAgentManagerService(BaseService):
                 payload={"step_key": step.step_key},
             )
 
-        self.task_engine.succeed_task(session, run.task, final_result={"steps": step_outputs})
+        self.task_engine.succeed_task(
+            session,
+            run.task,
+            final_result={"steps": step_outputs, "artifacts": accumulated_artifacts},
+        )
         self.trace_service.record(
             session,
             tenant_id=run.task.tenant_id,
@@ -541,6 +587,8 @@ class RouterAgentManagerService(BaseService):
         step: AgentStep,
         worker: Agent,
         account: Account,
+        input_files: list[dict[str, Any]] | None = None,
+        artifacts: list[dict[str, Any]] | None = None,
     ) -> WorkerInvocation:
         return WorkerInvocation(
             trace_id=run.trace_id,
@@ -561,8 +609,8 @@ class RouterAgentManagerService(BaseService):
                 "session_id": str(run.task.session_id) if run.task.session_id else None,
                 "conversation_id": str(run.task.conversation_id) if run.task.conversation_id else None,
                 "worker_name": worker.name,
-                "input_files": [],
-                "artifacts": [],
+                "input_files": input_files or [],
+                "artifacts": artifacts or [],
             },
             execution_policy={
                 "execution_agent_type": self._worker_execution_agent_type(worker),
@@ -584,6 +632,173 @@ class RouterAgentManagerService(BaseService):
             worker=worker,
             account=account,
         )
+
+    def _input_file_refs(self, session: Session, account: Account, user_input: dict[str, Any]) -> list[dict[str, Any]]:
+        refs: list[dict[str, Any]] = []
+        seen: set[uuid.UUID] = set()
+        for raw_file_id in self._iter_input_file_ids(user_input):
+            file_id = self._parse_uuid(raw_file_id, "input_file_ids")
+            if file_id in seen:
+                continue
+            seen.add(file_id)
+            refs.append(self._json_ready(self.file_service.to_agent_input_ref(session, account, file_id)))
+        return refs
+
+    def _with_registered_artifacts(
+        self,
+        session: Session,
+        *,
+        account: Account,
+        run: RouterManagerRunResult,
+        step: AgentStep,
+        worker: Agent,
+        worker_result: WorkerResult,
+    ) -> WorkerResult:
+        if not worker_result.artifacts:
+            return worker_result
+        artifacts = [
+            ArtifactRef(**artifact)
+            for artifact in self._register_artifacts(
+                session,
+                account=account,
+                run=run,
+                step=step,
+                worker=worker,
+                artifacts=worker_result.artifacts,
+            )
+        ]
+        return worker_result.model_copy(update={"artifacts": artifacts})
+
+    def _register_artifacts(
+        self,
+        session: Session,
+        *,
+        account: Account,
+        run: RouterManagerRunResult,
+        step: AgentStep,
+        worker: Agent,
+        artifacts: list[ArtifactRef],
+    ) -> list[dict[str, Any]]:
+        registered: list[dict[str, Any]] = []
+        for artifact in artifacts:
+            data = artifact.model_dump(mode="json")
+            metadata = dict(data.get("metadata") or {})
+            metadata.setdefault("step_key", step.step_key)
+            data.update(
+                {
+                    "task_id": data.get("task_id") or str(run.task.id),
+                    "step_id": data.get("step_id") or str(step.id),
+                    "worker_id": data.get("worker_id") or str(worker.id),
+                    "metadata": metadata,
+                }
+            )
+
+            content = self._pop_artifact_content(metadata)
+            if data.get("file_id"):
+                file_id = self._parse_uuid(data["file_id"], "artifact.file_id")
+                file = self.file_service.get_file(session, account, file_id)
+                if file.type != "file":
+                    raise FailException("Artifact file_id must reference a file")
+                registered.append(self._merge_file_artifact(data, self.file_service.to_response(session, file)))
+                continue
+
+            if content is not None:
+                artifact_file = self.file_service.create_agent_artifact(
+                    session,
+                    account,
+                    name=str(data.get("name") or f"{step.step_key}-artifact.txt"),
+                    content=content if isinstance(content, str | bytes) else str(content),
+                    mime_type=str(metadata.get("mime_type") or "text/plain; charset=utf-8"),
+                    extension=self._artifact_extension(data, metadata),
+                    metadata=metadata,
+                )
+                data["file_id"] = str(artifact_file.id)
+                data["source"] = "agent"
+                registered.append(
+                    self._merge_file_artifact(data, self.file_service.to_response(session, artifact_file))
+                )
+                continue
+
+            registered.append(data)
+        return registered
+
+    @classmethod
+    def _iter_input_file_ids(cls, user_input: dict[str, Any]):
+        for key in ("input_file_ids", "file_ids", "input_files", "files"):
+            value = user_input.get(key)
+            if value is None:
+                continue
+            yield from cls._iter_file_id_values(value)
+
+    @classmethod
+    def _iter_file_id_values(cls, value: Any):
+        if isinstance(value, str | uuid.UUID):
+            yield value
+            return
+        if isinstance(value, dict):
+            file_id = value.get("file_id") or value.get("id")
+            if file_id:
+                yield file_id
+            return
+        if isinstance(value, list | tuple):
+            for item in value:
+                yield from cls._iter_file_id_values(item)
+
+    @staticmethod
+    def _parse_uuid(value: Any, field_name: str) -> uuid.UUID:
+        try:
+            return value if isinstance(value, uuid.UUID) else uuid.UUID(str(value))
+        except (TypeError, ValueError) as exc:
+            raise FailException(f"{field_name} is invalid") from exc
+
+    @staticmethod
+    def _pop_artifact_content(metadata: dict[str, Any]) -> Any | None:
+        for key in ("content", "text"):
+            if key in metadata:
+                return metadata.pop(key)
+        return None
+
+    @classmethod
+    def _merge_file_artifact(cls, artifact: dict[str, Any], file_data: dict[str, Any]) -> dict[str, Any]:
+        metadata = dict(artifact.get("metadata") or {})
+        metadata["file"] = {
+            "id": str(file_data.get("id") or file_data.get("file_id") or ""),
+            "mime_type": file_data.get("mime_type") or "",
+            "extension": file_data.get("extension") or "",
+            "size": file_data.get("size") or 0,
+            "storage_provider": file_data.get("storage_provider") or "",
+            "file_path": file_data.get("file_path") or "",
+            "download_url": file_data.get("download_url") or "",
+            "preview_url": file_data.get("preview_url") or "",
+        }
+        return {
+            **artifact,
+            "file_id": str(file_data.get("id") or artifact.get("file_id") or ""),
+            "name": artifact.get("name") or str(file_data.get("name") or ""),
+            "type": "file",
+            "source": artifact.get("source") or str(file_data.get("source") or "agent"),
+            "metadata": cls._json_ready(metadata),
+        }
+
+    @staticmethod
+    def _artifact_extension(artifact: dict[str, Any], metadata: dict[str, Any]) -> str:
+        explicit = str(metadata.get("extension") or "").lstrip(".")
+        if explicit:
+            return explicit
+        name = str(artifact.get("name") or "")
+        if "." in name:
+            return name.rsplit(".", 1)[-1].lower()
+        return "txt"
+
+    @classmethod
+    def _json_ready(cls, value: Any) -> Any:
+        if isinstance(value, uuid.UUID):
+            return str(value)
+        if isinstance(value, dict):
+            return {key: cls._json_ready(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [cls._json_ready(item) for item in value]
+        return value
 
     def _record_agent_events(
         self,

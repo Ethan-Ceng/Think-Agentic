@@ -168,7 +168,7 @@ class ReActWorkerAgent:
     @staticmethod
     def _task_text(invocation: WorkerInvocation) -> str:
         task = invocation.task
-        return str(
+        base_text = str(
             task.get("task")
             or task.get("query")
             or task.get("input")
@@ -176,6 +176,52 @@ class ReActWorkerAgent:
             or task.get("user_input", {}).get("query")
             or f"Run worker {invocation.worker_id}"
         )
+        context_parts = ReActWorkerAgent._input_files_context(invocation.context.get("input_files"))
+        artifact_parts = ReActWorkerAgent._artifacts_context(invocation.context.get("artifacts"))
+        suffix = "\n\n".join(part for part in [context_parts, artifact_parts] if part)
+        return f"{base_text}\n\n{suffix}" if suffix else base_text
+
+    @staticmethod
+    def _input_files_context(input_files: Any) -> str:
+        if not isinstance(input_files, list) or not input_files:
+            return ""
+        parts = ["Input files:"]
+        for index, item in enumerate(input_files, 1):
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or item.get("file_id") or f"file_{index}")
+            file_id = str(item.get("file_id") or item.get("id") or "")
+            mime_type = str(item.get("mime_type") or "")
+            header = f"- {name}"
+            if file_id:
+                header += f" (file_id: {file_id})"
+            if mime_type:
+                header += f" [{mime_type}]"
+            parts.append(header)
+            content = item.get("content")
+            if content:
+                truncated = " [truncated]" if item.get("content_truncated") else ""
+                parts.append(f"  content{truncated}:\n{content}")
+        return "\n".join(parts) if len(parts) > 1 else ""
+
+    @staticmethod
+    def _artifacts_context(artifacts: Any) -> str:
+        if not isinstance(artifacts, list) or not artifacts:
+            return ""
+        parts = ["Available upstream artifacts:"]
+        for index, item in enumerate(artifacts, 1):
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or item.get("artifact_id") or item.get("file_id") or f"artifact_{index}")
+            file_id = str(item.get("file_id") or "")
+            summary = str(item.get("summary") or "")
+            line = f"- {name}"
+            if file_id:
+                line += f" (file_id: {file_id})"
+            if summary:
+                line += f": {summary}"
+            parts.append(line)
+        return "\n".join(parts) if len(parts) > 1 else ""
 
     @staticmethod
     def _image_urls(invocation: WorkerInvocation) -> list[str]:
