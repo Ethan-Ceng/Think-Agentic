@@ -47,6 +47,8 @@ def test_chat_runtime_keeps_deepseek_v4_parameters_and_reasoning_content() -> No
         {
             "thinking": {"type": "enabled"},
             "reasoning_effort": "high",
+            "enable_thinking": False,
+            "thinking_budget": 4096,
             "response_format": {"type": "json_object"},
             "temperature": 0.2,
             "unsupported": "drop",
@@ -56,6 +58,8 @@ def test_chat_runtime_keeps_deepseek_v4_parameters_and_reasoning_content() -> No
     assert safe_parameters == {
         "thinking": {"type": "enabled"},
         "reasoning_effort": "high",
+        "enable_thinking": False,
+        "thinking_budget": 4096,
         "response_format": {"type": "json_object"},
         "temperature": 0.2,
     }

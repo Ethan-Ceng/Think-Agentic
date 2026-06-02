@@ -161,6 +161,8 @@ class ChatCompletionRuntime:
             "stop",
             "thinking",
             "reasoning_effort",
+            "enable_thinking",
+            "thinking_budget",
             "response_format",
         }
         return {key: value for key, value in parameters.items() if key in allowed and value is not None}

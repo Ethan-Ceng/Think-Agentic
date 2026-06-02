@@ -15,7 +15,7 @@
     - chat
 - name: tongyi
   label: 通义千问
-  description: 通义千问提供的模型，例如千问-max、千问-plus等。
+  description: 阿里百炼/通义千问提供的模型，当前包含 qwen3.7-max、qwen3.7-plus 和 qwen3.6-flash。
   icon: icon.png
   background: "#FFFFFF"
   supported_model_types:

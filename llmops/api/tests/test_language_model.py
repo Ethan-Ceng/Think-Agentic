@@ -48,6 +48,7 @@ def test_llm_provider_service_builds_system_specs_from_yaml_and_env() -> None:
     providers = service.system_provider_specs()
     openai = next(provider for provider in providers if provider["provider"] == "openai")
     deepseek = next(provider for provider in providers if provider["provider"] == "deepseek")
+    tongyi = next(provider for provider in providers if provider["provider"] == "tongyi")
     gpt_4o_mini = next(model for model in openai["models"] if model["model"] == "gpt-4o-mini")
     deepseek_v4_pro = next(model for model in deepseek["models"] if model["model"] == "deepseek-v4-pro")
 
@@ -60,6 +61,11 @@ def test_llm_provider_service_builds_system_specs_from_yaml_and_env() -> None:
     assert deepseek_v4_pro["is_default"] is True
     assert deepseek_v4_pro["context_window"] == 1048576
     assert deepseek_v4_pro["default_parameters"]["reasoning_effort"] == "high"
+    assert [model["model"] for model in tongyi["models"]] == [
+        "qwen3.7-plus",
+        "qwen3.7-max",
+        "qwen3.6-flash",
+    ]
 
 
 def test_language_models_route_keeps_legacy_payload_shape() -> None:
