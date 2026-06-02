@@ -28,7 +28,7 @@ llmops = 企业 Agent 平台控制面
 autonomous runtime = 主动规划、多 Agent 执行、任务治理运行面
 ```
 
-不要简单把 `agentic` 复制进 `llmops`。正确做法是把 `agentic` 的 Planner/ReAct/工具执行/沙箱/事件流思想吸收到 `llmops` 的平台模型里。
+不要简单把 `agentic` 复制进 `llmops`。正确做法是把 `agentic` 的 Planner/ReAct/工具执行/沙箱/事件流思想吸收到 `llmops` 的平台模型里。专项设计见 `llmops-agentic-runtime-design.md`。
 
 ## 2. 最新路线修正
 
@@ -458,6 +458,14 @@ Worker Agent 可以先从现有 App 创建，后续再支持从 Workflow、Tool 
 目标：先把 `llmops` 改造成企业 Agent 平台底座，为后续自主 Agent Runtime 提供稳定资产层。
 
 周期建议：3-5 周。
+
+当前状态（2026-06-02）：
+
+- 1-4 平台底座 MVP 已完成，可进入 Agent 前置和 Runtime 工作。
+- Setting、Storage 配置、LLM Provider/Model、Files 类网盘管理已落地。
+- Files 已支持分页、目录树、批量移动/删除、知识库来源；下一步重点是 Agent 输入文件、Artifact 登记和 `ArtifactRef`。
+- LLM Provider 已支持账号级密钥加密、脱敏展示、系统 YAML 真实模型同步，Agent 页面后续应只选择模型，不直接填写密钥。
+- `agentic` 接入方式已明确：`llmops` 负责平台控制面和运行治理，`agentic` 的 Planner/ReAct 思想作为 PlannerAgent、ReActWorkerAgent 和事件流能力来源。
 
 主要任务：
 
@@ -936,18 +944,24 @@ ui/src/hooks/use-model-provider.ts
 
 ## 13. 近期行动清单
 
-建议最近一个迭代先完成平台基础，而不是直接做 A2A。
+建议最近一个迭代从 Agent 前置开始，不直接做 A2A。
 
 1. 明确 Router Agent / Worker Agent 边界。
 2. 设计内部 `WorkerInvocation` / `WorkerResult` / `AgentEvent` 协议。
-3. 新增或改造文件资产模型，区分 UploadFile、Artifact、DatasetDocument。
-4. 设计 LLM Provider / Model 管理页面。
-5. 设计系统设置页面、`account_settings` 表和敏感字段加密处理。
-6. 设计 Capability Registry。
-7. 实现从现有 App 创建 Worker Agent。
-8. 新增 Router/Worker Agent 页面雏形。
-9. 再实现 `WorkerRuntime` 调用 App Worker。
-10. 最后启动 Router Planner MVP。
+3. 落地文件作为 Agent task 输入。
+4. 落地 Agent 产物 Artifact 登记和 `ArtifactRef`。
+5. 设计 Capability Registry 第一版。
+6. 实现从现有 App 创建 Worker Agent。
+7. 新增 Router/Worker Agent 页面雏形。
+8. 实现 `WorkerRuntime` 调用 App Worker。
+9. 将 Worker 执行过程转换为统一 AgentEvent。
+10. 启动 Router Planner MVP。
+
+已完成的基础项：
+
+- LLM Provider / Model 管理页面。
+- 系统设置页面、`account_settings` 表和敏感字段加密处理。
+- Files 文件资产管理基础能力。
 
 ## 14. 最终目标
 
