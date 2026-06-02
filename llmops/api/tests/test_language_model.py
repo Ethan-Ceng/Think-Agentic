@@ -8,6 +8,7 @@ from app.core.config import Settings
 from app.core.language_model import LanguageModelManager
 from app.models.account import Account
 from app.services.language_model_service import LanguageModelService
+from app.services.llm_provider_service import LLMProviderService
 
 
 def test_language_model_manager_loads_yaml_metadata() -> None:
@@ -31,6 +32,32 @@ def test_language_model_service_keeps_legacy_fields() -> None:
     assert "chat" in openai["support_model_types"]
     assert any(model["model_name"] == "gpt-4o-mini" for model in openai["models"])
     assert openai["models"][0]["context_windows"] == openai["models"][0]["context_window"]
+
+
+def test_llm_provider_service_builds_system_specs_from_yaml_and_env() -> None:
+    service = LLMProviderService(
+        settings=Settings(
+            _env_file=None,
+            openai_api_key="openai-key",
+            openai_base_url="https://openai-compatible.example.test/v1",
+            default_llm_provider="deepseek",
+            default_llm_model="deepseek-chat",
+        )
+    )
+
+    providers = service.system_provider_specs()
+    openai = next(provider for provider in providers if provider["provider"] == "openai")
+    deepseek = next(provider for provider in providers if provider["provider"] == "deepseek")
+    gpt_4o_mini = next(model for model in openai["models"] if model["model"] == "gpt-4o-mini")
+    deepseek_chat = next(model for model in deepseek["models"] if model["model"] == "deepseek-chat")
+
+    assert openai["name"] == "OpenAI"
+    assert openai["base_url"] == "https://openai-compatible.example.test/v1"
+    assert openai["api_key"] == "openai-key"
+    assert gpt_4o_mini["context_window"] == 128000
+    assert "tool_call" in gpt_4o_mini["features"]
+    assert deepseek["is_default"] is True
+    assert deepseek_chat["is_default"] is True
 
 
 def test_language_models_route_keeps_legacy_payload_shape() -> None:

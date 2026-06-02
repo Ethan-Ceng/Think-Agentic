@@ -24,6 +24,10 @@ class LLMProviderUpdateRequest(BaseModel):
     config: dict[str, Any] | None = None
 
 
+class LLMSyncSystemProvidersRequest(BaseModel):
+    reset: bool = False
+
+
 class LLMModelCreateRequest(BaseModel):
     model: str
     display_name: str = ""

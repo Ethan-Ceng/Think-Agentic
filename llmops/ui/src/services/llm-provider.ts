@@ -7,6 +7,10 @@ import type {
 
 export const getLLMProviders = () => get<GetLLMProvidersResponse>('/llm-providers')
 
+export const syncSystemLLMProviders = (body: { reset?: boolean } = {}) => {
+  return post<GetLLMProvidersResponse>('/llm-providers/system-sync', { body })
+}
+
 export const createLLMProvider = (body: Record<string, any>) => {
   return post<LLMProviderResponse>('/llm-providers', { body })
 }

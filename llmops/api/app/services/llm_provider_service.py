@@ -1,9 +1,14 @@
 from dataclasses import dataclass, field
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from app.core.config import Settings, get_settings
 from app.core.exceptions import NotFoundException
+from app.core.language_model import LanguageModelManager
+from app.core.language_model.chat_runtime import PROVIDER_RUNTIMES
+from app.core.language_model.entities import ModelEntity, Provider
 from app.models.llm_provider import LLMModel, LLMProvider
 from app.services.base_service import BaseService
 from app.services.setting_crypto import MASKED_SECRET, SettingCrypto
@@ -12,14 +17,83 @@ from app.services.setting_crypto import MASKED_SECRET, SettingCrypto
 @dataclass
 class LLMProviderService(BaseService):
     crypto: SettingCrypto = field(default_factory=SettingCrypto)
+    language_model_manager: LanguageModelManager = field(default_factory=LanguageModelManager)
+    settings: Settings = field(default_factory=get_settings)
 
     def list_providers(self, session: Session, account_id: UUID) -> list[LLMProvider]:
+        self.ensure_system_providers(session, account_id)
         return (
             session.query(LLMProvider)
             .filter(LLMProvider.account_id == account_id)
             .order_by(LLMProvider.is_default.desc(), LLMProvider.updated_at.desc())
             .all()
         )
+
+    def ensure_system_providers(self, session: Session, account_id: UUID) -> None:
+        provider_count = session.query(LLMProvider).filter(LLMProvider.account_id == account_id).count()
+        if provider_count == 0:
+            self.sync_system_providers(session, account_id, reset=True)
+
+    def sync_system_providers(self, session: Session, account_id: UUID, *, reset: bool = False) -> list[LLMProvider]:
+        if reset:
+            provider_ids = [
+                provider_id
+                for (provider_id,) in session.query(LLMProvider.id).filter(LLMProvider.account_id == account_id).all()
+            ]
+            if provider_ids:
+                session.query(LLMModel).filter(LLMModel.provider_id.in_(provider_ids)).delete(synchronize_session=False)
+                session.query(LLMProvider).filter(LLMProvider.id.in_(provider_ids)).delete(synchronize_session=False)
+                session.flush()
+
+        created_or_updated: list[LLMProvider] = []
+        for spec in self.system_provider_specs():
+            provider = self._upsert_system_provider(session, account_id, spec)
+            for model_spec in spec["models"]:
+                self._upsert_system_model(session, account_id, provider, model_spec)
+            created_or_updated.append(provider)
+        return created_or_updated
+
+    def system_provider_specs(self) -> list[dict[str, Any]]:
+        providers = self.language_model_manager.get_providers()
+        default_provider_name = self._default_provider_name(providers)
+        specs = []
+        for provider in providers:
+            models = provider.get_model_entities()
+            default_model_name = self._default_model_name(provider, models, default_provider_name)
+            runtime = PROVIDER_RUNTIMES.get(provider.name)
+            api_key_env = runtime.api_key_env if runtime else None
+            base_url = (
+                self.settings.provider_base_url(runtime.base_url_env, runtime.default_base_url)
+                if runtime
+                else ""
+            )
+            specs.append(
+                {
+                    "provider": provider.name,
+                    "name": provider.provider_entity.label or provider.name,
+                    "base_url": base_url,
+                    "api_key": self.settings.provider_api_key(api_key_env),
+                    "enabled": True,
+                    "is_default": provider.name == default_provider_name,
+                    "config": {
+                        "source": "system_yaml",
+                        "description": provider.provider_entity.description,
+                        "icon": provider.provider_entity.icon,
+                        "background": provider.provider_entity.background,
+                        "supported_model_types": [
+                            model_type.value for model_type in provider.provider_entity.supported_model_types
+                        ],
+                        "api_key_env": api_key_env or "",
+                        "base_url_env": runtime.base_url_env if runtime else "",
+                        "requires_api_key": runtime.requires_api_key if runtime else True,
+                    },
+                    "models": [
+                        self._system_model_spec(model_entity, is_default=model_entity.model_name == default_model_name)
+                        for model_entity in models
+                    ],
+                }
+            )
+        return specs
 
     def list_models(self, session: Session, account_id: UUID, provider_id: UUID) -> list[LLMModel]:
         provider = self.get_provider(session, account_id, provider_id)
@@ -215,6 +289,74 @@ class LLMProviderService(BaseService):
     def decrypt_api_key(self, provider: LLMProvider) -> str:
         return self.crypto.decrypt(provider.api_key_encrypted)
 
+    def _upsert_system_provider(self, session: Session, account_id: UUID, spec: dict[str, Any]) -> LLMProvider:
+        provider = (
+            session.query(LLMProvider)
+            .filter(
+                LLMProvider.account_id == account_id,
+                LLMProvider.provider == spec["provider"],
+                LLMProvider.name == spec["name"],
+            )
+            .one_or_none()
+        )
+        if provider is None:
+            return self.create_provider(
+                session,
+                account_id,
+                provider=spec["provider"],
+                name=spec["name"],
+                base_url=spec["base_url"],
+                api_key=spec["api_key"],
+                enabled=spec["enabled"],
+                is_default=spec["is_default"],
+                config=spec["config"],
+            )
+
+        updates = {
+            "base_url": provider.base_url or spec["base_url"],
+            "enabled": provider.enabled,
+            "is_default": spec["is_default"],
+            "config": {**spec["config"], **(provider.config or {})},
+        }
+        if not provider.api_key_encrypted and spec["api_key"]:
+            updates["api_key_encrypted"] = self.crypto.encrypt(spec["api_key"])
+        if spec["is_default"]:
+            self._clear_default_provider(session, account_id, exclude_id=provider.id)
+        return self.update(session, provider, **updates)
+
+    def _upsert_system_model(
+        self,
+        session: Session,
+        account_id: UUID,
+        provider: LLMProvider,
+        spec: dict[str, Any],
+    ) -> LLMModel:
+        model = (
+            session.query(LLMModel)
+            .filter(
+                LLMModel.account_id == account_id,
+                LLMModel.provider_id == provider.id,
+                LLMModel.model == spec["model"],
+            )
+            .one_or_none()
+        )
+        if model is None:
+            return self.create_model(session, account_id, provider.id, **spec)
+
+        if spec["is_default"]:
+            self._clear_default_model(session, account_id, provider.id, exclude_id=model.id)
+        updates = {
+            "display_name": model.display_name or spec["display_name"],
+            "model_type": model.model_type or spec["model_type"],
+            "features": model.features or spec["features"],
+            "context_window": model.context_window or spec["context_window"],
+            "max_output_tokens": model.max_output_tokens or spec["max_output_tokens"],
+            "default_parameters": model.default_parameters or spec["default_parameters"],
+            "enabled": model.enabled,
+            "is_default": spec["is_default"],
+        }
+        return self.update(session, model, **updates)
+
     def _clear_default_provider(self, session: Session, account_id: UUID, exclude_id: UUID | None = None) -> None:
         query = session.query(LLMProvider).filter(LLMProvider.account_id == account_id)
         if exclude_id:
@@ -240,3 +382,45 @@ class LLMProviderService(BaseService):
     @staticmethod
     def _same_id(left, right) -> bool:
         return str(left) == str(right)
+
+    def _default_provider_name(self, providers: list[Provider]) -> str:
+        configured = self.settings.default_llm_provider
+        if any(provider.name == configured for provider in providers):
+            return configured
+        return providers[0].name if providers else ""
+
+    def _default_model_name(
+        self,
+        provider: Provider,
+        models: list[ModelEntity],
+        default_provider_name: str,
+    ) -> str:
+        if not models:
+            return ""
+        if provider.name == default_provider_name and any(
+            model.model_name == self.settings.default_llm_model for model in models
+        ):
+            return self.settings.default_llm_model
+        return models[0].model_name
+
+    @classmethod
+    def _system_model_spec(cls, model_entity: ModelEntity, *, is_default: bool = False) -> dict[str, Any]:
+        return {
+            "model": model_entity.model_name,
+            "display_name": model_entity.label or model_entity.model_name,
+            "model_type": model_entity.model_type.value,
+            "features": [feature.value for feature in model_entity.features],
+            "context_window": model_entity.context_window,
+            "max_output_tokens": model_entity.max_output_tokens,
+            "default_parameters": cls._default_parameters(model_entity),
+            "enabled": True,
+            "is_default": is_default,
+        }
+
+    @staticmethod
+    def _default_parameters(model_entity: ModelEntity) -> dict[str, Any]:
+        defaults = dict(model_entity.attributes)
+        for parameter in model_entity.parameters:
+            if parameter.default is not None:
+                defaults[parameter.name] = parameter.default
+        return defaults

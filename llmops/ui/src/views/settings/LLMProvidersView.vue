@@ -8,11 +8,13 @@ import {
   deleteLLMModel,
   deleteLLMProvider,
   getLLMProviders,
+  syncSystemLLMProviders,
   updateLLMModel,
   updateLLMProvider,
 } from '@/services/llm-provider'
 
 const loading = ref(false)
+const syncing = ref(false)
 const providerDialogVisible = ref(false)
 const modelDialogVisible = ref(false)
 const selectedProviderId = ref('')
@@ -125,6 +127,20 @@ const removeProvider = async (provider: LLMProvider) => {
   await loadProviders()
 }
 
+const resetSystemProviders = async () => {
+  await ElMessageBox.confirm('当前供应商和模型会被系统模型配置替换。', '重置系统模型', { type: 'warning' })
+  syncing.value = true
+  try {
+    const res = await syncSystemLLMProviders({ reset: true })
+    providers.value = res.data
+    selectedProviderId.value =
+      providers.value.find((provider) => provider.is_default)?.id || providers.value[0]?.id || ''
+    ElMessage.success('系统模型已同步')
+  } finally {
+    syncing.value = false
+  }
+}
+
 const saveModel = async () => {
   if (!selectedProvider.value) return
   const payload = { ...modelForm }
@@ -153,18 +169,21 @@ onMounted(loadProviders)
     <aside class="bg-white p-4 ring-1 ring-slate-200">
       <div class="mb-3 flex items-center justify-between">
         <h2 class="text-base font-semibold text-gray-900">供应商</h2>
-        <el-button
-          type="primary"
-          size="small"
-          @click="
-            () => {
-              resetProviderForm()
-              providerDialogVisible = true
-            }
-          "
-        >
-          新增
-        </el-button>
+        <div class="flex gap-2">
+          <el-button size="small" :loading="syncing" @click="resetSystemProviders">重置系统模型</el-button>
+          <el-button
+            type="primary"
+            size="small"
+            @click="
+              () => {
+                resetProviderForm()
+                providerDialogVisible = true
+              }
+            "
+          >
+            新增
+          </el-button>
+        </div>
       </div>
       <button
         v-for="provider in providers"

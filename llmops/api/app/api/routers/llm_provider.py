@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_account, get_db_session, get_llm_provider_service
 from app.models.account import Account
 from app.schemas.llm_provider import (
+    LLMSyncSystemProvidersRequest,
     LLMModelCreateRequest,
     LLMModelUpdateRequest,
     LLMProviderCreateRequest,
@@ -24,6 +25,17 @@ def list_llm_providers(
     svc: LLMProviderService = Depends(get_llm_provider_service),
 ):
     providers = svc.list_providers(session, current_user.id)
+    return success_json([svc.serialize_provider(session, provider) for provider in providers])
+
+
+@router.post("/system-sync")
+def sync_system_llm_providers(
+    req: LLMSyncSystemProvidersRequest,
+    session: Session = Depends(get_db_session),
+    current_user: Account = Depends(get_current_account),
+    svc: LLMProviderService = Depends(get_llm_provider_service),
+):
+    providers = svc.sync_system_providers(session, current_user.id, reset=req.reset)
     return success_json([svc.serialize_provider(session, provider) for provider in providers])
 
 
