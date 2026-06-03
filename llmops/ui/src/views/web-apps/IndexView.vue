@@ -7,20 +7,24 @@ import { useRoute } from 'vue-router'
 import { cloneDeep } from 'lodash'
 import { ElMessage } from 'element-plus'
 import { useAccountStore } from '@/stores/account'
-import { useGetAppConversations, useGetWebApp, useStopWebAppChat, useWebAppChat } from '@/hooks/use-web-app'
 import {
-  useDeleteConversation,
-  useGetConversationMessagesWithPage,
-  useUpdateConversationIsPinned,
-} from '@/hooks/use-conversation'
+  useDeleteWebAppConversation,
+  useGenerateWebAppSuggestedQuestions,
+  useGetAppConversations,
+  useGetWebApp,
+  useGetWebAppConversationMessagesWithPage,
+  useStopWebAppChat,
+  useUpdateWebAppConversationIsPinned,
+  useWebAppChat,
+} from '@/hooks/use-web-app'
 import { useAudioPlayer, useAudioToText } from '@/hooks/use-audio'
 import UpdateNameModal from './components/UpdateNameModal.vue'
 import HumanMessage from '@/components/HumanMessage.vue'
 import AiMessage from '@/components/AiMessage.vue'
-import { useGenerateSuggestedQuestions } from '@/hooks/use-ai'
 import { QueueEvent } from '@/config'
 import { uploadImage } from '@/services/upload-file'
 import AudioRecorder from 'js-audio-recorder'
+import type { WebAppChatRequest } from '@/models/web-app'
 
 // 1.定义页面所需数据
 const route = useRoute()
@@ -47,12 +51,12 @@ const {
   unpinned_conversations,
   loadWebAppConversations,
 } = useGetAppConversations()
-const { handleDeleteConversation } = useDeleteConversation()
-const { messages, loadConversationMessagesWithPage } = useGetConversationMessagesWithPage()
-const { handleUpdateConversationIsPinned } = useUpdateConversationIsPinned()
+const { handleDeleteConversation } = useDeleteWebAppConversation()
+const { messages, loadConversationMessagesWithPage } = useGetWebAppConversationMessagesWithPage()
+const { handleUpdateConversationIsPinned } = useUpdateWebAppConversationIsPinned()
 const { loading: webAppChatLoading, handleWebAppChat } = useWebAppChat()
 const { loading: stopWebAppChatLoading, handleStopWebAppChat } = useStopWebAppChat()
-const { suggested_questions, handleGenerateSuggestedQuestions } = useGenerateSuggestedQuestions()
+const { suggested_questions, handleGenerateSuggestedQuestions } = useGenerateWebAppSuggestedQuestions()
 const can_image_input = computed(() => {
   if (web_app.value) {
     return web_app.value?.app_config?.features?.includes('image_input')
@@ -101,7 +105,7 @@ const changeIsPinned = async (idx: number, origin_is_pinned: boolean) => {
     : unpinned_conversations.value[idx]
 
   // 3.2 调用hooks发起api请求
-  await handleUpdateConversationIsPinned(conversation.id, !origin_is_pinned, () => {
+  await handleUpdateConversationIsPinned(String(route.params?.token), conversation.id, !origin_is_pinned, () => {
     // 3.3 执行成功调用回调，更新会话位置
     if (origin_is_pinned) {
       pinned_conversations.value.splice(idx, 1)
@@ -148,7 +152,7 @@ const deleteConversation = async (idx: number, origin_is_pinned: boolean) => {
     : unpinned_conversations.value[idx]
 
   // 6.2 调用hooks发起请求
-  handleDeleteConversation(conversation.id, () => {
+  handleDeleteConversation(String(route.params?.token), conversation.id, () => {
     // 6.3 执行成功调用回调，删除回话
     if (origin_is_pinned) {
       pinned_conversations.value.splice(idx, 1)
@@ -184,7 +188,7 @@ const handleScroll = async (event: Event) => {
   const { scrollTop } = event.target as HTMLElement
   if (scrollTop <= 0 && !webAppChatLoading.value) {
     saveScrollHeight()
-    await loadConversationMessagesWithPage(conversation.value.id, false)
+    await loadConversationMessagesWithPage(String(route.params?.token), conversation.value.id, false)
     restoreScrollPosition()
   }
 }
@@ -231,11 +235,12 @@ const handleSubmit = async () => {
   image_urls.value = []
 
   // 11.6 调用hooks发起请求
-  const req = {
-    conversation_id:
-      selectedConversation.value === 'new_conversation' ? '' : selectedConversation.value,
+  const req: WebAppChatRequest = {
     query: humanQuery,
     image_urls: humanImageUrls,
+  }
+  if (selectedConversation.value !== 'new_conversation') {
+    req.conversation_id = selectedConversation.value
   }
   await handleWebAppChat(String(route.params?.token), req, (event_response) => {
     // 11.7 提取流式事件响应数据以及事件名称
@@ -333,7 +338,7 @@ const handleSubmit = async () => {
     }
     // 11.16 判断是否开启建议问题生成，如果开启了则发起api请求获取数据
     if (web_app.value?.app_config?.suggested_after_answer.enable && message_id.value) {
-      handleGenerateSuggestedQuestions(message_id.value)
+      handleGenerateSuggestedQuestions(String(route.params?.token), message_id.value)
       setTimeout(() => scroller.value && scroller.value.scrollToBottom(), 100)
     }
 
@@ -450,7 +455,7 @@ watch(
       messages.value = []
     } else if (newValue !== '') {
       // 15.3 选择了已有会话，获取对应会话的消息列表
-      await loadConversationMessagesWithPage(newValue, true)
+      await loadConversationMessagesWithPage(String(route.params?.token), newValue, true)
       await nextTick(() => {
         // 15.4 确保在视图更新完成后执行滚动操作
         if (scroller.value) {
@@ -802,6 +807,7 @@ onUnmounted(() => {
     <update-name-modal
       v-model:visible="updateConversationNameModalVisible"
       v-model:conversation_id="updateConversationNameId"
+      :token="String(route.params?.token)"
       :success_callback="successUpdateNameCallback"
     />
   </div>

@@ -157,6 +157,56 @@ def test_update_draft_app_config_accepts_post_for_ui_compatibility() -> None:
     assert seen_payload == {"preset_prompt": ""}
 
 
+def test_update_draft_app_config_merges_partial_payload(monkeypatch) -> None:
+    account = Account(id=uuid.uuid4(), name="tester", email="tester@example.test")
+    app_id = uuid.uuid4()
+    app = SimpleNamespace(id=app_id, account_id=account.id)
+    draft = SimpleNamespace(
+        model_config=DEFAULT_APP_CONFIG["model_config"],
+        dialog_round=3,
+        preset_prompt="keep this prompt",
+        tools=[{"type": "builtin_tool", "provider_id": "google", "tool_id": "google_serper", "params": {}}],
+        workflows=[],
+        datasets=[],
+        retrieval_config=DEFAULT_APP_CONFIG["retrieval_config"],
+        long_term_memory={"enable": True},
+        opening_statement="hello",
+        opening_questions=["what can you do?"],
+        speech_to_text=DEFAULT_APP_CONFIG["speech_to_text"],
+        text_to_speech=DEFAULT_APP_CONFIG["text_to_speech"],
+        suggested_after_answer=DEFAULT_APP_CONFIG["suggested_after_answer"],
+        review_config=DEFAULT_APP_CONFIG["review_config"],
+    )
+    service = AppService()
+    updated = {}
+
+    monkeypatch.setattr(service, "get_app", lambda session, target_app_id, current_user: app)
+    monkeypatch.setattr(service, "get_or_create_draft_config", lambda session, target_app: draft)
+    monkeypatch.setattr(service, "_valid_tools", lambda session, tools, current_user: tools)
+    monkeypatch.setattr(service, "_valid_workflow_ids", lambda session, workflow_ids, current_user: workflow_ids)
+    monkeypatch.setattr(service, "_valid_dataset_ids", lambda session, dataset_ids, current_user: dataset_ids)
+    monkeypatch.setattr(service, "update", lambda session, target, **kwargs: updated.update(kwargs) or target)
+
+    service.update_draft_app_config(
+        None,
+        app_id,
+        {
+            "model_config": {
+                "provider": "deepseek",
+                "model": "deepseek-v4-pro",
+                "parameters": {"top_p": 0.9},
+            }
+        },
+        account,
+    )
+
+    assert updated["model_config"]["provider"] == "deepseek"
+    assert updated["preset_prompt"] == "keep this prompt"
+    assert updated["tools"] == draft.tools
+    assert updated["long_term_memory"] == {"enable": True}
+    assert updated["opening_statement"] == "hello"
+
+
 def test_debug_conversation_messages_accepts_legacy_ui_path() -> None:
     app_id = uuid.uuid4()
     seen = {}

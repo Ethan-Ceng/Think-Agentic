@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { useUpdateConversationName } from '@/hooks/use-conversation'
+import { useUpdateWebAppConversationName } from '@/hooks/use-web-app'
 import type { FormInstance } from 'element-plus'
 import { ref, watch } from 'vue'
 
 // 1.定义自定义组件所需数据
 const props = defineProps({
+  token: { type: String, default: '', required: true },
   conversation_id: { type: String, default: '', required: false },
   visible: { type: Boolean, required: true },
   success_callback: { type: Function, required: false },
@@ -13,7 +14,7 @@ const emits = defineEmits(['update:visible', 'update:conversation_id'])
 const {
   loading: updateConversationNameLoading,
   handleUpdateConversationName, //
-} = useUpdateConversationName()
+} = useUpdateWebAppConversationName()
 const defaultForm = { name: '' }
 const form = ref({ ...defaultForm })
 const formRef = ref<FormInstance>()
@@ -30,7 +31,7 @@ const saveName = async () => {
   }
 
   // 3.2 检测是保存还是新增，调用不同的API接口
-  await handleUpdateConversationName(props.conversation_id, form.value.name)
+  await handleUpdateConversationName(props.token, props.conversation_id, form.value.name)
 
   // 3.3 完成保存操作，隐藏模态窗并调用回调函数
   props.success_callback && props.success_callback(props.conversation_id, form.value.name)

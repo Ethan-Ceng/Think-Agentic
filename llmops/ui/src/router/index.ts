@@ -146,6 +146,16 @@ const router = createRouter({
               name: 'space-apps-analysis',
               component: () => import('@/views/space/apps/AnalysisView.vue'),
             },
+            {
+              path: ':app_id/tasks',
+              name: 'space-apps-tasks',
+              component: () => import('@/views/space/apps/TasksView.vue'),
+            },
+            {
+              path: ':app_id/tasks/:task_id',
+              name: 'space-apps-task-detail',
+              component: () => import('@/views/space/apps/TasksView.vue'),
+            },
           ],
         },
         {

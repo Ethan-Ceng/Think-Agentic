@@ -14,6 +14,7 @@ from app.services.ai_service import AIService
 from app.services.analysis_service import AnalysisService
 from app.services.api_key_service import ApiKeyService
 from app.services.api_tool_service import ApiToolService
+from app.services.agent_task_service import AgentTaskService
 from app.services.app_service import AppService
 from app.services.assistant_agent_service import AssistantAgentService
 from app.services.audio_service import AudioService
@@ -71,6 +72,10 @@ def get_api_tool_service() -> ApiToolService:
 
 def get_app_service() -> AppService:
     return AppService()
+
+
+def get_agent_task_service() -> AgentTaskService:
+    return AgentTaskService()
 
 
 def get_assistant_agent_service(settings: Settings = Depends(get_settings)) -> AssistantAgentService:

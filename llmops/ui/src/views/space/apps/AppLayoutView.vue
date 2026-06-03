@@ -93,6 +93,16 @@ onMounted(async () => await loadApp(String(route.params?.app_id)))
         >
           统计分析
         </router-link>
+        <router-link
+          :to="{ name: 'space-apps-tasks', params: { app_id: String(route.params?.app_id) } }"
+          :class="[
+            'rounded-full px-4 py-1.5 text-sm text-gray-600 transition-colors hover:text-gray-900',
+            route.path.includes('/tasks') ? '!bg-white !font-medium !text-blue-700 !shadow-sm' : '',
+          ]"
+          active-class="!bg-white !font-medium !text-blue-700 !shadow-sm"
+        >
+          执行记录
+        </router-link>
       </nav>
 
       <div class="flex min-w-0 flex-1 justify-end">

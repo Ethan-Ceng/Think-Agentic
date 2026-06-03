@@ -200,7 +200,14 @@ class AppService(BaseService):
     ) -> AppConfigVersion:
         app = self.get_app(session, app_id, account)
         draft = self.get_or_create_draft_config(session, app)
-        config = self._validate_config(session, draft_app_config, account)
+        config = self._validate_config(
+            session,
+            {
+                **self._config_to_dict(draft),
+                **(draft_app_config or {}),
+            },
+            account,
+        )
         return self.update(session, draft, **config)
 
     def publish_draft_app_config(self, session: Session, app_id: UUID, account: Account) -> App:

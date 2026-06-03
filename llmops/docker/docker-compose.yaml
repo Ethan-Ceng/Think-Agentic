@@ -9,7 +9,7 @@ services:
     restart: always
     environment: [ ]
     ports:
-      - "${UI_HOST_PORT:-3000}:3000"
+      - "${UI_HOST_PORT:-3100}:3000"
   llmops-api:
     image: llmops-api:0.1.0
     build:
@@ -62,7 +62,7 @@ services:
       COS_DOMAIN: ${COS_DOMAIN:-}
       FILE_STORAGE_TYPE: ${FILE_STORAGE_TYPE:-local}
       LOCAL_STORAGE_ROOT: ${LOCAL_STORAGE_ROOT:-/app/api/storage/uploads}
-      LOCAL_STORAGE_BASE_URL: ${LOCAL_STORAGE_BASE_URL:-http://localhost:3000/api/upload-files}
+      LOCAL_STORAGE_BASE_URL: ${LOCAL_STORAGE_BASE_URL:-http://localhost:3100/api/upload-files}
       # Celery 异步队列任务配置
       CELERY_BROKER_DB: 1
       CELERY_RESULT_BACKEND_DB: 1
@@ -74,7 +74,7 @@ services:
       # GitHub OAuth 应用秘钥
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
       GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
-      GITHUB_REDIRECT_URI: ${GITHUB_REDIRECT_URI:-http://localhost:3000/auth/authorize/github}
+      GITHUB_REDIRECT_URI: ${GITHUB_REDIRECT_URI:-http://localhost:3100/auth/authorize/github}
       # LangSmith 配置
       LANGCHAIN_TRACING_V2: ${LANGCHAIN_TRACING_V2:-false}
       LANGCHAIN_ENDPOINT: ${LANGCHAIN_ENDPOINT:-https://api.smith.langchain.com}
@@ -167,7 +167,7 @@ services:
       COS_DOMAIN: ${COS_DOMAIN:-}
       FILE_STORAGE_TYPE: ${FILE_STORAGE_TYPE:-local}
       LOCAL_STORAGE_ROOT: ${LOCAL_STORAGE_ROOT:-/app/api/storage/uploads}
-      LOCAL_STORAGE_BASE_URL: ${LOCAL_STORAGE_BASE_URL:-http://localhost:3000/api/upload-files}
+      LOCAL_STORAGE_BASE_URL: ${LOCAL_STORAGE_BASE_URL:-http://localhost:3100/api/upload-files}
       # Celery 异步队列任务配置
       CELERY_BROKER_DB: 1
       CELERY_RESULT_BACKEND_DB: 1
@@ -179,7 +179,7 @@ services:
       # GitHub OAuth 应用秘钥
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
       GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
-      GITHUB_REDIRECT_URI: ${GITHUB_REDIRECT_URI:-http://localhost:3000/auth/authorize/github}
+      GITHUB_REDIRECT_URI: ${GITHUB_REDIRECT_URI:-http://localhost:3100/auth/authorize/github}
       # LangSmith 配置
       LANGCHAIN_TRACING_V2: ${LANGCHAIN_TRACING_V2:-false}
       LANGCHAIN_ENDPOINT: ${LANGCHAIN_ENDPOINT:-https://api.smith.langchain.com}

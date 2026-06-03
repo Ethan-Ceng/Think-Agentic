@@ -11,6 +11,11 @@ class WebAppChatRequest(BaseModel):
     query: str = Field(..., min_length=1)
     image_urls: list[str] = Field(default_factory=list, max_length=5)
 
+    @field_validator("conversation_id", mode="before")
+    @classmethod
+    def normalize_empty_conversation_id(cls, value):
+        return None if value == "" else value
+
     @field_validator("image_urls")
     @classmethod
     def validate_image_urls(cls, value: list[str]) -> list[str]:
