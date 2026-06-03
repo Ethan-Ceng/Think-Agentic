@@ -4,16 +4,21 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.core.conversation import InvokeFrom, MessageStatus
 from app.core.exceptions import FailException, NotFoundException
+from app.domain.agent_runtime.planner import PlannerInput, PlannerWorkerDescriptor, RouterPlannerAgent
 from app.domain.agent_runtime.protocols import ArtifactRef, RouterPlan, RouterPlanStep, WorkerInvocation, WorkerResult
 from app.domain.agent_runtime.router_runtime import RouterRuntime
 from app.domain.agent_runtime.worker_runtime import WorkerRuntime
 from app.models.account import Account
 from app.models.agent import Agent, AgentBinding, AgentVersion
+from app.models.app import App
+from app.models.conversation import Message
 from app.models.task import AgentPlan, AgentStep, AgentTask
 from app.services.app_service import AppService
 from app.services.base_service import BaseService
 from app.services.file_service import FileService
+from app.services.language_model_service import LanguageModelService
 from app.services.task_engine_service import TaskEngineService, TaskStatus
 from app.services.trace_service import TraceService
 
@@ -42,15 +47,19 @@ class RouterAgentManagerService(BaseService):
         task_engine: TaskEngineService | None = None,
         router_runtime: RouterRuntime | None = None,
         worker_runtime: WorkerRuntime | None = None,
+        planner_agent: RouterPlannerAgent | None = None,
         app_service: AppService | None = None,
         file_service: FileService | None = None,
+        language_model_service: LanguageModelService | None = None,
         trace_service: TraceService | None = None,
     ) -> None:
         self.task_engine = task_engine or TaskEngineService()
         self.router_runtime = router_runtime or RouterRuntime()
         self.app_service = app_service or AppService()
         self.worker_runtime = worker_runtime or WorkerRuntime(app_service=self.app_service)
+        self.planner_agent = planner_agent or RouterPlannerAgent()
         self.file_service = file_service or FileService()
+        self.language_model_service = language_model_service or LanguageModelService()
         self.trace_service = trace_service or TraceService()
 
     def create_router_agent(
@@ -99,6 +108,106 @@ class RouterAgentManagerService(BaseService):
         )
         self.update(session, agent, draft_version_id=version.id)
         if status == "published":
+            self.update(session, agent, published_version_id=version.id)
+        return agent, version
+
+    def create_planner_agent_from_app(
+        self,
+        session: Session,
+        *,
+        tenant_id: uuid.UUID,
+        app_id: uuid.UUID,
+        account: Account,
+        status: str | None = None,
+    ) -> tuple[Agent, AgentVersion]:
+        app = self.app_service.get_app(session, app_id, account)
+        if (getattr(app, "agent_type", "worker") or "worker") != "planner":
+            raise FailException("Only PlannerAgent apps can be used as planner agents")
+        draft = self.app_service.get_or_create_draft_config(session, app)
+        config = self.app_service._config_to_dict(draft)
+        resolved_status = status or app.status or "draft"
+        existing = (
+            session.query(Agent)
+            .filter(
+                Agent.tenant_id == tenant_id,
+                Agent.runtime_type == "router",
+                Agent.target_ref_type == "app",
+                Agent.target_ref_id == str(app.id),
+            )
+            .one_or_none()
+        )
+        version_payload = {
+            "model_config": config["model_config"],
+            "prompt_config": {
+                "preset_prompt": config.get("preset_prompt") or "",
+                "opening_statement": config.get("opening_statement") or "",
+                "opening_questions": config.get("opening_questions") or [],
+                "review_config": config.get("review_config") or {},
+            },
+            "router_config": {
+                "mode": "manager",
+                "planner": "llm_planner_v1",
+                "max_steps": 5,
+                "allow_parallel": False,
+                "allow_required_approval": False,
+            },
+            "worker_config": {},
+            "capability_bindings": [],
+            "policies": {},
+            "output_schema": {"type": "object"},
+        }
+        if existing is not None:
+            version = self.create(
+                session,
+                AgentVersion,
+                tenant_id=tenant_id,
+                agent_id=existing.id,
+                version=self._next_agent_version(session, existing.id),
+                config_type="router",
+                **version_payload,
+            )
+            self.update(
+                session,
+                existing,
+                name=app.name,
+                icon=app.icon,
+                description=app.description or "",
+                status=resolved_status,
+                product_category="planner",
+                visibility_scope={"account_id": str(app.account_id)},
+                target_ref_type="app",
+                target_ref_id=str(app.id),
+                draft_version_id=version.id,
+                published_version_id=version.id if resolved_status == "published" else existing.published_version_id,
+            )
+            return existing, version
+
+        agent = self.create(
+            session,
+            Agent,
+            tenant_id=tenant_id,
+            created_by=account.id,
+            name=app.name,
+            icon=app.icon or "",
+            description=app.description or "",
+            runtime_type="router",
+            product_category="planner",
+            status=resolved_status,
+            visibility_scope={"account_id": str(app.account_id)},
+            target_ref_type="app",
+            target_ref_id=str(app.id),
+        )
+        version = self.create(
+            session,
+            AgentVersion,
+            tenant_id=tenant_id,
+            agent_id=agent.id,
+            version=1,
+            config_type="router",
+            **version_payload,
+        )
+        self.update(session, agent, draft_version_id=version.id)
+        if resolved_status == "published":
             self.update(session, agent, published_version_id=version.id)
         return agent, version
 
@@ -235,7 +344,229 @@ class RouterAgentManagerService(BaseService):
             .all()
         )
 
+    def bind_worker_app_to_planner(
+        self,
+        session: Session,
+        *,
+        planner_app_id: uuid.UUID,
+        worker_app_id: uuid.UUID,
+        account: Account,
+        priority: int = 0,
+        conditions: dict[str, Any] | None = None,
+        enabled: bool = True,
+    ) -> AgentBinding:
+        planner_agent, _ = self.create_planner_agent_from_app(
+            session,
+            tenant_id=account.id,
+            app_id=planner_app_id,
+            account=account,
+        )
+        worker_agent, _ = self.create_worker_agent_from_app(
+            session,
+            tenant_id=account.id,
+            app_id=worker_app_id,
+            account=account,
+            status="published",
+        )
+        return self.bind_worker(
+            session,
+            tenant_id=account.id,
+            router_agent_id=planner_agent.id,
+            worker_agent_id=worker_agent.id,
+            priority=priority,
+            conditions=conditions,
+            enabled=enabled,
+        )
+
+    def list_planner_worker_bindings(
+        self,
+        session: Session,
+        *,
+        planner_app_id: uuid.UUID,
+        account: Account,
+    ) -> list[dict[str, Any]]:
+        planner_agent, _ = self.create_planner_agent_from_app(
+            session,
+            tenant_id=account.id,
+            app_id=planner_app_id,
+            account=account,
+        )
+        rows = (
+            session.query(AgentBinding, Agent)
+            .join(Agent, AgentBinding.worker_agent_id == Agent.id)
+            .filter(
+                AgentBinding.tenant_id == account.id,
+                AgentBinding.router_agent_id == planner_agent.id,
+                Agent.tenant_id == account.id,
+                Agent.runtime_type == "worker",
+            )
+            .order_by(AgentBinding.priority.desc(), Agent.updated_at.desc())
+            .all()
+        )
+        worker_app_map = self._worker_app_map(session, [worker for _, worker in rows], account.id)
+        return [
+            {
+                "id": str(binding.id),
+                "enabled": binding.enabled,
+                "priority": binding.priority,
+                "conditions": binding.conditions or {},
+                "worker_agent": self._agent_payload(worker),
+                "worker_app": self._app_payload(worker_app_map.get(str(worker.target_ref_id))),
+                "created_at": self._timestamp(binding.created_at),
+                "updated_at": self._timestamp(binding.updated_at),
+            }
+            for binding, worker in rows
+        ]
+
+    def update_planner_worker_binding(
+        self,
+        session: Session,
+        *,
+        planner_app_id: uuid.UUID,
+        binding_id: uuid.UUID,
+        account: Account,
+        enabled: bool,
+        priority: int,
+        conditions: dict[str, Any] | None = None,
+    ) -> AgentBinding:
+        planner_agent, _ = self.create_planner_agent_from_app(
+            session,
+            tenant_id=account.id,
+            app_id=planner_app_id,
+            account=account,
+        )
+        binding = self._get_planner_binding(session, account.id, planner_agent.id, binding_id)
+        return self.update(session, binding, enabled=enabled, priority=priority, conditions=conditions or {})
+
+    def delete_planner_worker_binding(
+        self,
+        session: Session,
+        *,
+        planner_app_id: uuid.UUID,
+        binding_id: uuid.UUID,
+        account: Account,
+    ) -> AgentBinding:
+        planner_agent, _ = self.create_planner_agent_from_app(
+            session,
+            tenant_id=account.id,
+            app_id=planner_app_id,
+            account=account,
+        )
+        binding = self._get_planner_binding(session, account.id, planner_agent.id, binding_id)
+        return self.delete(session, binding)
+
+    def create_planner_debug_run(
+        self,
+        session: Session,
+        *,
+        planner_app_id: uuid.UUID,
+        query: str,
+        account: Account,
+        requested_worker_app_ids: list[uuid.UUID] | None = None,
+        input_file_ids: list[str] | None = None,
+        image_urls: list[str] | None = None,
+        raise_on_error: bool = True,
+    ) -> dict[str, Any]:
+        app = self.app_service.get_app(session, planner_app_id, account)
+        if (getattr(app, "agent_type", "worker") or "worker") != "planner":
+            raise FailException("Only PlannerAgent apps can run planner debug")
+        planner_agent, _ = self.create_planner_agent_from_app(
+            session,
+            tenant_id=account.id,
+            app_id=planner_app_id,
+            account=account,
+        )
+        conversation = self.app_service.get_or_create_debug_conversation(session, app, account)
+        message = self.create(
+            session,
+            Message,
+            app_id=app.id,
+            conversation_id=conversation.id,
+            invoke_from=InvokeFrom.DEBUGGER.value,
+            created_by=account.id,
+            query=query,
+            image_urls=image_urls or [],
+            status=MessageStatus.NORMAL.value,
+        )
+        requested_worker_ids = self._requested_worker_agent_ids(
+            session,
+            planner_agent_id=planner_agent.id,
+            account=account,
+            requested_worker_app_ids=requested_worker_app_ids or [],
+        )
+        user_input = {
+            "query": query,
+            "input_file_ids": input_file_ids or [],
+            "message_id": str(message.id),
+            "conversation_id": str(conversation.id),
+            "context": {
+                "message_id": str(message.id),
+                "conversation_id": str(conversation.id),
+                "invoke_from": InvokeFrom.DEBUGGER.value,
+            },
+        }
+        run = None
+        try:
+            run = self.create_manager_run(
+                session,
+                tenant_id=account.id,
+                router_agent_id=planner_agent.id,
+                user_input=user_input,
+                requested_worker_ids=requested_worker_ids,
+                user_id=account.id,
+                conversation_id=conversation.id,
+                account=account,
+            )
+            self.execute_manager_run_steps(session, run=run, account=account)
+            answer = self._task_answer(run.task)
+            if run.task.status == TaskStatus.FAILED.value:
+                self.update(
+                    session,
+                    message,
+                    status=MessageStatus.ERROR.value,
+                    error=run.task.error_message,
+                    answer=answer,
+                )
+            else:
+                self.update(session, message, answer=answer, status=MessageStatus.NORMAL.value)
+        except Exception as exc:
+            self.update(session, message, status=MessageStatus.ERROR.value, error=str(exc), answer="")
+            if raise_on_error:
+                raise
+            return {
+                "conversation_id": str(conversation.id),
+                "message_id": str(message.id),
+                "task_id": str(run.task.id) if run is not None else "",
+                "status": MessageStatus.ERROR.value,
+                "answer": "",
+                "error": str(exc),
+            }
+
+        return {
+            "conversation_id": str(conversation.id),
+            "message_id": str(message.id),
+            "task_id": str(run.task.id),
+            "status": run.task.status,
+            "answer": message.answer,
+            "error": message.error,
+        }
+
     def build_manager_plan(
+        self,
+        *,
+        router_agent: Agent,
+        workers: list[Agent],
+        user_input: dict[str, Any],
+        requested_worker_ids: list[uuid.UUID] | None = None,
+    ) -> RouterPlan:
+        return self._build_rule_manager_plan(
+            router_agent=router_agent,
+            workers=workers,
+            user_input=user_input,
+            requested_worker_ids=requested_worker_ids,
+        )
+
+    def _build_rule_manager_plan(
         self,
         *,
         router_agent: Agent,
@@ -266,7 +597,11 @@ class RouterAgentManagerService(BaseService):
             final_response_policy={"mode": "summarize_worker_results"},
         )
         allowed_worker_ids = {str(worker.id) for worker in selected_workers}
-        return self.router_runtime.validate_plan(plan, allowed_worker_ids=allowed_worker_ids)
+        return self.router_runtime.validate_plan(
+            plan,
+            allowed_worker_ids=allowed_worker_ids,
+            router_id=str(router_agent.id),
+        )
 
     def create_manager_task_from_plan(
         self,
@@ -291,6 +626,171 @@ class RouterAgentManagerService(BaseService):
             conversation_id=conversation_id,
         )
         self.task_engine.start_task(session, task)
+        result = self._persist_manager_plan_for_task(session, task=task, plan=plan, user_input=user_input)
+        self._record_manager_run_created(session, result)
+        return result
+
+    def _build_planner_or_fallback_plan(
+        self,
+        session: Session,
+        *,
+        task: AgentTask,
+        router_agent: Agent,
+        workers: list[Agent],
+        user_input: dict[str, Any],
+        account: Account | None,
+    ) -> RouterPlan:
+        allowed_worker_ids = {str(worker.id) for worker in workers}
+        fallback_reason = ""
+        if account is None:
+            fallback_reason = "planner_account_context_missing"
+        else:
+            try:
+                model = self.language_model_service.load_language_model(
+                    self._router_model_config(session, router_agent),
+                    session=session,
+                    account=account,
+                )
+                planner_result = self.planner_agent.create_plan(
+                    model=model,
+                    planner_input=self._build_planner_input(
+                        session=session,
+                        task=task,
+                        router_agent=router_agent,
+                        workers=workers,
+                    ),
+                )
+                if planner_result.raw_output:
+                    self.trace_service.record(
+                        session,
+                        tenant_id=task.tenant_id,
+                        event_type="planner.generated",
+                        task=task,
+                        payload={
+                            "model": f"{model.provider}/{model.model}",
+                            "usage": planner_result.usage,
+                            "latency_ms": planner_result.latency_ms,
+                            "raw_output": self._truncate(planner_result.raw_output, 4000),
+                        },
+                        token_count=int(planner_result.usage.get("total_tokens") or 0),
+                        latency=float((planner_result.latency_ms or 0) / 1000),
+                    )
+                if planner_result.plan is None:
+                    fallback_reason = planner_result.error or "planner_returned_empty_plan"
+                else:
+                    plan = self.router_runtime.validate_plan(
+                        planner_result.plan,
+                        allowed_worker_ids=allowed_worker_ids,
+                        router_id=str(router_agent.id),
+                        max_steps=5,
+                        allow_async=False,
+                        allow_required_approval=False,
+                    )
+                    self.trace_service.record(
+                        session,
+                        tenant_id=task.tenant_id,
+                        event_type="planner.validated",
+                        task=task,
+                        payload={
+                            "step_count": len(plan.steps),
+                            "worker_ids": [step.worker_id for step in plan.steps],
+                            "risk_level": plan.risk_assessment.get("risk_level") or "low",
+                            "source": plan.risk_assessment.get("source") or "llm_planner_v1",
+                        },
+                    )
+                    return plan
+            except Exception as exc:  # noqa: BLE001
+                fallback_reason = str(exc)
+
+        self.trace_service.record(
+            session,
+            tenant_id=task.tenant_id,
+            event_type="planner.failed",
+            task=task,
+            payload={"error_message": self._truncate(fallback_reason, 1000)},
+        )
+        fallback_plan = self._build_rule_manager_plan(
+            router_agent=router_agent,
+            workers=workers,
+            user_input=user_input,
+        )
+        self.trace_service.record(
+            session,
+            tenant_id=task.tenant_id,
+            event_type="planner.fallback",
+            task=task,
+            payload={
+                "reason": self._truncate(fallback_reason, 1000),
+                "source": "manager_rule_v1",
+                "selected_worker_ids": [step.worker_id for step in fallback_plan.steps],
+            },
+        )
+        return fallback_plan
+
+    def _build_planner_input(
+        self,
+        *,
+        session: Session,
+        task: AgentTask,
+        router_agent: Agent,
+        workers: list[Agent],
+    ) -> PlannerInput:
+        user_input = task.user_input or {}
+        query = str(user_input.get("query") or user_input.get("input") or user_input.get("message") or "")
+        context = user_input.get("context") if isinstance(user_input.get("context"), dict) else {}
+        conversation = user_input.get("conversation") if isinstance(user_input.get("conversation"), dict) else {}
+        return PlannerInput(
+            router_id=str(router_agent.id),
+            query=query,
+            conversation_id=str(task.conversation_id or context.get("conversation_id") or conversation.get("id") or ""),
+            message_id=str(
+                user_input.get("message_id") or context.get("message_id") or conversation.get("message_id") or ""
+            ),
+            input_files=[],
+            recent_history=[],
+            workers=[self._planner_worker_descriptor(session=session, worker=worker) for worker in workers],
+            constraints={
+                "allow_parallel": False,
+                "allow_replan": False,
+                "allow_required_approval": False,
+                "execution_mode": "sync",
+                "max_steps": 5,
+            },
+        )
+
+    def _planner_worker_descriptor(self, *, session: Session, worker: Agent) -> PlannerWorkerDescriptor:
+        version = None
+        if worker.published_version_id or worker.draft_version_id:
+            version = session.get(AgentVersion, worker.published_version_id or worker.draft_version_id)
+        capability_bindings = version.capability_bindings if version is not None else []
+        worker_config = version.worker_config if version is not None else {}
+        return PlannerWorkerDescriptor(
+            worker_id=str(worker.id),
+            name=worker.name,
+            description=worker.description or "",
+            runtime_type=worker.runtime_type,
+            product_category=worker.product_category,
+            target_ref_type=worker.target_ref_type,
+            target_ref_id=worker.target_ref_id,
+            capabilities=capability_bindings if isinstance(capability_bindings, list) else [],
+            config_summary={"worker_config": worker_config if isinstance(worker_config, dict) else {}},
+        )
+
+    def _router_model_config(self, session: Session, router_agent: Agent) -> dict[str, Any]:
+        version_id = router_agent.draft_version_id or router_agent.published_version_id
+        if version_id is None:
+            return {}
+        version = session.get(AgentVersion, version_id)
+        return version.model_config if version is not None else {}
+
+    def _persist_manager_plan_for_task(
+        self,
+        session: Session,
+        *,
+        task: AgentTask,
+        plan: RouterPlan,
+        user_input: dict[str, Any],
+    ) -> RouterManagerRunResult:
         persisted_plan = self.task_engine.create_plan(
             session,
             task=task,
@@ -313,20 +813,23 @@ class RouterAgentManagerService(BaseService):
         if any(step.required_approval for step in plan.steps):
             self.task_engine.wait_for_approval(session, task)
         result = RouterManagerRunResult(task=task, plan=persisted_plan, steps=steps)
+        return result
+
+    def _record_manager_run_created(self, session: Session, result: RouterManagerRunResult) -> None:
         self.trace_service.record(
             session,
-            tenant_id=tenant_id,
+            tenant_id=result.task.tenant_id,
             event_type="router.manager_run.created",
-            task=task,
-            plan=persisted_plan,
+            task=result.task,
+            plan=result.plan,
             payload={
-                "router_agent_id": str(router_agent_id),
-                "step_count": len(steps),
-                "risk_level": persisted_plan.risk_level,
-                "status": task.status,
+                "router_agent_id": str(result.task.router_agent_id),
+                "step_count": len(result.steps),
+                "risk_level": result.plan.risk_level,
+                "plan_source": (result.plan.plan_json or {}).get("risk_assessment", {}).get("source", ""),
+                "status": result.task.status,
             },
         )
-        return result
 
     def execute_manager_run_steps(
         self,
@@ -541,25 +1044,47 @@ class RouterAgentManagerService(BaseService):
         user_id: uuid.UUID | None = None,
         session_id: uuid.UUID | None = None,
         conversation_id: uuid.UUID | None = None,
+        account: Account | None = None,
     ) -> RouterManagerRunResult:
         router = self.get_router_agent(session, tenant_id, router_agent_id)
         workers = self.list_bound_workers(session, tenant_id=tenant_id, router_agent_id=router_agent_id)
-        plan = self.build_manager_plan(
-            router_agent=router,
-            workers=workers,
-            user_input=user_input,
-            requested_worker_ids=requested_worker_ids,
-        )
-        return self.create_manager_task_from_plan(
+        selected_workers = self._select_workers(workers, requested_worker_ids)
+        if not selected_workers:
+            raise FailException("Router agent has no available worker bindings")
+
+        task = self.task_engine.create_task(
             session,
             tenant_id=tenant_id,
             router_agent_id=router_agent_id,
-            plan=plan,
             user_input=user_input,
             user_id=user_id,
             session_id=session_id,
             conversation_id=conversation_id,
         )
+        self.task_engine.start_task(session, task)
+        self.trace_service.record(
+            session,
+            tenant_id=tenant_id,
+            event_type="planner.started",
+            task=task,
+            payload={
+                "router_agent_id": str(router_agent_id),
+                "worker_count": len(selected_workers),
+                "max_steps": 5,
+                "has_input_files": any(self._iter_input_file_ids(user_input)),
+            },
+        )
+        plan = self._build_planner_or_fallback_plan(
+            session,
+            task=task,
+            router_agent=router,
+            workers=selected_workers,
+            user_input=user_input,
+            account=account,
+        )
+        result = self._persist_manager_plan_for_task(session, task=task, plan=plan, user_input=user_input)
+        self._record_manager_run_created(session, result)
+        return result
 
     def get_router_agent(self, session: Session, tenant_id: uuid.UUID, agent_id: uuid.UUID) -> Agent:
         agent = self.get(session, Agent, agent_id)
@@ -572,6 +1097,131 @@ class RouterAgentManagerService(BaseService):
         if agent is None or agent.tenant_id != tenant_id or agent.runtime_type != "worker":
             raise NotFoundException("Worker agent not found")
         return agent
+
+    def _get_planner_binding(
+        self,
+        session: Session,
+        tenant_id: uuid.UUID,
+        router_agent_id: uuid.UUID,
+        binding_id: uuid.UUID,
+    ) -> AgentBinding:
+        binding = (
+            session.query(AgentBinding)
+            .filter(
+                AgentBinding.id == binding_id,
+                AgentBinding.tenant_id == tenant_id,
+                AgentBinding.router_agent_id == router_agent_id,
+            )
+            .one_or_none()
+        )
+        if binding is None:
+            raise NotFoundException("Planner worker binding not found")
+        return binding
+
+    def _requested_worker_agent_ids(
+        self,
+        session: Session,
+        *,
+        planner_agent_id: uuid.UUID,
+        account: Account,
+        requested_worker_app_ids: list[uuid.UUID],
+    ) -> list[uuid.UUID] | None:
+        if not requested_worker_app_ids:
+            return None
+        requested_app_ids = {str(app_id) for app_id in requested_worker_app_ids}
+        rows = (
+            session.query(AgentBinding, Agent)
+            .join(Agent, AgentBinding.worker_agent_id == Agent.id)
+            .filter(
+                AgentBinding.tenant_id == account.id,
+                AgentBinding.router_agent_id == planner_agent_id,
+                AgentBinding.enabled.is_(True),
+                Agent.tenant_id == account.id,
+                Agent.runtime_type == "worker",
+                Agent.target_ref_type == "app",
+            )
+            .all()
+        )
+        worker_agent_ids = [
+            worker.id
+            for _, worker in rows
+            if str(worker.target_ref_id) in requested_app_ids
+        ]
+        if len(worker_agent_ids) != len(requested_app_ids):
+            raise FailException("Requested worker apps must be enabled planner bindings")
+        return worker_agent_ids
+
+    @staticmethod
+    def _task_answer(task: AgentTask) -> str:
+        final_result = task.final_result or {}
+        for key in ("answer", "summary", "result", "error"):
+            value = final_result.get(key)
+            if value:
+                return str(value)
+        steps = final_result.get("steps")
+        if isinstance(steps, list):
+            answers = []
+            for step in steps:
+                if not isinstance(step, dict):
+                    continue
+                output = step.get("output") if isinstance(step.get("output"), dict) else {}
+                answer = output.get("answer") or output.get("summary") or output.get("data", {}).get("answer")
+                if answer:
+                    answers.append(str(answer))
+            if answers:
+                return "\n\n".join(answers)
+        return task.error_message or ""
+
+    @staticmethod
+    def _worker_app_map(session: Session, workers: list[Agent], account_id: uuid.UUID) -> dict[str, App]:
+        app_ids = []
+        for worker in workers:
+            if worker.target_ref_type != "app":
+                continue
+            try:
+                app_ids.append(uuid.UUID(str(worker.target_ref_id)))
+            except (TypeError, ValueError):
+                continue
+        if not app_ids:
+            return {}
+        apps = session.query(App).filter(App.id.in_(app_ids), App.account_id == account_id).all()
+        return {str(app.id): app for app in apps}
+
+    @staticmethod
+    def _agent_payload(agent: Agent) -> dict[str, Any]:
+        return {
+            "id": str(agent.id),
+            "name": agent.name,
+            "icon": agent.icon,
+            "description": agent.description,
+            "runtime_type": agent.runtime_type,
+            "product_category": agent.product_category,
+            "status": agent.status,
+            "target_ref_type": agent.target_ref_type,
+            "target_ref_id": agent.target_ref_id,
+        }
+
+    @staticmethod
+    def _app_payload(app: App | None) -> dict[str, Any] | None:
+        if app is None:
+            return None
+        return {
+            "id": str(app.id),
+            "name": app.name,
+            "icon": app.icon,
+            "description": app.description,
+            "agent_type": getattr(app, "agent_type", "worker") or "worker",
+            "status": app.status,
+        }
+
+    @staticmethod
+    def _timestamp(value) -> int:
+        return int(value.timestamp()) if value else 0
+
+    @staticmethod
+    def _truncate(value: str, limit: int) -> str:
+        text = str(value or "")
+        return text if len(text) <= limit else f"{text[:limit]}..."
 
     @staticmethod
     def _select_workers(workers: list[Agent], requested_worker_ids: list[uuid.UUID] | None) -> list[Agent]:

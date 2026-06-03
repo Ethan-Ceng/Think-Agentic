@@ -10,6 +10,8 @@ const publishHistoryDrawerVisible = ref(false)
 const { loading, app, loadApp } = useGetApp()
 const { loading: publishLoading, handlePublish } = usePublish()
 const { handleCancelPublish } = useCancelPublish()
+const agentTypeLabel = (agentType?: string) => (agentType === 'planner' ? 'PlannerAgent' : 'WorkerAgent')
+const agentTypeTag = (agentType?: string) => (agentType === 'planner' ? 'warning' : 'info')
 
 onMounted(async () => await loadApp(String(route.params?.app_id)))
 </script>
@@ -48,6 +50,15 @@ onMounted(async () => await loadApp(String(route.params?.app_id)))
                 <icon-user class="text-[13px]" />
                 个人空间
               </span>
+              <span class="text-gray-300">·</span>
+              <el-tag
+                size="small"
+                effect="plain"
+                :type="agentTypeTag(app.agent_type)"
+                class="!h-5 !rounded-md !px-1.5 !text-[11px] !leading-5"
+              >
+                {{ agentTypeLabel(app.agent_type) }}
+              </el-tag>
               <span class="text-gray-300">·</span>
               <span class="inline-flex items-center gap-0.5">
                 <icon-schedule class="text-[13px]" />

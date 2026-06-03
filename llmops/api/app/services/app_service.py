@@ -96,6 +96,7 @@ class AppService(BaseService):
             name=req.name,
             icon=req.icon,
             description=req.description,
+            agent_type=getattr(req, "agent_type", "worker") or "worker",
             status=AppStatus.DRAFT.value,
         )
         draft = self._create_config_version(
@@ -128,6 +129,7 @@ class AppService(BaseService):
             name=f"{app.name} Copy",
             icon=app.icon,
             description=app.description,
+            agent_type=getattr(app, "agent_type", "worker") or "worker",
             status=AppStatus.DRAFT.value,
         )
         new_draft = self._create_config_version(
@@ -150,11 +152,16 @@ class AppService(BaseService):
 
     def app_to_worker_agent_descriptor(self, session: Session, app_id: UUID, account: Account) -> WorkerAgentDescriptor:
         app = self.get_app(session, app_id, account)
+        if (getattr(app, "agent_type", "worker") or "worker") != "worker":
+            raise FailException("Only WorkerAgent apps can be used as worker agents")
         config = self.get_or_create_draft_config(session, app)
         return self.worker_agent_adapter.app_to_worker_descriptor(app, self._config_to_dict(config))
 
     def get_apps_with_page(self, session: Session, req, account: Account) -> tuple[list[App], int, int]:
         query = session.query(App).filter(App.account_id == account.id)
+        agent_type = (getattr(req, "agent_type", "") or "").strip()
+        if agent_type:
+            query = query.filter(App.agent_type == agent_type)
         if req.search_word:
             query = query.filter(App.name.ilike(f"%{req.search_word}%"))
         total_record = query.count()
@@ -341,6 +348,10 @@ class AppService(BaseService):
 
     def debug_chat(self, session: Session, app_id: UUID, req, account: Account):
         app = self.get_app(session, app_id, account)
+        if (getattr(app, "agent_type", "worker") or "worker") == "planner":
+            yield from self._debug_planner_chat(session, app, req, account)
+            return
+
         config = self._config_to_dict(self.get_or_create_draft_config(session, app))
         conversation = self._get_or_create_debug_conversation(session, app, account)
         message = self.create(
@@ -367,6 +378,62 @@ class AppService(BaseService):
         finally:
             self._save_agent_result(session, account, app, conversation, message, agent_thoughts)
             AgentQueueManager.clear_task(task_id)
+
+    def _debug_planner_chat(self, session: Session, app: App, req, account: Account):
+        from app.services.router_agent_manager_service import RouterAgentManagerService
+
+        started_at = time.perf_counter()
+        result = RouterAgentManagerService(app_service=self).create_planner_debug_run(
+            session,
+            planner_app_id=app.id,
+            query=req.query,
+            account=account,
+            image_urls=req.image_urls,
+            raise_on_error=False,
+        )
+        task_id = self._parse_uuid(result.get("task_id")) or uuid4()
+        conversation_id = self._parse_uuid(result.get("conversation_id")) or app.debug_conversation_id or uuid4()
+        message_id = self._parse_uuid(result.get("message_id")) or uuid4()
+        latency = time.perf_counter() - started_at
+        error = str(result.get("error") or "")
+        answer = str(result.get("answer") or "")
+        if error and not answer:
+            yield self._format_agent_sse(
+                AgentThought(
+                    id=uuid4(),
+                    task_id=task_id,
+                    event=QueueEvent.ERROR,
+                    observation=error,
+                    latency=latency,
+                ),
+                conversation_id,
+                message_id,
+            )
+            return
+
+        yield self._format_agent_sse(
+            AgentThought(
+                id=uuid4(),
+                task_id=task_id,
+                event=QueueEvent.AGENT_MESSAGE,
+                thought=answer,
+                answer=answer,
+                total_token_count=self._estimate_tokens(answer),
+                latency=latency,
+            ),
+            conversation_id,
+            message_id,
+        )
+        yield self._format_agent_sse(
+            AgentThought(
+                id=uuid4(),
+                task_id=task_id,
+                event=QueueEvent.AGENT_END,
+                latency=latency,
+            ),
+            conversation_id,
+            message_id,
+        )
 
     def stop_debug_chat(self, session: Session, app_id: UUID, task_id: UUID, account: Account) -> None:
         self.get_app(session, app_id, account)
@@ -417,6 +484,9 @@ class AppService(BaseService):
         )
         self.update(session, app, debug_conversation_id=conversation.id)
         return conversation
+
+    def get_or_create_debug_conversation(self, session: Session, app: App, account: Account) -> Conversation:
+        return self._get_or_create_debug_conversation(session, app, account)
 
     def _run_debug_agent(
         self,

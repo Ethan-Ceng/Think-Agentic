@@ -72,6 +72,7 @@ class ChatCompletionRuntime:
         image_urls: list[str] | None = None,
         tools: list[dict[str, Any]] | None = None,
         messages: list[dict[str, Any]] | None = None,
+        response_format: dict[str, Any] | None = None,
         timeout: float = 60.0,
     ) -> ChatCompletionResult:
         payload_messages = messages or self._build_messages(system_prompt, history or [], query, image_urls or [])
@@ -110,6 +111,8 @@ class ChatCompletionRuntime:
             "messages": payload_messages,
             **self._safe_parameters(model.parameters),
         }
+        if response_format is not None:
+            payload["response_format"] = response_format
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"

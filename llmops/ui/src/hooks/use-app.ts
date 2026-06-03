@@ -66,7 +66,7 @@ export const useGetAppsWithPage = () => {
   const paginator = ref({ ...defaultPaginator })
 
   // 2.定义加载数据函数
-  const loadApps = async (init: boolean = false, search_word: string = '') => {
+  const loadApps = async (init: boolean = false, search_word: string = '', agent_type: '' | 'worker' | 'planner' = '') => {
     // 2.1 判断是否是初始化，如果是的话则先初始化分页器
     if (init) {
       paginator.value = { ...defaultPaginator }
@@ -85,6 +85,7 @@ export const useGetAppsWithPage = () => {
         current_page: paginator.value.current_page,
         page_size: paginator.value.page_size,
         search_word: search_word,
+        agent_type,
       })
       const { list: rawList, paginator: pageMeta } = normalizeListPaginator<Record<string, any>>(
         resp.data as Record<string, any>,
@@ -98,6 +99,7 @@ export const useGetAppsWithPage = () => {
 
       const list = rawList.map((row: Record<string, any>) => ({
         ...row,
+        agent_type: row.agent_type || 'worker',
         model_config: row.model_config ?? row.model_cfg ?? { provider: '', model: '' },
       }))
       if (init) {

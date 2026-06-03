@@ -11,6 +11,7 @@ from app.core.config import Settings
 from app.models.account import Account
 from app.schemas.app import AppPageResponse
 from app.services.app_service import AppService
+from app.services.router_agent_manager_service import RouterAgentManagerService
 
 
 def test_app_config_normalization_keeps_defaults() -> None:
@@ -155,6 +156,53 @@ def test_update_draft_app_config_accepts_post_for_ui_compatibility() -> None:
     assert response.status_code == 200
     assert response.json()["code"] == "success"
     assert seen_payload == {"preset_prompt": ""}
+
+
+def test_debug_chat_routes_planner_apps_through_unified_sse(monkeypatch) -> None:
+    account = Account(id=uuid.uuid4(), name="tester", email="tester@example.test")
+    app_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+    message_id = uuid.uuid4()
+    task_id = uuid.uuid4()
+    planner_app = SimpleNamespace(
+        id=app_id,
+        account_id=account.id,
+        agent_type="planner",
+        debug_conversation_id=conversation_id,
+    )
+    service = AppService()
+    captured = {}
+
+    def fake_create_planner_debug_run(self, session, **kwargs):  # noqa: ANN001
+        captured.update(kwargs)
+        return {
+            "conversation_id": str(conversation_id),
+            "message_id": str(message_id),
+            "task_id": str(task_id),
+            "status": "succeeded",
+            "answer": "planner answer",
+            "error": "",
+        }
+
+    monkeypatch.setattr(service, "get_app", lambda session, target_app_id, current_user: planner_app)
+    monkeypatch.setattr(RouterAgentManagerService, "create_planner_debug_run", fake_create_planner_debug_run)
+
+    chunks = list(
+        service.debug_chat(
+            SimpleNamespace(),
+            app_id,
+            SimpleNamespace(query="plan this", image_urls=["https://example.test/a.png"]),
+            account,
+        )
+    )
+
+    assert captured["planner_app_id"] == app_id
+    assert captured["query"] == "plan this"
+    assert captured["image_urls"] == ["https://example.test/a.png"]
+    assert captured["raise_on_error"] is False
+    assert any("event: agent_message" in chunk for chunk in chunks)
+    assert any(f'"message_id": "{message_id}"' in chunk for chunk in chunks)
+    assert any('"thought": "planner answer"' in chunk for chunk in chunks)
 
 
 def test_update_draft_app_config_merges_partial_payload(monkeypatch) -> None:

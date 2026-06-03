@@ -3,23 +3,27 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_app_service, get_current_account, get_db_session
+from app.api.deps import get_app_service, get_current_account, get_db_session, get_router_agent_manager_service
 from app.models.account import Account
 from app.schemas.app import (
     AppPageResponse,
     AppResponse,
+    BindPlannerWorkerRequest,
     CreateAppRequest,
     DebugChatRequest,
     FallbackHistoryToDraftRequest,
     GetAppsWithPageRequest,
     GetDebugConversationMessagesWithPageRequest,
     GetPublishHistoriesWithPageRequest,
+    PlannerDebugRunRequest,
     PublishHistoryResponse,
     UpdateAppRequest,
     UpdateDebugConversationSummaryRequest,
+    UpdatePlannerWorkerBindingRequest,
 )
 from app.schemas.conversation import MessageResponse
 from app.services.app_service import AppService
+from app.services.router_agent_manager_service import RouterAgentManagerService
 from app.shared.response import compact_generate_response, success_json, success_message
 
 router = APIRouter(prefix="/apps", tags=["app"])
@@ -101,6 +105,91 @@ def delete_app(
 ):
     svc.delete_app(session, app_id, current_user)
     return success_message("Delete app success")
+
+
+@router.get("/{app_id}/planner/workers")
+def get_planner_workers(
+    app_id: UUID,
+    session: Session = Depends(get_db_session),
+    current_user: Account = Depends(get_current_account),
+    svc: RouterAgentManagerService = Depends(get_router_agent_manager_service),
+):
+    return success_json(
+        {"list": svc.list_planner_worker_bindings(session, planner_app_id=app_id, account=current_user)}
+    )
+
+
+@router.post("/{app_id}/planner/workers")
+def bind_planner_worker(
+    app_id: UUID,
+    req: BindPlannerWorkerRequest,
+    session: Session = Depends(get_db_session),
+    current_user: Account = Depends(get_current_account),
+    svc: RouterAgentManagerService = Depends(get_router_agent_manager_service),
+):
+    binding = svc.bind_worker_app_to_planner(
+        session,
+        planner_app_id=app_id,
+        worker_app_id=req.worker_app_id,
+        account=current_user,
+        priority=req.priority,
+        conditions=req.conditions,
+        enabled=req.enabled,
+    )
+    return success_json({"id": str(binding.id)})
+
+
+@router.patch("/{app_id}/planner/workers/{binding_id}")
+def update_planner_worker(
+    app_id: UUID,
+    binding_id: UUID,
+    req: UpdatePlannerWorkerBindingRequest,
+    session: Session = Depends(get_db_session),
+    current_user: Account = Depends(get_current_account),
+    svc: RouterAgentManagerService = Depends(get_router_agent_manager_service),
+):
+    svc.update_planner_worker_binding(
+        session,
+        planner_app_id=app_id,
+        binding_id=binding_id,
+        account=current_user,
+        enabled=req.enabled,
+        priority=req.priority,
+        conditions=req.conditions,
+    )
+    return success_message("Update planner worker binding success")
+
+
+@router.delete("/{app_id}/planner/workers/{binding_id}")
+def delete_planner_worker(
+    app_id: UUID,
+    binding_id: UUID,
+    session: Session = Depends(get_db_session),
+    current_user: Account = Depends(get_current_account),
+    svc: RouterAgentManagerService = Depends(get_router_agent_manager_service),
+):
+    svc.delete_planner_worker_binding(session, planner_app_id=app_id, binding_id=binding_id, account=current_user)
+    return success_message("Delete planner worker binding success")
+
+
+@router.post("/{app_id}/planner/debug-runs")
+def create_planner_debug_run(
+    app_id: UUID,
+    req: PlannerDebugRunRequest,
+    session: Session = Depends(get_db_session),
+    current_user: Account = Depends(get_current_account),
+    svc: RouterAgentManagerService = Depends(get_router_agent_manager_service),
+):
+    return success_json(
+        svc.create_planner_debug_run(
+            session,
+            planner_app_id=app_id,
+            query=req.query,
+            account=current_user,
+            requested_worker_app_ids=req.requested_worker_app_ids,
+            input_file_ids=req.input_file_ids,
+        )
+    )
 
 
 @router.get("/{app_id}/draft-app-config")

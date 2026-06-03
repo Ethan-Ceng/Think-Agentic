@@ -1,5 +1,6 @@
-import { del, get, post, put, ssePost } from '@/utils/request'
+import { del, get, patch, post, put, ssePost } from '@/utils/request'
 import type {
+  BindPlannerWorkerRequest,
   CreateAppRequest,
   GetAppResponse,
   GetAppsWithPageRequest,
@@ -7,11 +8,15 @@ import type {
   GetDebugConversationMessagesWithPageRequest,
   GetDebugConversationMessagesWithPageResponse,
   GetDraftAppConfigResponse,
+  GetPlannerWorkersResponse,
   GetPublishedConfigResponse,
   GetPublishHistoriesWithPageResponse,
+  PlannerDebugRunRequest,
+  PlannerDebugRunResponse,
   RegenerateWebAppTokenResponse,
   UpdateAppRequest,
   UpdateDraftAppConfigRequest,
+  UpdatePlannerWorkerBindingRequest,
 } from '@/models/app'
 import type { BasePaginatorRequest, BaseResponse } from '@/models/base' // 获取应用基础信息
 
@@ -47,6 +52,7 @@ export const getAppsWithPage = (req: GetAppsWithPageRequest) => {
       page: req.current_page,
       page_size: req.page_size,
       search_word: req.search_word,
+      agent_type: req.agent_type || '',
     },
   })
 }
@@ -134,4 +140,28 @@ export const getPublishedConfig = (app_id: string) => {
 // 重新生成 WebApp 的凭证标识
 export const regenerateWebAppToken = (app_id: string) => {
   return post<RegenerateWebAppTokenResponse>(`/apps/${app_id}/regenerate-web-app-token`)
+}
+
+export const getPlannerWorkers = (app_id: string) => {
+  return get<GetPlannerWorkersResponse>(`/apps/${app_id}/planner/workers`)
+}
+
+export const bindPlannerWorker = (app_id: string, req: BindPlannerWorkerRequest) => {
+  return post<BaseResponse<{ id: string }>>(`/apps/${app_id}/planner/workers`, { body: req })
+}
+
+export const updatePlannerWorkerBinding = (
+  app_id: string,
+  binding_id: string,
+  req: UpdatePlannerWorkerBindingRequest,
+) => {
+  return patch<BaseResponse<any>>(`/apps/${app_id}/planner/workers/${binding_id}`, { body: req })
+}
+
+export const deletePlannerWorkerBinding = (app_id: string, binding_id: string) => {
+  return del<BaseResponse<any>>(`/apps/${app_id}/planner/workers/${binding_id}`)
+}
+
+export const createPlannerDebugRun = (app_id: string, req: PlannerDebugRunRequest) => {
+  return post<PlannerDebugRunResponse>(`/apps/${app_id}/planner/debug-runs`, { body: req })
 }

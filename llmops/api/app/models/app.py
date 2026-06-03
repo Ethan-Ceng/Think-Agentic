@@ -33,6 +33,12 @@ class App(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False, server_default=text("''::character varying"))
     icon: Mapped[str] = mapped_column(String(255), nullable=False, server_default=text("''::character varying"))
     description: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("''::text"))
+    agent_type: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="worker",
+        server_default=text("'worker'::character varying"),
+    )
     token: Mapped[str | None] = mapped_column(String(255), nullable=True, server_default=text("''::character varying"))
     status: Mapped[str] = mapped_column(String(255), nullable=False, server_default=text("''::character varying"))
     updated_at: Mapped[datetime] = mapped_column(

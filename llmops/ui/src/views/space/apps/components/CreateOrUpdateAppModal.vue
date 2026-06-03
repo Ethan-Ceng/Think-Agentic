@@ -20,6 +20,7 @@ const defaultForm = {
   icon: '',
   name: '',
   description: '',
+  agent_type: 'worker' as 'worker' | 'planner',
 }
 const form = ref({ ...defaultForm })
 const formRef = ref<FormInstance>()
@@ -37,7 +38,11 @@ const saveApp = async () => {
 
   // 3.2 检测是保存还是新增，调用不同的API接口
   if (props.app_id) {
-    await handleUpdateApp(props.app_id, form.value)
+    await handleUpdateApp(props.app_id, {
+      icon: form.value.icon,
+      name: form.value.name,
+      description: form.value.description,
+    })
   } else {
     await handleCreateApp(form.value)
   }
@@ -67,6 +72,7 @@ watch(
           icon: app.value.icon,
           name: app.value.name,
           description: app.value.description,
+          agent_type: app.value.agent_type || 'worker',
         }
       }
     } else {
@@ -134,6 +140,17 @@ watch(
               }
             "
           />
+        </el-form-item>
+        <el-form-item
+          v-if="!props.app_id"
+          prop="agent_type"
+          label="应用类型"
+          :rules="[{ required: true, message: '应用类型不能为空' }]"
+        >
+          <el-radio-group v-model="form.agent_type">
+            <el-radio-button label="worker">WorkerAgent</el-radio-button>
+            <el-radio-button label="planner">PlannerAgent</el-radio-button>
+          </el-radio-group>
         </el-form-item>
         <el-form-item
           prop="name"

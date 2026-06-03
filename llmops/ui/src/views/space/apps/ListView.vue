@@ -25,6 +25,9 @@ const {
 } = useGetAppsWithPage()
 const { handleDeleteApp } = useDeleteApp()
 
+const agentTypeLabel = (agentType?: string) => (agentType === 'planner' ? 'PlannerAgent' : 'WorkerAgent')
+const agentTypeTag = (agentType?: string) => (agentType === 'planner' ? 'warning' : 'info')
+
 // 2.定义滚动数据分页处理器
 const handleScroll = async (event: Event) => {
   // 1.获取滚动距离、可滚动的最大距离、客户端/浏览器窗口的高度
@@ -96,12 +99,22 @@ watch(
                   }"
                   class="text-base text-gray-900 font-bold"
                 >
-                  {{ app.name }}
+                  <span class="align-middle">{{ app.name }}</span>
                   <icon-check-circle-fill
                     v-if="app.status === 'published'"
                     class="text-green-700"
                   />
                 </router-link>
+                <div class="mt-1">
+                  <el-tag
+                    size="small"
+                    effect="plain"
+                    :type="agentTypeTag(app.agent_type)"
+                    class="!h-5 !rounded-md !px-1.5 !text-[11px]"
+                  >
+                    {{ agentTypeLabel(app.agent_type) }}
+                  </el-tag>
+                </div>
                 <div class="text-xs text-gray-500 line-clamp-1">
                   {{ app.model_config.provider }} · {{ app.model_config.model }}
                 </div>

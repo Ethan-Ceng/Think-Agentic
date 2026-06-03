@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { useRoute } from 'vue-router'
-import { watch } from 'vue'
+import { computed, watch } from 'vue'
 import { useGetDraftAppConfig } from '@/hooks/use-app'
 import AgentAppAbility from './components/AgentAppAbility.vue'
 import DraftAppConfigSplit from './components/DraftAppConfigSplit.vue'
 import ModelConfig from './components/ModelConfig.vue'
+import PlannerAgentAbility from './components/PlannerAgentAbility.vue'
 import PresetPromptTextarea from './components/PresetPromptTextarea.vue'
 import PreviewDebugChat from './components/PreviewDebugChat.vue'
 import PreviewDebugHeader from './components/PreviewDebugHeader.vue'
@@ -18,6 +19,7 @@ const props = defineProps({
   },
 })
 const { draftAppConfigForm, loadDraftAppConfig } = useGetDraftAppConfig()
+const isPlannerApp = computed(() => props.app?.agent_type === 'planner')
 
 watch(
   () => route.params.app_id,
@@ -76,8 +78,14 @@ watch(
             </template>
             <template #abilities>
               <agent-app-ability
+                v-if="!isPlannerApp"
                 class="h-full min-h-0"
                 v-model:draft_app_config="draftAppConfigForm"
+                :app_id="String(route.params?.app_id)"
+              />
+              <planner-agent-ability
+                v-else
+                class="h-full min-h-0"
                 :app_id="String(route.params?.app_id)"
               />
             </template>

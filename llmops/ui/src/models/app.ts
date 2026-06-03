@@ -1,5 +1,7 @@
 import { type BasePaginatorRequest, type BasePaginatorResponse, type BaseResponse } from '@/models/base' // 获取应用信息响应结构
 
+export type AgentType = 'worker' | 'planner'
+
 // 获取应用信息响应结构
 export type GetAppResponse = BaseResponse<{
   id: string
@@ -7,6 +9,7 @@ export type GetAppResponse = BaseResponse<{
   name: string
   icon: string
   description: string
+  agent_type: AgentType
   status: string
   draft_updated_at: number
   updated_at: number
@@ -14,13 +17,13 @@ export type GetAppResponse = BaseResponse<{
 }>
 
 // 新增应用请求结构
-export type CreateAppRequest = { name: string; icon: string; description: string }
+export type CreateAppRequest = { name: string; icon: string; description: string; agent_type: AgentType }
 
 // 更新应用请求结构
 export type UpdateAppRequest = { name: string; icon: string; description: string }
 
 // 获取应用分页列表数据请求
-export type GetAppsWithPageRequest = BasePaginatorRequest & { search_word: string }
+export type GetAppsWithPageRequest = BasePaginatorRequest & { search_word: string; agent_type?: AgentType | '' }
 
 // 获取应用分页列表数据响应
 export type GetAppsWithPageResponse = BasePaginatorResponse<{
@@ -28,6 +31,7 @@ export type GetAppsWithPageResponse = BasePaginatorResponse<{
   name: string
   icon: string
   description: string
+  agent_type: AgentType
   preset_prompt: string
   model_config: {
     provider: string
@@ -143,4 +147,62 @@ export type GetPublishedConfigResponse = BaseResponse<{
 // 重新生成WebApp凭证标识响应结构
 export type RegenerateWebAppTokenResponse = BaseResponse<{
   token: string
+}>
+
+export type PlannerWorkerBinding = {
+  id: string
+  enabled: boolean
+  priority: number
+  conditions: Record<string, any>
+  worker_agent: {
+    id: string
+    name: string
+    icon: string
+    description: string
+    runtime_type: string
+    product_category: string
+    status: string
+    target_ref_type: string
+    target_ref_id: string
+  }
+  worker_app: {
+    id: string
+    name: string
+    icon: string
+    description: string
+    agent_type: AgentType
+    status: string
+  } | null
+  created_at: number
+  updated_at: number
+}
+
+export type GetPlannerWorkersResponse = BaseResponse<{ list: PlannerWorkerBinding[] }>
+
+export type BindPlannerWorkerRequest = {
+  worker_app_id: string
+  enabled: boolean
+  priority: number
+  conditions: Record<string, any>
+}
+
+export type UpdatePlannerWorkerBindingRequest = {
+  enabled: boolean
+  priority: number
+  conditions: Record<string, any>
+}
+
+export type PlannerDebugRunRequest = {
+  query: string
+  requested_worker_app_ids?: string[]
+  input_file_ids?: string[]
+}
+
+export type PlannerDebugRunResponse = BaseResponse<{
+  conversation_id: string
+  message_id: string
+  task_id: string
+  status: string
+  answer: string
+  error: string
 }>

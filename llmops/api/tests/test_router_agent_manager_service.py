@@ -5,6 +5,8 @@ import pytest
 
 from app.core.agent import AgentThought, QueueEvent
 from app.core.exceptions import FailException
+from app.core.language_model.entities import BaseLanguageModel
+from app.domain.agent_runtime.planner import PlannerResult
 from app.domain.agent_runtime.protocols import ArtifactRef, RouterPlan, RouterPlanStep, WorkerResult
 from app.domain.agent_runtime.router_runtime import RouterRuntime
 from app.models.account import Account
@@ -167,6 +169,152 @@ def test_create_manager_task_waits_when_plan_requires_approval() -> None:
 
     assert result.task.status == TaskStatus.WAITING_APPROVAL
     assert result.task.version == 2
+
+
+def test_create_manager_run_uses_llm_planner_plan() -> None:
+    tenant_id = uuid.uuid4()
+    router_agent_id = uuid.uuid4()
+    worker_agent_id = uuid.uuid4()
+    account = Account(id=tenant_id, name="tester", email="tester@example.test")
+
+    class FakeLanguageModelService:
+        def load_language_model(self, model_config, *, session, account):  # noqa: ANN001
+            return BaseLanguageModel(provider="fake", model="planner", parameters={})
+
+    class FakePlannerAgent:
+        def create_plan(self, *, model, planner_input):  # noqa: ANN001
+            assert planner_input.router_id == str(router_agent_id)
+            return PlannerResult(
+                plan=RouterPlan(
+                    router_id=str(router_agent_id),
+                    user_intent=planner_input.query,
+                    risk_assessment={"risk_level": "low", "source": "llm_planner_v1"},
+                    steps=[
+                        RouterPlanStep(
+                            step_id="step_1",
+                            worker_id=str(worker_agent_id),
+                            task="research launch plan",
+                        )
+                    ],
+                ),
+                raw_output='{"schema_version":"router_plan_v1"}',
+                usage={"total_tokens": 12},
+                latency_ms=30,
+            )
+
+    class FakeRouterService(RouterAgentManagerService):
+        def get_router_agent(self, session, tenant_id, agent_id):  # noqa: ANN001
+            return Agent(
+                id=agent_id,
+                tenant_id=tenant_id,
+                name="Planner",
+                runtime_type="router",
+                product_category="planner",
+                status="draft",
+            )
+
+        def list_bound_workers(self, session, *, tenant_id, router_agent_id):  # noqa: ANN001
+            return [
+                Agent(
+                    id=worker_agent_id,
+                    tenant_id=tenant_id,
+                    name="Research",
+                    runtime_type="worker",
+                    product_category="custom",
+                    status="published",
+                    target_ref_type="app",
+                    target_ref_id=str(uuid.uuid4()),
+                )
+            ]
+
+    session = FakeSession()
+    service = FakeRouterService(
+        planner_agent=FakePlannerAgent(),
+        language_model_service=FakeLanguageModelService(),
+    )
+
+    run = service.create_manager_run(
+        session,
+        tenant_id=tenant_id,
+        router_agent_id=router_agent_id,
+        user_input={"query": "launch plan"},
+        account=account,
+    )
+
+    assert run.plan.plan_json["risk_assessment"]["source"] == "llm_planner_v1"
+    assert run.steps[0].worker_agent_id == worker_agent_id
+    trace_events = [item for item in session.added if isinstance(item, TraceEvent)]
+    assert [event.event_type for event in trace_events] == [
+        "planner.started",
+        "planner.generated",
+        "planner.validated",
+        "router.manager_run.created",
+    ]
+
+
+def test_create_manager_run_falls_back_when_planner_fails() -> None:
+    tenant_id = uuid.uuid4()
+    router_agent_id = uuid.uuid4()
+    worker_agent_id = uuid.uuid4()
+    account = Account(id=tenant_id, name="tester", email="tester@example.test")
+
+    class FakeLanguageModelService:
+        def load_language_model(self, model_config, *, session, account):  # noqa: ANN001
+            return BaseLanguageModel(provider="fake", model="planner", parameters={})
+
+    class FakePlannerAgent:
+        def create_plan(self, *, model, planner_input):  # noqa: ANN001
+            return PlannerResult(plan=None, raw_output="not-json", error="bad json")
+
+    class FakeRouterService(RouterAgentManagerService):
+        def get_router_agent(self, session, tenant_id, agent_id):  # noqa: ANN001
+            return Agent(
+                id=agent_id,
+                tenant_id=tenant_id,
+                name="Planner",
+                runtime_type="router",
+                product_category="planner",
+                status="draft",
+            )
+
+        def list_bound_workers(self, session, *, tenant_id, router_agent_id):  # noqa: ANN001
+            return [
+                Agent(
+                    id=worker_agent_id,
+                    tenant_id=tenant_id,
+                    name="Research",
+                    runtime_type="worker",
+                    product_category="custom",
+                    status="published",
+                    target_ref_type="app",
+                    target_ref_id=str(uuid.uuid4()),
+                )
+            ]
+
+    session = FakeSession()
+    service = FakeRouterService(
+        planner_agent=FakePlannerAgent(),
+        language_model_service=FakeLanguageModelService(),
+    )
+
+    run = service.create_manager_run(
+        session,
+        tenant_id=tenant_id,
+        router_agent_id=router_agent_id,
+        user_input={"query": "launch plan"},
+        account=account,
+    )
+
+    assert run.plan.plan_json["risk_assessment"]["source"] == "manager_rule_v1"
+    assert run.steps[0].input_json["task"] == "launch plan"
+    trace_events = [item for item in session.added if isinstance(item, TraceEvent)]
+    assert [event.event_type for event in trace_events] == [
+        "planner.started",
+        "planner.generated",
+        "planner.failed",
+        "planner.fallback",
+        "router.manager_run.created",
+    ]
 
 
 def test_execute_manager_run_steps_invokes_legacy_app_worker() -> None:

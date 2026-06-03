@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
@@ -12,7 +13,10 @@ def datetime_to_timestamp(value: datetime | None) -> int:
     return int(value.timestamp())
 
 
-class CreateAppRequest(BaseModel):
+AgentType = Literal["worker", "planner"]
+
+
+class AppBaseRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=40)
     icon: str
     description: str = Field(default="", max_length=800)
@@ -25,7 +29,11 @@ class CreateAppRequest(BaseModel):
         return value
 
 
-class UpdateAppRequest(CreateAppRequest):
+class CreateAppRequest(AppBaseRequest):
+    agent_type: AgentType = "worker"
+
+
+class UpdateAppRequest(AppBaseRequest):
     pass
 
 
@@ -33,6 +41,7 @@ class GetAppsWithPageRequest(BaseModel):
     page: int = Field(1, ge=1)
     page_size: int = Field(20, ge=1, le=100)
     search_word: str = ""
+    agent_type: AgentType | Literal[""] = ""
 
 
 class AppPageResponse(BaseModel):
@@ -40,6 +49,7 @@ class AppPageResponse(BaseModel):
     name: str
     icon: str
     description: str
+    agent_type: str = "worker"
     preset_prompt: str
     model_cfg: dict
     status: str
@@ -54,6 +64,7 @@ class AppPageResponse(BaseModel):
             name=app.name,
             icon=app.icon,
             description=app.description,
+            agent_type=getattr(app, "agent_type", "worker") or "worker",
             preset_prompt=app_config.preset_prompt if app_config else "",
             model_cfg={
                 "provider": model_config.get("provider", ""),
@@ -71,6 +82,7 @@ class AppResponse(BaseModel):
     name: str
     icon: str
     description: str
+    agent_type: str = "worker"
     status: str
     draft_updated_at: int
     updated_at: int
@@ -84,6 +96,7 @@ class AppResponse(BaseModel):
             name=app.name,
             icon=app.icon,
             description=app.description,
+            agent_type=getattr(app, "agent_type", "worker") or "worker",
             status=app.status,
             draft_updated_at=datetime_to_timestamp(draft_config.updated_at if draft_config else None),
             updated_at=datetime_to_timestamp(app.updated_at),
@@ -127,3 +140,22 @@ class UpdateDebugConversationSummaryRequest(BaseModel):
 class DebugChatRequest(BaseModel):
     image_urls: list[str] = Field(default_factory=list, max_length=5)
     query: str = Field(..., min_length=1)
+
+
+class BindPlannerWorkerRequest(BaseModel):
+    worker_app_id: UUID
+    enabled: bool = True
+    priority: int = Field(0, ge=0, le=100)
+    conditions: dict = Field(default_factory=dict)
+
+
+class UpdatePlannerWorkerBindingRequest(BaseModel):
+    enabled: bool = True
+    priority: int = Field(0, ge=0, le=100)
+    conditions: dict = Field(default_factory=dict)
+
+
+class PlannerDebugRunRequest(BaseModel):
+    query: str = Field(..., min_length=1)
+    requested_worker_app_ids: list[UUID] = Field(default_factory=list, max_length=5)
+    input_file_ids: list[str] = Field(default_factory=list, max_length=5)

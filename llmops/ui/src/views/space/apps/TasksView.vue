@@ -120,7 +120,7 @@ const sourceLabel = (source: string) => {
     service_api: 'OpenAPI',
     assistant_agent: '助手',
     wechat: '微信',
-    router: 'Router',
+    router: 'PlannerAgent',
     worker: 'Worker',
     conversation: '会话',
   }
@@ -128,7 +128,28 @@ const sourceLabel = (source: string) => {
 }
 
 const traceMessage = (event: TraceEventItem) => {
-  return String(event.payload?.message || event.payload?.thought || event.payload?.answer || event.payload?.observation || '')
+  return String(
+    event.payload?.message ||
+      event.payload?.thought ||
+      event.payload?.answer ||
+      event.payload?.observation ||
+      event.payload?.reason ||
+      event.payload?.error_message ||
+      '',
+  )
+}
+
+const planSourceLabel = (source?: string) => {
+  const map: Record<string, string> = {
+    llm_planner_v1: 'LLM Planner',
+    manager_rule_v1: '规则计划',
+  }
+  return map[String(source || '')] || source || ''
+}
+
+const taskPlanSource = (task: AgentMessageTask | AgentTaskDetail | AgentTaskSummary) => {
+  const plan = (task as AgentMessageTask | AgentTaskDetail).plan
+  return planSourceLabel(String(plan?.plan_json?.risk_assessment?.source || ''))
 }
 
 const messageAgentTasks = (message: AgentConversationMessage) => {
@@ -437,6 +458,9 @@ onMounted(async () => {
                                 <span class="shrink-0 text-xs text-slate-400">
                                   {{ task.step_count }} 步 · {{ task.worker_call_count }} Worker · {{ task.trace_count }} 事件
                                 </span>
+                                <el-tag v-if="taskPlanSource(task)" size="small" type="info">
+                                  {{ taskPlanSource(task) }}
+                                </el-tag>
                               </div>
                             </template>
 
