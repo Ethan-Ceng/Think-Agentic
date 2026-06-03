@@ -158,6 +158,17 @@ export type AgentConversationUserOption = {
   type: string
 }
 
+export type AgentMessageTask = AgentTaskSummary & {
+  plans: AgentPlanItem[]
+  plan: AgentPlanItem | null
+  steps: AgentStepItem[]
+  worker_calls: WorkerCallItem[]
+  capability_calls: CapabilityCallItem[]
+  trace_events: TraceEventItem[]
+  input_files: AgentFileRef[]
+  artifacts: AgentArtifactRef[]
+}
+
 export type AgentTaskDetail = AgentTaskSummary & {
   messages?: AgentConversationMessage[]
   agent_tasks?: AgentTaskSummary[]
@@ -186,6 +197,7 @@ export type AgentConversationMessage = {
   latency: number
   created_at: number
   updated_at: number
+  agent_tasks: AgentMessageTask[]
   trace_events: TraceEventItem[]
 }
 

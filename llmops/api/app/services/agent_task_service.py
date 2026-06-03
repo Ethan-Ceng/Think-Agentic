@@ -186,7 +186,14 @@ class AgentTaskService(BaseService):
             "artifacts": artifacts,
         }
 
-    def _app_agent_ids(self, session: Session, app_id: UUID, account: Account, *, validate_app: bool = True) -> list[UUID]:
+    def _app_agent_ids(
+        self,
+        session: Session,
+        app_id: UUID,
+        account: Account,
+        *,
+        validate_app: bool = True,
+    ) -> list[UUID]:
         if validate_app:
             self.app_service.get_app(session, app_id, account)
         agents = (
@@ -210,7 +217,13 @@ class AgentTaskService(BaseService):
     def _app_task_query(session: Session, app_agent_ids: list[UUID]):
         if not app_agent_ids:
             return session.query(AgentTask).filter(false())
-        worker_task_ids = session.query(AgentStep.task_id).filter(AgentStep.worker_agent_id.in_(app_agent_ids))
+        worker_task_ids = [
+            task_id
+            for (task_id,) in session.query(AgentStep.task_id)
+            .filter(AgentStep.worker_agent_id.in_(app_agent_ids))
+            .distinct()
+            .all()
+        ]
         return session.query(AgentTask).filter(
             or_(
                 AgentTask.router_agent_id.in_(app_agent_ids),
@@ -237,12 +250,13 @@ class AgentTaskService(BaseService):
             .all()
         )
         tasks = self._agent_tasks_for_conversations(session, app_agent_ids, conversation_ids)
-        trace_counts = dict(
+        thought_trace_counts = dict(
             session.query(MessageAgentThought.conversation_id, func.count(MessageAgentThought.id))
             .filter(MessageAgentThought.conversation_id.in_(conversation_ids))
             .group_by(MessageAgentThought.conversation_id)
             .all()
         )
+        task_trace_counts = self._task_trace_counts(session, tasks)
         messages_by_conversation: dict[UUID, list[Message]] = defaultdict(list)
         tasks_by_conversation: dict[UUID, list[AgentTask]] = defaultdict(list)
         for message in messages:
@@ -255,7 +269,10 @@ class AgentTaskService(BaseService):
                 conversation,
                 messages_by_conversation.get(conversation.id, []),
                 tasks_by_conversation.get(conversation.id, []),
-                int(trace_counts.get(conversation.id) or 0),
+                int(thought_trace_counts.get(conversation.id) or 0) + self._conversation_task_trace_count(
+                    tasks_by_conversation.get(conversation.id, []),
+                    task_trace_counts,
+                ),
             )
             for conversation in conversations
         ]
@@ -310,20 +327,40 @@ class AgentTaskService(BaseService):
         thoughts = (
             session.query(MessageAgentThought)
             .filter(MessageAgentThought.conversation_id == conversation.id)
-            .order_by(MessageAgentThought.message_id.asc(), MessageAgentThought.position.asc(), MessageAgentThought.created_at.asc())
+            .order_by(
+                MessageAgentThought.message_id.asc(),
+                MessageAgentThought.position.asc(),
+                MessageAgentThought.created_at.asc(),
+            )
             .all()
         )
         thoughts_by_message: dict[UUID, list[MessageAgentThought]] = defaultdict(list)
         for thought in thoughts:
             thoughts_by_message[thought.message_id].append(thought)
         tasks = self._agent_tasks_for_conversations(session, app_agent_ids, [conversation.id])
+        task_details = self._task_execution_details(session, tasks)
+        task_details_by_id = {detail["id"]: detail for detail in task_details}
+        task_details_by_message = self._tasks_by_message(messages, tasks, task_details_by_id)
         task_summaries = self._summaries(session, tasks)
-        summary = self._conversation_summary(conversation, messages, tasks, len(thoughts))
-        trace_events = [self._message_trace_event_response(thought) for thought in thoughts]
+        task_trace_events = [event for detail in task_details for event in detail["trace_events"]]
+        message_trace_events = [self._message_trace_event_response(thought) for thought in thoughts]
+        trace_events = self._sort_trace_events([*message_trace_events, *task_trace_events])
+        summary = self._conversation_summary(conversation, messages, tasks, len(trace_events))
+        summary["step_count"] = sum(int(detail["step_count"]) for detail in task_details)
+        summary["succeeded_step_count"] = sum(int(detail["succeeded_step_count"]) for detail in task_details)
+        summary["failed_step_count"] = sum(int(detail["failed_step_count"]) for detail in task_details)
+        summary["worker_call_count"] = sum(int(detail["worker_call_count"]) for detail in task_details)
+        summary["artifact_count"] = sum(int(detail["artifact_count"]) for detail in task_details)
+        task_input_files = [item for detail in task_details for item in detail["input_files"]]
+        task_artifacts = [item for detail in task_details for item in detail["artifacts"]]
         return {
             **summary,
             "messages": [
-                self._conversation_message_response(message, thoughts_by_message.get(message.id, []))
+                self._conversation_message_response(
+                    message,
+                    thoughts_by_message.get(message.id, []),
+                    agent_tasks=task_details_by_message.get(message.id, []),
+                )
                 for message in messages
             ],
             "agent_tasks": task_summaries,
@@ -333,8 +370,11 @@ class AgentTaskService(BaseService):
             "worker_calls": [],
             "capability_calls": [],
             "trace_events": trace_events,
-            "input_files": self._conversation_input_files(messages),
-            "artifacts": [],
+            "input_files": self._dedupe_dicts(
+                [*self._conversation_input_files(messages), *task_input_files],
+                ("file_id", "id", "name"),
+            ),
+            "artifacts": self._dedupe_dicts(task_artifacts, ("file_id", "artifact_id", "name")),
         }
 
     def _conversation_summary(
@@ -367,7 +407,11 @@ class AgentTaskService(BaseService):
                 "error": latest_message.error if latest_message else "",
             },
             "summary": conversation.summary or (latest_message.answer if latest_message else ""),
-            "error_code": "message_error" if latest_message and latest_message.status == MessageStatus.ERROR.value else "",
+            "error_code": (
+                "message_error"
+                if latest_message and latest_message.status == MessageStatus.ERROR.value
+                else ""
+            ),
             "error_message": latest_message.error if latest_message else "",
             "version": 0,
             "message_count": len(messages),
@@ -391,7 +435,10 @@ class AgentTaskService(BaseService):
         self,
         message: Message,
         thoughts: list[MessageAgentThought],
+        *,
+        agent_tasks: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        task_trace_events = [event for task in agent_tasks or [] for event in task.get("trace_events", [])]
         return {
             "id": message.id,
             "conversation_id": message.conversation_id,
@@ -407,7 +454,10 @@ class AgentTaskService(BaseService):
             "latency": float(message.latency or 0),
             "created_at": self._ts(message.created_at),
             "updated_at": self._ts(message.updated_at),
-            "trace_events": [self._message_trace_event_response(thought) for thought in thoughts],
+            "agent_tasks": agent_tasks or [],
+            "trace_events": self._sort_trace_events(
+                [self._message_trace_event_response(thought) for thought in thoughts] + task_trace_events
+            ),
         }
 
     def _agent_tasks_for_conversations(
@@ -424,6 +474,165 @@ class AgentTaskService(BaseService):
             .order_by(AgentTask.created_at.asc())
             .all()
         )
+
+    def _task_execution_details(self, session: Session, tasks: list[AgentTask]) -> list[dict[str, Any]]:
+        if not tasks:
+            return []
+        task_ids = [task.id for task in tasks]
+        plans = (
+            session.query(AgentPlan)
+            .filter(AgentPlan.task_id.in_(task_ids))
+            .order_by(AgentPlan.created_at.asc())
+            .all()
+        )
+        steps = (
+            session.query(AgentStep)
+            .filter(AgentStep.task_id.in_(task_ids))
+            .order_by(AgentStep.created_at.asc())
+            .all()
+        )
+        worker_calls = (
+            session.query(WorkerCall)
+            .filter(WorkerCall.task_id.in_(task_ids))
+            .order_by(WorkerCall.created_at.asc())
+            .all()
+        )
+        capability_calls = (
+            session.query(CapabilityCall)
+            .filter(CapabilityCall.task_id.in_(task_ids))
+            .order_by(CapabilityCall.created_at.asc())
+            .all()
+        )
+        trace_events = (
+            session.query(TraceEvent)
+            .filter(TraceEvent.task_id.in_(task_ids))
+            .order_by(TraceEvent.created_at.asc())
+            .all()
+        )
+
+        plans_by_task: dict[UUID, list[AgentPlan]] = defaultdict(list)
+        steps_by_task: dict[UUID, list[AgentStep]] = defaultdict(list)
+        calls_by_task: dict[UUID, list[WorkerCall]] = defaultdict(list)
+        capability_calls_by_task: dict[UUID, list[CapabilityCall]] = defaultdict(list)
+        trace_events_by_task: dict[UUID, list[TraceEvent]] = defaultdict(list)
+        agent_ids: set[UUID] = set()
+        for task in tasks:
+            agent_ids.add(task.router_agent_id)
+        for plan in plans:
+            plans_by_task[plan.task_id].append(plan)
+        for step in steps:
+            steps_by_task[step.task_id].append(step)
+            agent_ids.add(step.worker_agent_id)
+        for call in worker_calls:
+            calls_by_task[call.task_id].append(call)
+            agent_ids.add(call.worker_agent_id)
+        for call in capability_calls:
+            capability_calls_by_task[call.task_id].append(call)
+        for event in trace_events:
+            if event.task_id:
+                trace_events_by_task[event.task_id].append(event)
+
+        agent_map = self._agent_map(session, agent_ids)
+        details: list[dict[str, Any]] = []
+        for task in tasks:
+            task_plans = plans_by_task.get(task.id, [])
+            task_steps = steps_by_task.get(task.id, [])
+            task_calls = calls_by_task.get(task.id, [])
+            task_capability_calls = capability_calls_by_task.get(task.id, [])
+            task_trace_events = trace_events_by_task.get(task.id, [])
+            artifacts = self._collect_artifacts(task, task_steps, task_calls)
+            details.append(
+                {
+                    **self._task_base(task, agent_map),
+                    "summary": self._final_summary(task.final_result),
+                    "user_input_preview": self._user_input_preview(task.user_input),
+                    "step_count": len(task_steps),
+                    "succeeded_step_count": sum(1 for step in task_steps if step.status == "succeeded"),
+                    "failed_step_count": sum(1 for step in task_steps if step.status == "failed"),
+                    "worker_call_count": len(task_calls),
+                    "artifact_count": len(artifacts),
+                    "trace_count": len(task_trace_events),
+                    "plans": [self._plan_response(plan) for plan in task_plans],
+                    "plan": self._plan_response(task_plans[-1]) if task_plans else None,
+                    "steps": [self._step_response(step, agent_map) for step in task_steps],
+                    "worker_calls": [self._worker_call_response(call, agent_map) for call in task_calls],
+                    "capability_calls": [self._capability_call_response(call) for call in task_capability_calls],
+                    "trace_events": [self._trace_event_response(event) for event in task_trace_events],
+                    "input_files": self._collect_input_files(task, task_calls),
+                    "artifacts": artifacts,
+                }
+            )
+        return details
+
+    def _tasks_by_message(
+        self,
+        messages: list[Message],
+        tasks: list[AgentTask],
+        task_details_by_id: dict[UUID, dict[str, Any]],
+    ) -> dict[UUID, list[dict[str, Any]]]:
+        grouped: dict[UUID, list[dict[str, Any]]] = defaultdict(list)
+        if not messages:
+            return grouped
+        message_ids = {message.id for message in messages}
+        for task in tasks:
+            detail = task_details_by_id.get(task.id)
+            if detail is None:
+                continue
+            message_id = self._task_message_id(task)
+            if message_id not in message_ids:
+                message_id = self._infer_message_id_for_task(messages, task)
+            if message_id:
+                grouped[message_id].append(detail)
+        return grouped
+
+    def _infer_message_id_for_task(self, messages: list[Message], task: AgentTask) -> UUID | None:
+        preview = self._user_input_preview(task.user_input).strip()
+        if preview:
+            for message in reversed(messages):
+                query = (message.query or "").strip()
+                if query and (query == preview or query in preview or preview in query):
+                    return message.id
+        if task.created_at:
+            for message in reversed(messages):
+                if message.created_at and message.created_at <= task.created_at:
+                    return message.id
+        return messages[-1].id if messages else None
+
+    @staticmethod
+    def _task_message_id(task: AgentTask) -> UUID | None:
+        user_input = task.user_input or {}
+        context = user_input.get("context")
+        conversation = user_input.get("conversation")
+        candidates = [user_input.get("message_id")]
+        if isinstance(context, dict):
+            candidates.append(context.get("message_id"))
+        if isinstance(conversation, dict):
+            candidates.append(conversation.get("message_id"))
+        for value in candidates:
+            if not value:
+                continue
+            try:
+                return UUID(str(value))
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    def _task_trace_counts(self, session: Session, tasks: list[AgentTask]) -> dict[UUID, int]:
+        if not tasks:
+            return {}
+        task_ids = [task.id for task in tasks]
+        return {
+            task_id: int(count)
+            for task_id, count in session.query(TraceEvent.task_id, func.count(TraceEvent.id))
+            .filter(TraceEvent.task_id.in_(task_ids))
+            .group_by(TraceEvent.task_id)
+            .all()
+            if task_id
+        }
+
+    @staticmethod
+    def _conversation_task_trace_count(tasks: list[AgentTask], task_trace_counts: dict[UUID, int]) -> int:
+        return sum(int(task_trace_counts.get(task.id) or 0) for task in tasks)
 
     def _conversation_status(self, messages: list[Message], tasks: list[AgentTask]) -> str:
         if any(task.status in {"created", "running", "waiting_approval"} for task in tasks):
@@ -655,6 +864,10 @@ class AgentTaskService(BaseService):
             "created_at": self._ts(event.created_at),
             "updated_at": self._ts(event.updated_at),
         }
+
+    @staticmethod
+    def _sort_trace_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return sorted(events, key=lambda item: (int(item.get("created_at") or 0), str(item.get("id") or "")))
 
     @classmethod
     def _collect_input_files(cls, task: AgentTask, worker_calls: list[WorkerCall]) -> list[dict[str, Any]]:

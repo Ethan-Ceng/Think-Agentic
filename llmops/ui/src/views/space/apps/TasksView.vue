@@ -6,9 +6,12 @@ import type {
   AgentConversationMessage,
   AgentConversationUserOption,
   AgentFileRef,
+  AgentMessageTask,
+  AgentStepItem,
   AgentTaskDetail,
   AgentTaskSummary,
   TraceEventItem,
+  WorkerCallItem,
 } from '@/models/agent-task'
 import { getAppAgentTaskDetail, getAppAgentTasksWithPage } from '@/services/agent-task'
 import JsonDrawer from './tasks/components/JsonDrawer.vue'
@@ -126,6 +129,26 @@ const sourceLabel = (source: string) => {
 
 const traceMessage = (event: TraceEventItem) => {
   return String(event.payload?.message || event.payload?.thought || event.payload?.answer || event.payload?.observation || '')
+}
+
+const messageAgentTasks = (message: AgentConversationMessage) => {
+  return message.agent_tasks || []
+}
+
+const workerCallsForStep = (task: AgentMessageTask, stepId: string) => {
+  return task.worker_calls.filter((call) => call.step_id === stepId)
+}
+
+const traceEventsForStep = (task: AgentMessageTask, stepId: string) => {
+  return task.trace_events.filter((event) => event.step_id === stepId)
+}
+
+const workerAnswer = (call: WorkerCallItem) => {
+  return String(call.result_json?.answer || call.result_json?.data?.answer || call.result_json?.summary || call.result_json?.error || '')
+}
+
+const stepOutputSummary = (step: AgentStepItem) => {
+  return String(step.output_json?.answer || step.output_json?.summary || step.output_json?.error_message || step.output_json?.error || '')
 }
 
 const fileName = (file: AgentFileRef | AgentArtifactRef) => {
@@ -372,13 +395,14 @@ onMounted(async () => {
                     </div>
 
                     <div class="flex justify-start">
-                      <div class="max-w-[82%] min-w-0">
+                      <div class="max-w-[92%] min-w-0">
                         <div class="mb-1 flex flex-wrap items-center gap-2 text-xs text-slate-400">
                           <span class="font-medium text-slate-600">Agent</span>
                           <task-status-tag :status="message.status" />
                           <span>{{ formatSeconds(message.latency) }}</span>
                           <span>{{ message.total_token_count }} Token</span>
                           <span>{{ message.trace_events.length }} 事件</span>
+                          <span v-if="messageAgentTasks(message).length">{{ messageAgentTasks(message).length }} 任务</span>
                         </div>
 
                         <div class="rounded-md bg-slate-100 px-4 py-3 text-sm text-slate-700">
@@ -397,6 +421,120 @@ onMounted(async () => {
                             事件 JSON
                           </el-button>
                         </div>
+
+                        <el-collapse v-if="messageAgentTasks(message).length" class="mt-2">
+                          <el-collapse-item
+                            v-for="task in messageAgentTasks(message)"
+                            :key="task.id"
+                            :name="task.id"
+                          >
+                            <template #title>
+                              <div class="flex min-w-0 flex-1 items-center gap-2 pr-3">
+                                <span class="truncate text-sm font-medium text-slate-900">
+                                  {{ task.entry_agent?.name || sourceLabel(task.run_type) }}
+                                </span>
+                                <task-status-tag :status="task.status" />
+                                <span class="shrink-0 text-xs text-slate-400">
+                                  {{ task.step_count }} 步 · {{ task.worker_call_count }} Worker · {{ task.trace_count }} 事件
+                                </span>
+                              </div>
+                            </template>
+
+                            <div class="space-y-3">
+                              <div class="flex flex-wrap items-center justify-between gap-2 bg-slate-50 p-2 text-xs text-slate-500">
+                                <span class="truncate">{{ task.user_input_preview || task.summary || task.id }}</span>
+                                <div class="flex shrink-0 items-center gap-2">
+                                  <el-button size="small" @click="openJson('AgentTask', task)">任务 JSON</el-button>
+                                  <el-button size="small" :disabled="!task.plan" @click="openJson('AgentPlan', task.plan)">计划 JSON</el-button>
+                                </div>
+                              </div>
+
+                              <el-empty v-if="!task.steps.length" description="暂无执行步骤" />
+                              <el-timeline v-else>
+                                <el-timeline-item
+                                  v-for="step in task.steps"
+                                  :key="step.id"
+                                  :timestamp="formatDate(step.created_at)"
+                                  placement="top"
+                                >
+                                  <div class="border border-slate-200 p-3">
+                                    <div class="flex flex-wrap items-start justify-between gap-2">
+                                      <div class="min-w-0">
+                                        <div class="flex flex-wrap items-center gap-2">
+                                          <span class="font-medium text-slate-900">{{ step.step_key }}</span>
+                                          <task-status-tag :status="step.status" />
+                                          <el-tag size="small" type="info">{{ step.execution_mode }}</el-tag>
+                                        </div>
+                                        <div class="mt-1 text-xs text-slate-500">
+                                          {{ step.worker_agent?.name || '未知 Worker' }}
+                                        </div>
+                                      </div>
+                                      <div class="flex shrink-0 flex-wrap items-center gap-2">
+                                        <el-button size="small" @click="openJson('Step 输入', step.input_json)">输入</el-button>
+                                        <el-button size="small" @click="openJson('Step 输出', step.output_json)">输出</el-button>
+                                      </div>
+                                    </div>
+
+                                    <p v-if="stepOutputSummary(step)" class="mt-2 line-clamp-3 break-words text-xs text-slate-500">
+                                      {{ stepOutputSummary(step) }}
+                                    </p>
+
+                                    <div v-if="workerCallsForStep(task, step.id).length" class="mt-3 space-y-2">
+                                      <div
+                                        v-for="call in workerCallsForStep(task, step.id)"
+                                        :key="call.id"
+                                        class="bg-slate-50 p-2"
+                                      >
+                                        <div class="flex flex-wrap items-center justify-between gap-2">
+                                          <div class="flex min-w-0 flex-wrap items-center gap-2">
+                                            <span class="truncate text-xs font-medium text-slate-900">
+                                              {{ call.worker_agent?.name || 'Worker' }}
+                                            </span>
+                                            <task-status-tag :status="call.status" />
+                                            <span class="text-xs text-slate-400">
+                                              {{ formatSeconds(call.latency) }} · {{ call.token_count }} Token
+                                            </span>
+                                          </div>
+                                          <div class="flex shrink-0 items-center gap-2">
+                                            <el-button size="small" @click="openJson('WorkerInvocation', call.invocation_json)">Invocation</el-button>
+                                            <el-button size="small" @click="openJson('WorkerResult', call.result_json)">Result</el-button>
+                                          </div>
+                                        </div>
+                                        <p v-if="workerAnswer(call)" class="mt-2 line-clamp-3 break-words text-xs text-slate-500">
+                                          {{ workerAnswer(call) }}
+                                        </p>
+                                      </div>
+                                    </div>
+
+                                    <div v-if="traceEventsForStep(task, step.id).length" class="mt-3">
+                                      <el-table :data="traceEventsForStep(task, step.id)" stripe size="small">
+                                        <el-table-column label="事件" min-width="180">
+                                          <template #default="{ row }">
+                                            <div class="font-medium text-slate-900">{{ row.event_type }}</div>
+                                            <div v-if="traceMessage(row)" class="truncate text-xs text-slate-500">{{ traceMessage(row) }}</div>
+                                          </template>
+                                        </el-table-column>
+                                        <el-table-column label="耗时" width="90">
+                                          <template #default="{ row }">{{ formatSeconds(row.latency) }}</template>
+                                        </el-table-column>
+                                        <el-table-column label="操作" width="80">
+                                          <template #default="{ row }">
+                                            <el-button link type="primary" @click="openJson('TraceEvent', row)">JSON</el-button>
+                                          </template>
+                                        </el-table-column>
+                                      </el-table>
+                                    </div>
+                                  </div>
+                                </el-timeline-item>
+                              </el-timeline>
+
+                              <div v-if="task.artifacts.length" class="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                                <span>产物 {{ task.artifacts.length }} 个</span>
+                                <el-button size="small" @click="openJson('任务产物', task.artifacts)">产物 JSON</el-button>
+                              </div>
+                            </div>
+                          </el-collapse-item>
+                        </el-collapse>
 
                         <el-collapse v-if="message.trace_events.length" class="mt-2">
                           <el-collapse-item :title="`执行事件 ${message.trace_events.length}`" :name="message.id">
