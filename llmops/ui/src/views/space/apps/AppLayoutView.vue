@@ -101,7 +101,7 @@ onMounted(async () => await loadApp(String(route.params?.app_id)))
           ]"
           active-class="!bg-white !font-medium !text-blue-700 !shadow-sm"
         >
-          执行记录
+          会话记录
         </router-link>
       </nav>
 

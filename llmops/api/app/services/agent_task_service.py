@@ -3,14 +3,15 @@ from collections import defaultdict
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import String, cast, desc, false, func, or_
+from sqlalchemy import desc, false, func, or_
 from sqlalchemy.orm import Session
 
 from app.core.conversation import MessageStatus
 from app.core.exceptions import NotFoundException
 from app.models.account import Account
 from app.models.agent import Agent
-from app.models.conversation import Message, MessageAgentThought
+from app.models.conversation import Conversation, Message, MessageAgentThought
+from app.models.end_user import EndUser
 from app.models.task import AgentPlan, AgentStep, AgentTask, CapabilityCall, WorkerCall
 from app.models.trace import TraceEvent
 from app.services.app_service import AppService
@@ -32,40 +33,80 @@ class AgentTaskService(BaseService):
         page: int = 1,
         page_size: int = 20,
         status: str = "all",
+        user_id: str = "all",
         search_word: str = "",
-    ) -> tuple[list[dict[str, Any]], int, int]:
+    ) -> tuple[list[dict[str, Any]], int, int, list[dict[str, Any]]]:
         self.app_service.get_app(session, app_id, account)
-        app_agent_ids = self._app_agent_ids(session, app_id, account, validate_app=False)
-        query = self._app_task_query(session, app_agent_ids)
-        message_query = self._app_message_query(session, app_id)
-        cleaned_status = (status or "all").strip().lower()
-        if cleaned_status and cleaned_status != "all":
-            query = query.filter(AgentTask.status == cleaned_status)
-            message_query = self._filter_message_query_by_task_status(message_query, cleaned_status)
+        query = session.query(Conversation).filter(
+            Conversation.app_id == app_id,
+            Conversation.is_deleted.is_(False),
+        )
+        users = self._conversation_user_options(session, app_id)
+        cleaned_user_id = (user_id or "all").strip()
+        if cleaned_user_id and cleaned_user_id != "all":
+            try:
+                query = query.filter(Conversation.created_by == UUID(cleaned_user_id))
+            except ValueError:
+                query = query.filter(false())
         cleaned_search = (search_word or "").strip()
         if cleaned_search:
-            query = query.filter(cast(AgentTask.user_input, String).ilike(f"%{cleaned_search}%"))
-            message_query = message_query.filter(Message.query.ilike(f"%{cleaned_search}%"))
+            matched_conversation_ids = (
+                session.query(Message.conversation_id)
+                .filter(
+                    Message.app_id == app_id,
+                    Message.is_deleted.is_(False),
+                    or_(
+                        Message.query.ilike(f"%{cleaned_search}%"),
+                        Message.answer.ilike(f"%{cleaned_search}%"),
+                    ),
+                )
+                .distinct()
+            )
+            query = query.filter(
+                or_(
+                    Conversation.name.ilike(f"%{cleaned_search}%"),
+                    Conversation.summary.ilike(f"%{cleaned_search}%"),
+                    Conversation.id.in_(matched_conversation_ids),
+                )
+            )
 
-        total_record = query.count() + message_query.count()
+        conversations = (
+            query.order_by(desc(Conversation.updated_at), desc(Conversation.created_at))
+            .all()
+        )
+        app_agent_ids = self._app_agent_ids(session, app_id, account, validate_app=False)
+        summaries = self._conversation_summaries(session, conversations, app_agent_ids)
+        summaries.sort(key=lambda item: item["updated_at"] or item["created_at"], reverse=True)
+        cleaned_status = (status or "all").strip().lower()
+        if cleaned_status and cleaned_status != "all":
+            summaries = [summary for summary in summaries if summary["status"] == cleaned_status]
+
+        total_record = len(summaries)
         total_page = math.ceil(total_record / page_size) if total_record else 0
-        tasks: list[AgentTask | Message] = (
-            query.order_by(desc(AgentTask.created_at))
-            .limit(page * page_size)
-            .all()
+        return summaries[(page - 1) * page_size : page * page_size], total_record, total_page, users
+
+    def get_app_conversation_detail(
+        self,
+        session: Session,
+        *,
+        app_id: UUID,
+        conversation_id: UUID,
+        account: Account,
+    ) -> dict[str, Any]:
+        self.app_service.get_app(session, app_id, account)
+        conversation = (
+            session.query(Conversation)
+            .filter(
+                Conversation.id == conversation_id,
+                Conversation.app_id == app_id,
+                Conversation.is_deleted.is_(False),
+            )
+            .one_or_none()
         )
-        tasks.extend(
-            message_query.order_by(desc(Message.created_at))
-            .limit(page * page_size)
-            .all()
-        )
-        items = sorted(tasks, key=lambda item: item.created_at, reverse=True)
-        page_items = items[(page - 1) * page_size : page * page_size]
-        agent_tasks = [item for item in page_items if isinstance(item, AgentTask)]
-        messages = [item for item in page_items if isinstance(item, Message)]
-        summaries_by_id = {item["id"]: item for item in self._summaries(session, agent_tasks)}
-        summaries_by_id.update({item["id"]: item for item in self._message_summaries(session, messages)})
-        return [summaries_by_id[item.id] for item in page_items], total_record, total_page
+        if conversation is None:
+            raise NotFoundException("Conversation execution record does not exist")
+        app_agent_ids = self._app_agent_ids(session, app_id, account, validate_app=False)
+        return self._conversation_detail(session, conversation, app_agent_ids)
 
     def get_app_task_detail(
         self,
@@ -75,15 +116,21 @@ class AgentTaskService(BaseService):
         task_id: UUID,
         account: Account,
     ) -> dict[str, Any]:
+        try:
+            return self.get_app_conversation_detail(
+                session,
+                app_id=app_id,
+                conversation_id=task_id,
+                account=account,
+            )
+        except NotFoundException:
+            pass
+
         self.app_service.get_app(session, app_id, account)
         app_agent_ids = self._app_agent_ids(session, app_id, account, validate_app=False)
         task = self._app_task_query(session, app_agent_ids).filter(AgentTask.id == task_id).one_or_none()
         if task is None:
-            message = self._app_message_query(session, app_id).filter(Message.id == task_id).one_or_none()
-            if message is None:
-                raise NotFoundException("Agent task does not exist")
-            return self._message_detail(session, message)
-
+            raise NotFoundException("Agent task does not exist")
         plans = (
             session.query(AgentPlan)
             .filter(AgentPlan.task_id == task.id)
@@ -171,6 +218,224 @@ class AgentTaskService(BaseService):
             )
         )
 
+    def _conversation_summaries(
+        self,
+        session: Session,
+        conversations: list[Conversation],
+        app_agent_ids: list[UUID],
+    ) -> list[dict[str, Any]]:
+        if not conversations:
+            return []
+        conversation_ids = [conversation.id for conversation in conversations]
+        messages = (
+            session.query(Message)
+            .filter(
+                Message.conversation_id.in_(conversation_ids),
+                Message.is_deleted.is_(False),
+            )
+            .order_by(Message.created_at.asc())
+            .all()
+        )
+        tasks = self._agent_tasks_for_conversations(session, app_agent_ids, conversation_ids)
+        trace_counts = dict(
+            session.query(MessageAgentThought.conversation_id, func.count(MessageAgentThought.id))
+            .filter(MessageAgentThought.conversation_id.in_(conversation_ids))
+            .group_by(MessageAgentThought.conversation_id)
+            .all()
+        )
+        messages_by_conversation: dict[UUID, list[Message]] = defaultdict(list)
+        tasks_by_conversation: dict[UUID, list[AgentTask]] = defaultdict(list)
+        for message in messages:
+            messages_by_conversation[message.conversation_id].append(message)
+        for task in tasks:
+            if task.conversation_id:
+                tasks_by_conversation[task.conversation_id].append(task)
+        return [
+            self._conversation_summary(
+                conversation,
+                messages_by_conversation.get(conversation.id, []),
+                tasks_by_conversation.get(conversation.id, []),
+                int(trace_counts.get(conversation.id) or 0),
+            )
+            for conversation in conversations
+        ]
+
+    def _conversation_user_options(self, session: Session, app_id: UUID) -> list[dict[str, Any]]:
+        creator_ids = [
+            creator_id
+            for (creator_id,) in session.query(Conversation.created_by)
+            .filter(
+                Conversation.app_id == app_id,
+                Conversation.is_deleted.is_(False),
+                Conversation.created_by.isnot(None),
+            )
+            .distinct()
+            .all()
+            if creator_id
+        ]
+        if not creator_ids:
+            return []
+
+        account_map = {item.id: item for item in session.query(Account).filter(Account.id.in_(creator_ids)).all()}
+        end_user_map = {item.id: item for item in session.query(EndUser).filter(EndUser.id.in_(creator_ids)).all()}
+        options = []
+        for creator_id in creator_ids:
+            account = account_map.get(creator_id)
+            if account:
+                label = account.name or account.email or str(account.id)
+                options.append({"id": str(account.id), "label": label, "type": "account"})
+                continue
+            end_user = end_user_map.get(creator_id)
+            if end_user:
+                options.append({"id": str(end_user.id), "label": f"访客 {str(end_user.id)[:8]}", "type": "end_user"})
+                continue
+            options.append({"id": str(creator_id), "label": f"用户 {str(creator_id)[:8]}", "type": "unknown"})
+        return options
+
+    def _conversation_detail(
+        self,
+        session: Session,
+        conversation: Conversation,
+        app_agent_ids: list[UUID],
+    ) -> dict[str, Any]:
+        messages = (
+            session.query(Message)
+            .filter(
+                Message.conversation_id == conversation.id,
+                Message.is_deleted.is_(False),
+            )
+            .order_by(Message.created_at.asc())
+            .all()
+        )
+        thoughts = (
+            session.query(MessageAgentThought)
+            .filter(MessageAgentThought.conversation_id == conversation.id)
+            .order_by(MessageAgentThought.message_id.asc(), MessageAgentThought.position.asc(), MessageAgentThought.created_at.asc())
+            .all()
+        )
+        thoughts_by_message: dict[UUID, list[MessageAgentThought]] = defaultdict(list)
+        for thought in thoughts:
+            thoughts_by_message[thought.message_id].append(thought)
+        tasks = self._agent_tasks_for_conversations(session, app_agent_ids, [conversation.id])
+        task_summaries = self._summaries(session, tasks)
+        summary = self._conversation_summary(conversation, messages, tasks, len(thoughts))
+        trace_events = [self._message_trace_event_response(thought) for thought in thoughts]
+        return {
+            **summary,
+            "messages": [
+                self._conversation_message_response(message, thoughts_by_message.get(message.id, []))
+                for message in messages
+            ],
+            "agent_tasks": task_summaries,
+            "plans": [],
+            "plan": None,
+            "steps": [],
+            "worker_calls": [],
+            "capability_calls": [],
+            "trace_events": trace_events,
+            "input_files": self._conversation_input_files(messages),
+            "artifacts": [],
+        }
+
+    def _conversation_summary(
+        self,
+        conversation: Conversation,
+        messages: list[Message],
+        tasks: list[AgentTask],
+        trace_count: int,
+    ) -> dict[str, Any]:
+        latest_message = messages[-1] if messages else None
+        latest_at = latest_message.updated_at if latest_message else conversation.updated_at
+        if conversation.updated_at and latest_at:
+            latest_at = max(conversation.updated_at, latest_at)
+        return {
+            "id": conversation.id,
+            "record_type": "conversation",
+            "conversation_id": conversation.id,
+            "name": conversation.name,
+            "run_type": conversation.invoke_from or (latest_message.invoke_from if latest_message else "conversation"),
+            "entry_agent": None,
+            "status": self._conversation_status(messages, tasks),
+            "user_input": {
+                "conversation_id": str(conversation.id),
+                "invoke_from": conversation.invoke_from,
+                "latest_query": latest_message.query if latest_message else "",
+            },
+            "user_input_preview": latest_message.query if latest_message else conversation.name,
+            "final_result": {
+                "answer": latest_message.answer if latest_message else "",
+                "error": latest_message.error if latest_message else "",
+            },
+            "summary": conversation.summary or (latest_message.answer if latest_message else ""),
+            "error_code": "message_error" if latest_message and latest_message.status == MessageStatus.ERROR.value else "",
+            "error_message": latest_message.error if latest_message else "",
+            "version": 0,
+            "message_count": len(messages),
+            "task_count": len(tasks),
+            "step_count": 0,
+            "succeeded_step_count": 0,
+            "failed_step_count": 0,
+            "worker_call_count": 0,
+            "artifact_count": 0,
+            "trace_count": trace_count,
+            "total_token_count": sum(int(message.total_token_count or 0) for message in messages),
+            "total_price": float(sum(float(message.total_price or 0) for message in messages)),
+            "latency": float(sum(float(message.latency or 0) for message in messages)),
+            "started_at": self._ts(conversation.created_at),
+            "finished_at": self._ts(latest_at or conversation.created_at),
+            "created_at": self._ts(conversation.created_at),
+            "updated_at": self._ts(latest_at or conversation.updated_at),
+        }
+
+    def _conversation_message_response(
+        self,
+        message: Message,
+        thoughts: list[MessageAgentThought],
+    ) -> dict[str, Any]:
+        return {
+            "id": message.id,
+            "conversation_id": message.conversation_id,
+            "invoke_from": message.invoke_from,
+            "status": self._message_task_status(message),
+            "query": message.query,
+            "image_urls": message.image_urls or [],
+            "answer": message.answer,
+            "error": message.error,
+            "message": message.message or [],
+            "total_token_count": message.total_token_count,
+            "total_price": float(message.total_price or 0),
+            "latency": float(message.latency or 0),
+            "created_at": self._ts(message.created_at),
+            "updated_at": self._ts(message.updated_at),
+            "trace_events": [self._message_trace_event_response(thought) for thought in thoughts],
+        }
+
+    def _agent_tasks_for_conversations(
+        self,
+        session: Session,
+        app_agent_ids: list[UUID],
+        conversation_ids: list[UUID],
+    ) -> list[AgentTask]:
+        if not conversation_ids or not app_agent_ids:
+            return []
+        return (
+            self._app_task_query(session, app_agent_ids)
+            .filter(AgentTask.conversation_id.in_(conversation_ids))
+            .order_by(AgentTask.created_at.asc())
+            .all()
+        )
+
+    def _conversation_status(self, messages: list[Message], tasks: list[AgentTask]) -> str:
+        if any(task.status in {"created", "running", "waiting_approval"} for task in tasks):
+            return "running"
+        if any(task.status == "failed" for task in tasks):
+            return "failed"
+        if any(task.status == "cancelled" for task in tasks):
+            return "cancelled"
+        if messages:
+            return self._message_task_status(messages[-1])
+        return "succeeded"
+
     def _summaries(self, session: Session, tasks: list[AgentTask]) -> list[dict[str, Any]]:
         if not tasks:
             return []
@@ -217,87 +482,6 @@ class AgentTaskService(BaseService):
             )
         return summaries
 
-    def _message_summaries(self, session: Session, messages: list[Message]) -> list[dict[str, Any]]:
-        if not messages:
-            return []
-        message_ids = [message.id for message in messages]
-        thought_counts = dict(
-            session.query(MessageAgentThought.message_id, func.count(MessageAgentThought.id))
-            .filter(MessageAgentThought.message_id.in_(message_ids))
-            .group_by(MessageAgentThought.message_id)
-            .all()
-        )
-        return [
-            {
-                **self._message_base(message),
-                "summary": message.answer or message.error,
-                "user_input_preview": message.query,
-                "step_count": 0,
-                "succeeded_step_count": 0,
-                "failed_step_count": 0,
-                "worker_call_count": 0,
-                "artifact_count": 0,
-                "trace_count": int(thought_counts.get(message.id) or 0),
-            }
-            for message in messages
-        ]
-
-    def _message_detail(self, session: Session, message: Message) -> dict[str, Any]:
-        thoughts = (
-            session.query(MessageAgentThought)
-            .filter(MessageAgentThought.message_id == message.id)
-            .order_by(MessageAgentThought.position.asc(), MessageAgentThought.created_at.asc())
-            .all()
-        )
-        return {
-            **self._message_base(message),
-            "summary": message.answer or message.error,
-            "user_input_preview": message.query,
-            "step_count": 0,
-            "succeeded_step_count": 0,
-            "failed_step_count": 0,
-            "worker_call_count": 0,
-            "artifact_count": 0,
-            "trace_count": len(thoughts),
-            "plans": [],
-            "plan": None,
-            "steps": [],
-            "worker_calls": [],
-            "capability_calls": [],
-            "trace_events": [self._message_trace_event_response(thought) for thought in thoughts],
-            "input_files": self._message_input_files(message),
-            "artifacts": [],
-        }
-
-    def _message_base(self, message: Message) -> dict[str, Any]:
-        return {
-            "id": message.id,
-            "run_type": message.invoke_from or "chat",
-            "entry_agent": None,
-            "status": self._message_task_status(message),
-            "user_input": {
-                "query": message.query,
-                "image_urls": message.image_urls or [],
-                "conversation_id": str(message.conversation_id),
-                "invoke_from": message.invoke_from,
-            },
-            "final_result": {
-                "answer": message.answer,
-                "error": message.error,
-                "message": message.message or [],
-                "total_token_count": message.total_token_count,
-                "total_price": float(message.total_price or 0),
-                "latency": float(message.latency or 0),
-            },
-            "error_code": "message_error" if message.status == MessageStatus.ERROR.value else "",
-            "error_message": message.error or "",
-            "version": 0,
-            "started_at": self._ts(message.created_at),
-            "finished_at": self._ts(message.updated_at or message.created_at),
-            "created_at": self._ts(message.created_at),
-            "updated_at": self._ts(message.updated_at),
-        }
-
     def _message_trace_event_response(self, thought: MessageAgentThought) -> dict[str, Any]:
         return {
             "id": thought.id,
@@ -326,7 +510,6 @@ class AgentTaskService(BaseService):
         }
 
     @staticmethod
-    @staticmethod
     def _message_task_status(message: Message) -> str:
         if message.status in {MessageStatus.ERROR.value, MessageStatus.TIMEOUT.value}:
             return "failed"
@@ -337,29 +520,20 @@ class AgentTaskService(BaseService):
         return message.status or "succeeded"
 
     @staticmethod
-    def _filter_message_query_by_task_status(query, status: str):
-        if status == "succeeded":
-            return query.filter(Message.status == MessageStatus.NORMAL.value, Message.answer != "")
-        if status == "running":
-            return query.filter(Message.status == MessageStatus.NORMAL.value, Message.answer == "")
-        if status == "failed":
-            return query.filter(Message.status.in_([MessageStatus.ERROR.value, MessageStatus.TIMEOUT.value]))
-        if status == "cancelled":
-            return query.filter(Message.status == MessageStatus.STOP.value)
-        return query.filter(false())
-
-    @staticmethod
-    def _message_input_files(message: Message) -> list[dict[str, Any]]:
-        return [
-            {
-                "id": url,
-                "name": url.split("/")[-1] or "image",
-                "preview_url": url,
-                "download_url": url,
-                "source": "message_image",
-            }
-            for url in message.image_urls or []
-        ]
+    def _conversation_input_files(messages: list[Message]) -> list[dict[str, Any]]:
+        files = []
+        for message in messages:
+            for url in message.image_urls or []:
+                files.append(
+                    {
+                        "id": url,
+                        "name": url.split("/")[-1] or "image",
+                        "preview_url": url,
+                        "download_url": url,
+                        "source": "message_image",
+                    }
+                )
+        return AgentTaskService._dedupe_dicts(files, ("id", "name"))
 
     @staticmethod
     def _agent_map(session: Session, agent_ids: set[UUID]) -> dict[UUID, Agent]:

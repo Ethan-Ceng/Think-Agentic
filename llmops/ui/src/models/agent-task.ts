@@ -22,6 +22,9 @@ export type AgentRef = {
 
 export type AgentTaskSummary = {
   id: string
+  record_type?: string
+  conversation_id?: string
+  name?: string
   run_type: string
   entry_agent: AgentRef
   status: AgentTaskStatus | string
@@ -38,6 +41,11 @@ export type AgentTaskSummary = {
   worker_call_count: number
   artifact_count: number
   trace_count: number
+  message_count?: number
+  task_count?: number
+  total_token_count?: number
+  total_price?: number
+  latency?: number
   started_at: number
   finished_at: number
   created_at: number
@@ -144,7 +152,15 @@ export type AgentArtifactRef = AgentFileRef & {
   worker_id?: string
 }
 
+export type AgentConversationUserOption = {
+  id: string
+  label: string
+  type: string
+}
+
 export type AgentTaskDetail = AgentTaskSummary & {
+  messages?: AgentConversationMessage[]
+  agent_tasks?: AgentTaskSummary[]
   plans: AgentPlanItem[]
   plan: AgentPlanItem | null
   steps: AgentStepItem[]
@@ -155,15 +171,35 @@ export type AgentTaskDetail = AgentTaskSummary & {
   artifacts: AgentArtifactRef[]
 }
 
+export type AgentConversationMessage = {
+  id: string
+  conversation_id: string
+  invoke_from: string
+  status: AgentTaskStatus | string
+  query: string
+  image_urls: string[]
+  answer: string
+  error: string
+  message: Record<string, any>[]
+  total_token_count: number
+  total_price: number
+  latency: number
+  created_at: number
+  updated_at: number
+  trace_events: TraceEventItem[]
+}
+
 export type GetAgentTasksWithPageRequest = {
   current_page: number
   page_size: number
   status?: string
+  user_id?: string
   search_word?: string
 }
 
 export type GetAgentTasksWithPageResponse = BaseResponse<{
   list: AgentTaskSummary[]
+  users: AgentConversationUserOption[]
   total_page: number
   total_record: number
   current_page: number

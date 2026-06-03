@@ -11,6 +11,7 @@ export const getAppAgentTasksWithPage = (appId: string, req: GetAgentTasksWithPa
       page: req.current_page,
       page_size: req.page_size,
       status: req.status || 'all',
+      user_id: req.user_id || 'all',
       search_word: req.search_word || '',
     },
   })

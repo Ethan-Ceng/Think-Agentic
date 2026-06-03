@@ -20,13 +20,14 @@ def get_app_agent_tasks(
     current_user: Account = Depends(get_current_account),
     svc: AgentTaskService = Depends(get_agent_task_service),
 ):
-    tasks, total_record, total_page = svc.list_app_tasks_with_page(
+    tasks, total_record, total_page, users = svc.list_app_tasks_with_page(
         session,
         app_id=app_id,
         account=current_user,
         page=req.page,
         page_size=req.page_size,
         status=req.status,
+        user_id=req.user_id,
         search_word=req.search_word,
     )
     return success_json(
@@ -36,6 +37,7 @@ def get_app_agent_tasks(
             "total_record": total_record,
             "current_page": req.page,
             "page_size": req.page_size,
+            "users": users,
         }
     )
 
