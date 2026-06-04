@@ -1,11 +1,15 @@
+import time
 import uuid
+from collections.abc import Callable, Generator
 from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.core.agent import AgentThought, QueueEvent
 from app.core.conversation import InvokeFrom, MessageStatus
 from app.core.exceptions import FailException, NotFoundException
+from app.core.memory.token_buffer_memory import TokenBufferMemory
 from app.domain.agent_runtime.planner import PlannerInput, PlannerWorkerDescriptor, RouterPlannerAgent
 from app.domain.agent_runtime.protocols import ArtifactRef, RouterPlan, RouterPlanStep, WorkerInvocation, WorkerResult
 from app.domain.agent_runtime.router_runtime import RouterRuntime
@@ -32,6 +36,13 @@ class RouterManagerRunResult:
     @property
     def trace_id(self) -> str:
         return TraceService.trace_id_for_task(self.task.id)
+
+
+@dataclass(frozen=True)
+class PlannerDebugStreamEvent:
+    thought: AgentThought
+    conversation_id: uuid.UUID
+    message_id: uuid.UUID
 
 
 class RouterAgentManagerService(BaseService):
@@ -488,6 +499,7 @@ class RouterAgentManagerService(BaseService):
             image_urls=image_urls or [],
             status=MessageStatus.NORMAL.value,
         )
+        recent_history = self._debug_recent_history(session, app, conversation.id)
         requested_worker_ids = self._requested_worker_agent_ids(
             session,
             planner_agent_id=planner_agent.id,
@@ -496,6 +508,7 @@ class RouterAgentManagerService(BaseService):
         )
         user_input = {
             "query": query,
+            "recent_history": recent_history,
             "input_file_ids": input_file_ids or [],
             "message_id": str(message.id),
             "conversation_id": str(conversation.id),
@@ -550,6 +563,448 @@ class RouterAgentManagerService(BaseService):
             "answer": message.answer,
             "error": message.error,
         }
+
+    def stream_planner_debug_run(
+        self,
+        session: Session,
+        *,
+        planner_app_id: uuid.UUID,
+        query: str,
+        account: Account,
+        requested_worker_app_ids: list[uuid.UUID] | None = None,
+        input_file_ids: list[str] | None = None,
+        image_urls: list[str] | None = None,
+        on_task_created: Callable[[uuid.UUID], None] | None = None,
+        is_stopped: Callable[[uuid.UUID], bool] | None = None,
+    ) -> Generator[PlannerDebugStreamEvent, None, None]:
+        app = self.app_service.get_app(session, planner_app_id, account)
+        if (getattr(app, "agent_type", "worker") or "worker") != "planner":
+            raise FailException("Only PlannerAgent apps can run planner debug")
+
+        planner_agent, _ = self.create_planner_agent_from_app(
+            session,
+            tenant_id=account.id,
+            app_id=planner_app_id,
+            account=account,
+        )
+        conversation = self.app_service.get_or_create_debug_conversation(session, app, account)
+        message = self.create(
+            session,
+            Message,
+            app_id=app.id,
+            conversation_id=conversation.id,
+            invoke_from=InvokeFrom.DEBUGGER.value,
+            created_by=account.id,
+            query=query,
+            image_urls=image_urls or [],
+            status=MessageStatus.NORMAL.value,
+        )
+        recent_history = self._debug_recent_history(session, app, conversation.id)
+        requested_worker_ids = self._requested_worker_agent_ids(
+            session,
+            planner_agent_id=planner_agent.id,
+            account=account,
+            requested_worker_app_ids=requested_worker_app_ids or [],
+        )
+        user_input = {
+            "query": query,
+            "recent_history": recent_history,
+            "image_urls": image_urls or [],
+            "input_file_ids": input_file_ids or [],
+            "message_id": str(message.id),
+            "conversation_id": str(conversation.id),
+            "context": {
+                "message_id": str(message.id),
+                "conversation_id": str(conversation.id),
+                "invoke_from": InvokeFrom.DEBUGGER.value,
+            },
+        }
+        task = self.task_engine.create_task(
+            session,
+            tenant_id=account.id,
+            router_agent_id=planner_agent.id,
+            user_input=user_input,
+            user_id=account.id,
+            conversation_id=conversation.id,
+        )
+        self.task_engine.start_task(session, task)
+        if on_task_created is not None:
+            on_task_created(task.id)
+
+        started_at = time.perf_counter()
+
+        def emit(
+            event: QueueEvent,
+            *,
+            thought: str = "",
+            observation: str = "",
+            tool: str = "",
+            tool_input: dict[str, Any] | None = None,
+            answer: str = "",
+            total_token_count: int = 0,
+        ) -> PlannerDebugStreamEvent:
+            return PlannerDebugStreamEvent(
+                thought=AgentThought(
+                    id=uuid.uuid4(),
+                    task_id=task.id,
+                    event=event,
+                    thought=thought,
+                    observation=observation,
+                    tool=tool,
+                    tool_input=tool_input or {},
+                    answer=answer,
+                    total_token_count=total_token_count,
+                    latency=time.perf_counter() - started_at,
+                ),
+                conversation_id=conversation.id,
+                message_id=message.id,
+            )
+
+        def stopped() -> bool:
+            return bool(is_stopped is not None and is_stopped(task.id))
+
+        def cancel_task() -> PlannerDebugStreamEvent:
+            if task.status not in {TaskStatus.SUCCEEDED.value, TaskStatus.FAILED.value, TaskStatus.CANCELLED.value}:
+                self.task_engine.cancel_task(session, task, error_message="PlannerAgent debug stopped")
+                self.trace_service.record(
+                    session,
+                    tenant_id=task.tenant_id,
+                    event_type="router.manager_run.cancelled",
+                    task=task,
+                    payload={"reason": "debug_stop_requested"},
+                )
+            return emit(QueueEvent.STOP, observation="PlannerAgent 调试已停止")
+
+        workers = self.list_bound_workers(session, tenant_id=account.id, router_agent_id=planner_agent.id)
+        selected_workers = self._select_workers(workers, requested_worker_ids)
+        self.trace_service.record(
+            session,
+            tenant_id=account.id,
+            event_type="planner.started",
+            task=task,
+            payload={
+                "router_agent_id": str(planner_agent.id),
+                "worker_count": len(selected_workers),
+                "max_steps": 5,
+                "has_input_files": any(self._iter_input_file_ids(user_input)),
+            },
+        )
+        if not selected_workers:
+            error = "Router agent has no available worker bindings"
+            self.task_engine.fail_task(
+                session,
+                task,
+                error_code="worker_bindings_missing",
+                error_message=error,
+                final_result={"error": error},
+            )
+            yield emit(QueueEvent.ERROR, observation=error)
+            return
+
+        yield emit(
+            QueueEvent.AGENT_THOUGHT,
+            thought=f"PlannerAgent 已启动，已选择 {len(selected_workers)} 个 WorkerAgent。",
+        )
+        if stopped():
+            yield cancel_task()
+            return
+
+        yield emit(
+            QueueEvent.AGENT_ACTION,
+            observation="正在生成执行计划",
+            tool="planner.generate_plan",
+            tool_input={
+                "workers": [
+                    {"id": str(worker.id), "name": worker.name, "description": worker.description or ""}
+                    for worker in selected_workers
+                ],
+                "query": query,
+            },
+        )
+        if stopped():
+            yield cancel_task()
+            return
+
+        try:
+            plan = self._build_planner_or_fallback_plan(
+                session,
+                task=task,
+                router_agent=planner_agent,
+                workers=selected_workers,
+                user_input=user_input,
+                account=account,
+            )
+            run = self._persist_manager_plan_for_task(session, task=task, plan=plan, user_input=user_input)
+            self._record_manager_run_created(session, run)
+        except Exception as exc:  # noqa: BLE001
+            self.task_engine.fail_task(
+                session,
+                task,
+                error_code="planner_execution_failed",
+                error_message=str(exc),
+                final_result={"error": str(exc)},
+            )
+            yield emit(QueueEvent.ERROR, observation=str(exc))
+            return
+
+        yield emit(
+            QueueEvent.AGENT_ACTION,
+            observation=self._planner_plan_observation(plan, selected_workers),
+            tool="planner.plan",
+            tool_input={
+                "source": plan.risk_assessment.get("source") or "",
+                "steps": [
+                    {
+                        "step_id": step.step_id,
+                        "worker_id": step.worker_id,
+                        "task": step.task,
+                        "dependencies": step.dependencies,
+                    }
+                    for step in plan.steps
+                ],
+            },
+        )
+        if stopped():
+            yield cancel_task()
+            return
+
+        try:
+            input_files = self._input_file_refs(session, account, run.task.user_input)
+        except Exception as exc:
+            self.task_engine.fail_task(
+                session,
+                run.task,
+                error_code="input_files_invalid",
+                error_message=str(exc),
+                final_result={"error": str(exc)},
+            )
+            self.trace_service.record(
+                session,
+                tenant_id=run.task.tenant_id,
+                event_type="router.input_files.failed",
+                task=run.task,
+                plan=run.plan,
+                payload={"error": str(exc)},
+            )
+            yield emit(QueueEvent.ERROR, observation=str(exc))
+            return
+
+        step_outputs = []
+        accumulated_artifacts: list[dict[str, Any]] = []
+        for step in run.steps:
+            if stopped():
+                yield cancel_task()
+                return
+
+            self.task_engine.start_step(session, step)
+            worker = self.get_worker_agent(session, run.task.tenant_id, step.worker_agent_id)
+            task_text = str((step.input_json or {}).get("task") or "")
+            yield emit(
+                QueueEvent.AGENT_ACTION,
+                observation=f"开始执行 {step.step_key}: {self._truncate(task_text, 500)}",
+                tool=worker.name,
+                tool_input={
+                    "step_key": step.step_key,
+                    "worker_agent_id": str(worker.id),
+                    "worker_name": worker.name,
+                    "task": task_text,
+                },
+            )
+
+            invocation = self._build_worker_invocation(
+                run=run,
+                step=step,
+                worker=worker,
+                account=account,
+                input_files=input_files,
+                artifacts=accumulated_artifacts,
+            )
+            self.trace_service.record(
+                session,
+                tenant_id=run.task.tenant_id,
+                event_type="router.step.started",
+                task=run.task,
+                plan=run.plan,
+                step=step,
+                payload={"step_key": step.step_key, "worker_agent_id": str(worker.id)},
+            )
+            worker_call = self.task_engine.record_worker_call(
+                session,
+                step=step,
+                invocation_json=invocation.model_dump(mode="json"),
+            )
+            self.task_engine.start_worker_call(session, worker_call)
+            self.trace_service.record(
+                session,
+                tenant_id=run.task.tenant_id,
+                event_type="worker.call.started",
+                task=run.task,
+                plan=run.plan,
+                step=step,
+                worker_call=worker_call,
+                payload={
+                    "worker_agent_id": str(worker.id),
+                    "target_ref_type": worker.target_ref_type,
+                    "target_ref_id": worker.target_ref_id,
+                    "execution_agent_type": invocation.execution_policy.get("execution_agent_type"),
+                },
+            )
+            try:
+                worker_result = self._invoke_worker(session, worker, invocation, account)
+                worker_result = self._with_registered_artifacts(
+                    session,
+                    account=account,
+                    run=run,
+                    step=step,
+                    worker=worker,
+                    worker_result=worker_result,
+                )
+            except Exception as exc:  # noqa: BLE001
+                self.task_engine.complete_worker_call(
+                    session,
+                    worker_call,
+                    status=TaskStatus.FAILED,
+                    result_json={"error": str(exc)},
+                )
+                self.task_engine.fail_step(
+                    session,
+                    step,
+                    error_code="worker_execution_failed",
+                    error_message=str(exc),
+                )
+                self.task_engine.fail_task(
+                    session,
+                    run.task,
+                    error_code="worker_execution_failed",
+                    error_message=str(exc),
+                    final_result={"step_key": step.step_key},
+                )
+                self.trace_service.record(
+                    session,
+                    tenant_id=run.task.tenant_id,
+                    event_type="worker.call.failed",
+                    task=run.task,
+                    plan=run.plan,
+                    step=step,
+                    worker_call=worker_call,
+                    payload={"step_key": step.step_key, "worker_agent_id": str(worker.id), "error": str(exc)},
+                )
+                yield emit(QueueEvent.ERROR, observation=str(exc), tool=worker.name)
+                return
+
+            output = self._worker_result_to_output(worker_result)
+            self._record_agent_events(session, run=run, step=step, worker_call=worker_call, worker_result=worker_result)
+            terminal_status = self._worker_terminal_status(worker_result)
+            if worker_result.status != TaskStatus.SUCCEEDED.value:
+                self.task_engine.complete_worker_call(
+                    session,
+                    worker_call,
+                    status=terminal_status,
+                    result_json=output,
+                )
+                self.task_engine.fail_step(
+                    session,
+                    step,
+                    error_code=worker_result.error_code or terminal_status.value,
+                    error_message=worker_result.summary or "Worker execution failed",
+                )
+                if terminal_status == TaskStatus.CANCELLED:
+                    self.task_engine.cancel_task(
+                        session,
+                        run.task,
+                        error_message=worker_result.summary or "PlannerAgent debug stopped",
+                    )
+                    yield emit(QueueEvent.STOP, observation=worker_result.summary or "PlannerAgent 调试已停止")
+                    return
+
+                self.task_engine.fail_task(
+                    session,
+                    run.task,
+                    error_code=worker_result.error_code or "worker_execution_failed",
+                    error_message=worker_result.summary or "Worker execution failed",
+                    final_result={"step_key": step.step_key, "worker_result": output},
+                )
+                self.trace_service.record(
+                    session,
+                    tenant_id=run.task.tenant_id,
+                    event_type="worker.call.failed",
+                    task=run.task,
+                    plan=run.plan,
+                    step=step,
+                    worker_call=worker_call,
+                    payload={
+                        "step_key": step.step_key,
+                        "worker_agent_id": str(worker.id),
+                        "status": worker_result.status,
+                        "error_code": worker_result.error_code,
+                        "summary": worker_result.summary,
+                    },
+                )
+                yield emit(
+                    QueueEvent.ERROR,
+                    observation=worker_result.summary or "Worker execution failed",
+                    tool=worker.name,
+                )
+                return
+
+            self.task_engine.complete_worker_call(session, worker_call, result_json=output)
+            self.task_engine.succeed_step(session, step, output_json=output)
+            step_artifacts = list(output.get("artifacts") or [])
+            accumulated_artifacts.extend(step_artifacts)
+            step_outputs.append({"step_key": step.step_key, "worker_agent_id": str(worker.id), "output": output})
+            self.trace_service.record(
+                session,
+                tenant_id=run.task.tenant_id,
+                event_type="worker.call.succeeded",
+                task=run.task,
+                plan=run.plan,
+                step=step,
+                worker_call=worker_call,
+                payload={
+                    "step_key": step.step_key,
+                    "worker_agent_id": str(worker.id),
+                    "answer_length": len(str(output.get("answer") or "")),
+                    "worker_result_status": worker_result.status,
+                    "artifact_count": len(step_artifacts),
+                },
+            )
+            self.trace_service.record(
+                session,
+                tenant_id=run.task.tenant_id,
+                event_type="router.step.succeeded",
+                task=run.task,
+                plan=run.plan,
+                step=step,
+                payload={"step_key": step.step_key},
+            )
+            yield emit(
+                QueueEvent.AGENT_ACTION,
+                observation=self._truncate(str(output.get("answer") or worker_result.summary or "执行完成"), 1000),
+                tool=worker.name,
+                tool_input={"step_key": step.step_key, "status": worker_result.status},
+            )
+
+        self.task_engine.succeed_task(
+            session,
+            run.task,
+            final_result={"steps": step_outputs, "artifacts": accumulated_artifacts},
+        )
+        self.trace_service.record(
+            session,
+            tenant_id=run.task.tenant_id,
+            event_type="router.manager_run.succeeded",
+            task=run.task,
+            plan=run.plan,
+            payload={"step_count": len(step_outputs)},
+        )
+        answer = self._task_answer(run.task)
+        yield emit(
+            QueueEvent.AGENT_MESSAGE,
+            thought=answer,
+            answer=answer,
+            total_token_count=max(1, len(answer) // 4) if answer else 0,
+        )
+        yield emit(QueueEvent.AGENT_END)
 
     def build_manager_plan(
         self,
@@ -739,6 +1194,9 @@ class RouterAgentManagerService(BaseService):
         query = str(user_input.get("query") or user_input.get("input") or user_input.get("message") or "")
         context = user_input.get("context") if isinstance(user_input.get("context"), dict) else {}
         conversation = user_input.get("conversation") if isinstance(user_input.get("conversation"), dict) else {}
+        recent_history = self._recent_history_from_user_input(user_input)
+        if not recent_history and task.conversation_id:
+            recent_history = self._conversation_recent_history(session, task.conversation_id, 10)
         return PlannerInput(
             router_id=str(router_agent.id),
             query=query,
@@ -747,7 +1205,7 @@ class RouterAgentManagerService(BaseService):
                 user_input.get("message_id") or context.get("message_id") or conversation.get("message_id") or ""
             ),
             input_files=[],
-            recent_history=[],
+            recent_history=recent_history,
             workers=[self._planner_worker_descriptor(session=session, worker=worker) for worker in workers],
             constraints={
                 "allow_parallel": False,
@@ -757,6 +1215,50 @@ class RouterAgentManagerService(BaseService):
                 "max_steps": 5,
             },
         )
+
+    def _debug_recent_history(self, session: Session, app: App, conversation_id: uuid.UUID) -> list[dict[str, str]]:
+        dialog_round = 10
+        try:
+            config = self.app_service._config_to_dict(self.app_service.get_or_create_draft_config(session, app))
+            dialog_round = int(config.get("dialog_round") or 0)
+        except Exception:  # noqa: BLE001
+            dialog_round = 10
+        return self._conversation_recent_history(session, conversation_id, dialog_round)
+
+    def _conversation_recent_history(
+        self,
+        session: Session,
+        conversation_id: uuid.UUID,
+        dialog_round: int,
+    ) -> list[dict[str, str]]:
+        if dialog_round <= 0:
+            return []
+        try:
+            return self._recent_history_from_items(
+                TokenBufferMemory(session, conversation_id).get_history_messages(dialog_round)
+            )
+        except Exception:  # noqa: BLE001
+            return []
+
+    @classmethod
+    def _recent_history_from_user_input(cls, user_input: dict[str, Any]) -> list[dict[str, str]]:
+        raw_history = user_input.get("recent_history") if isinstance(user_input, dict) else []
+        return cls._recent_history_from_items(raw_history)
+
+    @classmethod
+    def _recent_history_from_items(cls, raw_history: Any) -> list[dict[str, str]]:
+        if not isinstance(raw_history, list):
+            return []
+        history: list[dict[str, str]] = []
+        for item in raw_history[-20:]:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role") or "").strip()
+            content = str(item.get("content") or "").strip()
+            if role not in {"user", "assistant"} or not content:
+                continue
+            history.append({"role": role, "content": cls._truncate(content, 2000)})
+        return history
 
     def _planner_worker_descriptor(self, *, session: Session, worker: Agent) -> PlannerWorkerDescriptor:
         version = None
@@ -1173,6 +1675,16 @@ class RouterAgentManagerService(BaseService):
         return task.error_message or ""
 
     @staticmethod
+    def _planner_plan_observation(plan: RouterPlan, workers: list[Agent]) -> str:
+        worker_names = {str(worker.id): worker.name for worker in workers}
+        lines = []
+        source = plan.risk_assessment.get("source") or "planner"
+        for index, step in enumerate(plan.steps, start=1):
+            worker_name = worker_names.get(str(step.worker_id), step.worker_id)
+            lines.append(f"{index}. {worker_name}: {step.task}")
+        return f"计划来源: {source}\n" + "\n".join(lines)
+
+    @staticmethod
     def _worker_app_map(session: Session, workers: list[Agent], account_id: uuid.UUID) -> dict[str, App]:
         app_ids = []
         for worker in workers:
@@ -1240,6 +1752,9 @@ class RouterAgentManagerService(BaseService):
         input_files: list[dict[str, Any]] | None = None,
         artifacts: list[dict[str, Any]] | None = None,
     ) -> WorkerInvocation:
+        user_input = step.input_json.get("user_input") if isinstance(step.input_json, dict) else {}
+        image_urls = user_input.get("image_urls") if isinstance(user_input, dict) else []
+        recent_history = self._recent_history_from_user_input(user_input)
         return WorkerInvocation(
             trace_id=run.trace_id,
             tenant_id=run.task.tenant_id,
@@ -1260,7 +1775,9 @@ class RouterAgentManagerService(BaseService):
                 "conversation_id": str(run.task.conversation_id) if run.task.conversation_id else None,
                 "worker_name": worker.name,
                 "input_files": input_files or [],
+                "image_urls": image_urls if isinstance(image_urls, list) else [],
                 "artifacts": artifacts or [],
+                "recent_history": recent_history,
             },
             execution_policy={
                 "execution_agent_type": self._worker_execution_agent_type(worker),

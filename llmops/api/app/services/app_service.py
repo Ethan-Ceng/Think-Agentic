@@ -382,58 +382,42 @@ class AppService(BaseService):
     def _debug_planner_chat(self, session: Session, app: App, req, account: Account):
         from app.services.router_agent_manager_service import RouterAgentManagerService
 
-        started_at = time.perf_counter()
-        result = RouterAgentManagerService(app_service=self).create_planner_debug_run(
-            session,
-            planner_app_id=app.id,
-            query=req.query,
-            account=account,
-            image_urls=req.image_urls,
-            raise_on_error=False,
-        )
-        task_id = self._parse_uuid(result.get("task_id")) or uuid4()
-        conversation_id = self._parse_uuid(result.get("conversation_id")) or app.debug_conversation_id or uuid4()
-        message_id = self._parse_uuid(result.get("message_id")) or uuid4()
-        latency = time.perf_counter() - started_at
-        error = str(result.get("error") or "")
-        answer = str(result.get("answer") or "")
-        if error and not answer:
-            yield self._format_agent_sse(
-                AgentThought(
-                    id=uuid4(),
-                    task_id=task_id,
-                    event=QueueEvent.ERROR,
-                    observation=error,
-                    latency=latency,
-                ),
-                conversation_id,
-                message_id,
-            )
-            return
+        task_id: UUID | None = None
+        conversation_id: UUID | None = None
+        message_id: UUID | None = None
+        agent_thoughts: list[AgentThought] = []
 
-        yield self._format_agent_sse(
-            AgentThought(
-                id=uuid4(),
-                task_id=task_id,
-                event=QueueEvent.AGENT_MESSAGE,
-                thought=answer,
-                answer=answer,
-                total_token_count=self._estimate_tokens(answer),
-                latency=latency,
-            ),
-            conversation_id,
-            message_id,
-        )
-        yield self._format_agent_sse(
-            AgentThought(
-                id=uuid4(),
-                task_id=task_id,
-                event=QueueEvent.AGENT_END,
-                latency=latency,
-            ),
-            conversation_id,
-            message_id,
-        )
+        def register_task(created_task_id: UUID) -> None:
+            nonlocal task_id
+            task_id = created_task_id
+            AgentQueueManager.register_task(created_task_id, InvokeFrom.DEBUGGER, account.id)
+
+        try:
+            for stream_event in RouterAgentManagerService(app_service=self).stream_planner_debug_run(
+                session,
+                planner_app_id=app.id,
+                query=req.query,
+                account=account,
+                image_urls=req.image_urls,
+                on_task_created=register_task,
+                is_stopped=AgentQueueManager.is_stopped,
+            ):
+                thought = stream_event.thought
+                task_id = thought.task_id
+                conversation_id = stream_event.conversation_id
+                message_id = stream_event.message_id
+                agent_thoughts.append(thought)
+                yield self._format_agent_sse(thought, stream_event.conversation_id, stream_event.message_id)
+                if thought.event in {QueueEvent.AGENT_END, QueueEvent.ERROR, QueueEvent.STOP, QueueEvent.TIMEOUT}:
+                    break
+        finally:
+            if conversation_id is not None and message_id is not None:
+                conversation = session.get(Conversation, conversation_id)
+                message = session.get(Message, message_id)
+                if conversation is not None and message is not None:
+                    self._save_agent_result(session, account, app, conversation, message, agent_thoughts)
+            if task_id is not None:
+                AgentQueueManager.clear_task(task_id)
 
     def stop_debug_chat(self, session: Session, app_id: UUID, task_id: UUID, account: Account) -> None:
         self.get_app(session, app_id, account)
@@ -518,6 +502,7 @@ class AppService(BaseService):
         query: str,
         image_urls: list[str],
         account: Account,
+        conversation_id: UUID | None = None,
     ):
         app = self.get_app(session, app_id, account)
         config = self._config_to_dict(self.get_or_create_draft_config(session, app))
@@ -528,6 +513,7 @@ class AppService(BaseService):
             query=query,
             image_urls=image_urls,
             account=account,
+            conversation_id=conversation_id,
         )
 
     def run_app_agent(
@@ -1456,8 +1442,10 @@ class AppService(BaseService):
         answer = "".join(thought.answer for thought in non_ping_thoughts if thought.event == QueueEvent.AGENT_MESSAGE)
         status = MessageStatus.NORMAL.value
         error = ""
-        if any(thought.event == QueueEvent.STOP for thought in non_ping_thoughts):
+        if stop_thought := next((thought for thought in non_ping_thoughts if thought.event == QueueEvent.STOP), None):
             status = MessageStatus.STOP.value
+            if not answer:
+                answer = stop_thought.observation or "已停止响应"
         if error_thought := next((thought for thought in non_ping_thoughts if thought.event == QueueEvent.ERROR), None):
             status = MessageStatus.ERROR.value
             error = error_thought.observation

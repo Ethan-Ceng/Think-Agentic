@@ -154,8 +154,3 @@ class UpdatePlannerWorkerBindingRequest(BaseModel):
     priority: int = Field(0, ge=0, le=100)
     conditions: dict = Field(default_factory=dict)
 
-
-class PlannerDebugRunRequest(BaseModel):
-    query: str = Field(..., min_length=1)
-    requested_worker_app_ids: list[UUID] = Field(default_factory=list, max_length=5)
-    input_file_ids: list[str] = Field(default_factory=list, max_length=5)

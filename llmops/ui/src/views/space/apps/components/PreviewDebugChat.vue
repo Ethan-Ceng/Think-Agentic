@@ -198,6 +198,8 @@ const handleSubmit = async () => {
       } else if (event === QueueEvent.timeout) {
         // 5.16 事件为timeout，则人工提示超时信息
         messages.value[0].answer = '当前Agent执行已超时，无法得到答案，请重试'
+      } else if (event === QueueEvent.stop) {
+        messages.value[0].answer = data?.observation || '已停止响应'
       } else {
         // 5.15 处理其他类型的事件，直接填充覆盖数据
         position += 1

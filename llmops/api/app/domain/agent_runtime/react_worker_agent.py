@@ -62,6 +62,7 @@ class ReActWorkerAgent:
 
         task_text = self._task_text(invocation)
         image_urls = self._image_urls(invocation)
+        conversation_id = self._conversation_id(invocation)
         thoughts = list(
             self.app_service.run_app_worker(
                 session,
@@ -70,6 +71,7 @@ class ReActWorkerAgent:
                 query=task_text,
                 image_urls=image_urls,
                 account=account,
+                conversation_id=conversation_id,
             )
         )
         return self._result_from_thoughts(invocation, worker, agent_version, thoughts)
@@ -227,6 +229,16 @@ class ReActWorkerAgent:
     def _image_urls(invocation: WorkerInvocation) -> list[str]:
         value = invocation.context.get("image_urls") or invocation.task.get("image_urls") or []
         return [str(item) for item in value if item][:5] if isinstance(value, list) else []
+
+    @staticmethod
+    def _conversation_id(invocation: WorkerInvocation) -> uuid.UUID | None:
+        value = invocation.context.get("conversation_id") if isinstance(invocation.context, dict) else None
+        if not value:
+            return None
+        try:
+            return uuid.UUID(str(value))
+        except ValueError:
+            return None
 
     @staticmethod
     def _event_status(event_type: str) -> str:

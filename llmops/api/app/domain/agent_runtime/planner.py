@@ -102,6 +102,7 @@ class PlannerPromptBuilder:
             "Create the smallest valid sequential plan for this user request.\n"
             "If one worker can do the job, use one step. If multiple workers are needed, "
             "make later tasks explain how to use previous results.\n"
+            "Use recent_history to resolve short follow-up requests, and make each worker task explicit.\n"
             "Input files are references only; do not pretend to have read unavailable content.\n\n"
             f"{json.dumps(payload, ensure_ascii=False, default=str)}"
         )

@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.core.exceptions import ForbiddenException
 from app.core.language_model.chat_runtime import ChatCompletionRuntime
 from app.models.account import Account
+from app.models.app import App
 from app.models.conversation import Message
 from app.services.base_service import BaseService
 from app.services.language_model_service import LanguageModelService
@@ -25,7 +26,7 @@ class AIService(BaseService):
         account: Account,
     ) -> list[str]:
         message = session.get(Message, message_id)
-        if message is None or message.created_by != account.id:
+        if message is None or not self._can_access_message(session, message, account):
             raise ForbiddenException("Message does not exist or is not accessible")
 
         subject = (message.query or "this topic").strip()[:80]
@@ -34,6 +35,15 @@ class AIService(BaseService):
             "What are the next practical steps?",
             "Are there any risks or alternatives I should consider?",
         ]
+
+    @staticmethod
+    def _can_access_message(session: Session, message: Message, account: Account) -> bool:
+        if message.created_by == account.id:
+            return True
+        if message.app_id is None:
+            return False
+        app = session.get(App, message.app_id)
+        return app is not None and app.account_id == account.id
 
     def optimize_prompt(self, prompt: str):
         try:

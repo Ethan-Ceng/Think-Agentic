@@ -15,7 +15,6 @@ from app.schemas.app import (
     GetAppsWithPageRequest,
     GetDebugConversationMessagesWithPageRequest,
     GetPublishHistoriesWithPageRequest,
-    PlannerDebugRunRequest,
     PublishHistoryResponse,
     UpdateAppRequest,
     UpdateDebugConversationSummaryRequest,
@@ -170,26 +169,6 @@ def delete_planner_worker(
 ):
     svc.delete_planner_worker_binding(session, planner_app_id=app_id, binding_id=binding_id, account=current_user)
     return success_message("Delete planner worker binding success")
-
-
-@router.post("/{app_id}/planner/debug-runs")
-def create_planner_debug_run(
-    app_id: UUID,
-    req: PlannerDebugRunRequest,
-    session: Session = Depends(get_db_session),
-    current_user: Account = Depends(get_current_account),
-    svc: RouterAgentManagerService = Depends(get_router_agent_manager_service),
-):
-    return success_json(
-        svc.create_planner_debug_run(
-            session,
-            planner_app_id=app_id,
-            query=req.query,
-            account=current_user,
-            requested_worker_app_ids=req.requested_worker_app_ids,
-            input_file_ids=req.input_file_ids,
-        )
-    )
 
 
 @router.get("/{app_id}/draft-app-config")

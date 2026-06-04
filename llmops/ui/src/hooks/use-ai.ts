@@ -12,6 +12,8 @@ export const useGenerateSuggestedQuestions = () => {
       loading.value = true
       const resp = await generateSuggestedQuestions(message_id)
       suggested_questions.value = resp.data
+    } catch {
+      suggested_questions.value = []
     } finally {
       loading.value = false
     }

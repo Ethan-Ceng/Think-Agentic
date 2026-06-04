@@ -11,8 +11,6 @@ import type {
   GetPlannerWorkersResponse,
   GetPublishedConfigResponse,
   GetPublishHistoriesWithPageResponse,
-  PlannerDebugRunRequest,
-  PlannerDebugRunResponse,
   RegenerateWebAppTokenResponse,
   UpdateAppRequest,
   UpdateDraftAppConfigRequest,
@@ -160,8 +158,4 @@ export const updatePlannerWorkerBinding = (
 
 export const deletePlannerWorkerBinding = (app_id: string, binding_id: string) => {
   return del<BaseResponse<any>>(`/apps/${app_id}/planner/workers/${binding_id}`)
-}
-
-export const createPlannerDebugRun = (app_id: string, req: PlannerDebugRunRequest) => {
-  return post<PlannerDebugRunResponse>(`/apps/${app_id}/planner/debug-runs`, { body: req })
 }

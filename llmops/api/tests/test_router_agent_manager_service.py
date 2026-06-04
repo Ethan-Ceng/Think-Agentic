@@ -171,6 +171,71 @@ def test_create_manager_task_waits_when_plan_requires_approval() -> None:
     assert result.task.version == 2
 
 
+def test_stream_planner_debug_run_stops_before_plan_generation() -> None:
+    account = Account(id=uuid.uuid4(), name="tester", email="tester@example.test")
+    planner_app_id = uuid.uuid4()
+    planner_agent_id = uuid.uuid4()
+    worker_agent_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+    session = FakeSession()
+
+    class FakeAppService:
+        def get_app(self, session, app_id, account):  # noqa: ANN001
+            return SimpleNamespace(id=app_id, agent_type="planner", account_id=account.id)
+
+        def get_or_create_debug_conversation(self, session, app, account):  # noqa: ANN001
+            return SimpleNamespace(id=conversation_id)
+
+    class FakeRouterService(RouterAgentManagerService):
+        def create_planner_agent_from_app(self, session, *, tenant_id, app_id, account, status=None):  # noqa: ANN001
+            return (
+                Agent(
+                    id=planner_agent_id,
+                    tenant_id=tenant_id,
+                    name="Planner",
+                    runtime_type="router",
+                    product_category="planner",
+                    status="draft",
+                ),
+                SimpleNamespace(id=uuid.uuid4()),
+            )
+
+        def list_bound_workers(self, session, *, tenant_id, router_agent_id):  # noqa: ANN001
+            return [
+                Agent(
+                    id=worker_agent_id,
+                    tenant_id=tenant_id,
+                    name="Worker",
+                    runtime_type="worker",
+                    product_category="custom",
+                    status="published",
+                )
+            ]
+
+        def _build_planner_or_fallback_plan(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            raise AssertionError("planner should not run after stop")
+
+    created_task_ids = []
+    service = FakeRouterService(app_service=FakeAppService())
+
+    events = list(
+        service.stream_planner_debug_run(
+            session,
+            planner_app_id=planner_app_id,
+            query="plan this",
+            account=account,
+            on_task_created=created_task_ids.append,
+            is_stopped=lambda task_id: True,
+        )
+    )
+
+    assert created_task_ids
+    assert [event.thought.event for event in events] == [QueueEvent.AGENT_THOUGHT, QueueEvent.STOP]
+    assert events[-1].thought.observation == "PlannerAgent 调试已停止"
+    task = next(item for item in session.added if item.id == created_task_ids[0])
+    assert task.status == TaskStatus.CANCELLED
+
+
 def test_create_manager_run_uses_llm_planner_plan() -> None:
     tenant_id = uuid.uuid4()
     router_agent_id = uuid.uuid4()
@@ -184,6 +249,10 @@ def test_create_manager_run_uses_llm_planner_plan() -> None:
     class FakePlannerAgent:
         def create_plan(self, *, model, planner_input):  # noqa: ANN001
             assert planner_input.router_id == str(router_agent_id)
+            assert planner_input.recent_history == [
+                {"role": "user", "content": "天气如何"},
+                {"role": "assistant", "content": "请提供城市。"},
+            ]
             return PlannerResult(
                 plan=RouterPlan(
                     router_id=str(router_agent_id),
@@ -237,7 +306,13 @@ def test_create_manager_run_uses_llm_planner_plan() -> None:
         session,
         tenant_id=tenant_id,
         router_agent_id=router_agent_id,
-        user_input={"query": "launch plan"},
+        user_input={
+            "query": "launch plan",
+            "recent_history": [
+                {"role": "user", "content": "天气如何"},
+                {"role": "assistant", "content": "请提供城市。"},
+            ],
+        },
         account=account,
     )
 
@@ -318,10 +393,23 @@ def test_create_manager_run_falls_back_when_planner_fails() -> None:
 
 
 def test_execute_manager_run_steps_invokes_legacy_app_worker() -> None:
+    expected_conversation_id = uuid.uuid4()
+
     class FakeAppService:
-        def run_app_worker(self, session, *, app_id, task_id, query, image_urls, account):  # noqa: ANN001
+        def run_app_worker(  # noqa: ANN001
+            self,
+            session,
+            *,
+            app_id,
+            task_id,
+            query,
+            image_urls,
+            account,
+            conversation_id,
+        ):
             assert query == "summarize sales notes"
             assert image_urls == []
+            assert conversation_id == expected_conversation_id
             yield AgentThought(
                 id=uuid.uuid4(),
                 task_id=task_id,
@@ -362,6 +450,7 @@ def test_execute_manager_run_steps_invokes_legacy_app_worker() -> None:
         router_agent_id=router_agent_id,
         plan=plan,
         user_input={"query": "summarize sales notes"},
+        conversation_id=expected_conversation_id,
     )
 
     service.execute_manager_run_steps(session, run=run, account=account)
@@ -406,10 +495,21 @@ def test_execute_manager_run_steps_passes_input_files_to_worker_context() -> Non
             }
 
     class FakeAppService:
-        def run_app_worker(self, session, *, app_id, task_id, query, image_urls, account):  # noqa: ANN001
+        def run_app_worker(  # noqa: ANN001
+            self,
+            session,
+            *,
+            app_id,
+            task_id,
+            query,
+            image_urls,
+            account,
+            conversation_id,
+        ):
             assert "summarize sales notes" in query
             assert "Input files:" in query
             assert "Quarterly notes mention expansion revenue." in query
+            assert conversation_id is None
             yield AgentThought(
                 id=uuid.uuid4(),
                 task_id=task_id,

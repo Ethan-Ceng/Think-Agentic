@@ -191,18 +191,3 @@ export type UpdatePlannerWorkerBindingRequest = {
   priority: number
   conditions: Record<string, any>
 }
-
-export type PlannerDebugRunRequest = {
-  query: string
-  requested_worker_app_ids?: string[]
-  input_file_ids?: string[]
-}
-
-export type PlannerDebugRunResponse = BaseResponse<{
-  conversation_id: string
-  message_id: string
-  task_id: string
-  status: string
-  answer: string
-  error: string
-}>

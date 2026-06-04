@@ -10,6 +10,7 @@ from app.models.agent import Agent
 
 def test_worker_runtime_invokes_app_backed_react_worker_agent() -> None:
     app_id = uuid.uuid4()
+    expected_conversation_id = uuid.uuid4()
     account = Account(id=uuid.uuid4(), name="tester", email="tester@example.test")
     worker = Agent(
         id=uuid.uuid4(),
@@ -30,16 +31,28 @@ def test_worker_runtime_invokes_app_backed_react_worker_agent() -> None:
         router_id=str(uuid.uuid4()),
         worker_id=str(worker.id),
         task={"task": "summarize sales notes"},
+        context={"conversation_id": str(expected_conversation_id)},
     )
 
     class FakeAppService:
-        def run_app_worker(self, session, *, app_id, task_id, query, image_urls, account):  # noqa: ANN001
+        def run_app_worker(  # noqa: ANN001
+            self,
+            session,
+            *,
+            app_id,
+            task_id,
+            query,
+            image_urls,
+            account,
+            conversation_id,
+        ):
             assert session == "db"
             assert app_id == uuid.UUID(worker.target_ref_id)
             assert task_id == invocation.task_id
             assert query == "summarize sales notes"
             assert image_urls == []
             assert account.id == invocation.account_id
+            assert conversation_id == expected_conversation_id
             yield AgentThought(
                 id=uuid.uuid4(),
                 task_id=task_id,

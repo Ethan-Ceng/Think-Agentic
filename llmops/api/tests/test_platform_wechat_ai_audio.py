@@ -17,6 +17,9 @@ from app.app_factory import create_app
 from app.core.config import Settings
 from app.core.platform import WechatConfigStatus
 from app.models.account import Account
+from app.models.app import App
+from app.models.conversation import Message
+from app.services.ai_service import AIService
 from app.services.platform_service import PlatformService
 from app.services.wechat_service import WechatService
 
@@ -184,6 +187,31 @@ def test_ai_routes_stream_and_return_suggested_questions() -> None:
     assert "optimized" in optimize_response.text
     assert questions_response.status_code == 200
     assert questions_response.json()["data"] == ["Question 1?", "Question 2?"]
+
+
+def test_ai_suggested_questions_allows_owned_app_debug_message() -> None:
+    account = Account(id=uuid.uuid4(), name="tester", email="tester@example.test")
+    app_id = uuid.uuid4()
+    message_id = uuid.uuid4()
+    message = SimpleNamespace(
+        id=message_id,
+        app_id=app_id,
+        created_by=uuid.uuid4(),
+        query="Planner debug",
+    )
+    app = SimpleNamespace(id=app_id, account_id=account.id)
+
+    class FakeSession:
+        def get(self, model, primary_key):  # noqa: ANN001
+            if model is Message and primary_key == message_id:
+                return message
+            if model is App and primary_key == app_id:
+                return app
+            return None
+
+    questions = AIService().generate_suggested_questions_from_message_id(FakeSession(), message_id, account)
+
+    assert questions[0] == "Can you explain more about Planner debug?"
 
 
 def test_audio_routes_accept_upload_and_stream_tts() -> None:

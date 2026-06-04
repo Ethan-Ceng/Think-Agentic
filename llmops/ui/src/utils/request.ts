@@ -21,6 +21,7 @@ const baseFetchOptions = {
 type FetchOptionType = Omit<RequestInit, 'body'> & {
   params?: Record<string, any>
   body?: BodyInit | Record<string, any> | null
+  skipForbiddenRedirect?: boolean
 }
 
 // 4.封装基础的fetch请求
@@ -39,7 +40,8 @@ const baseFetch = <T>(url: string, fetchOptions: FetchOptionType): Promise<T> =>
   let urlWithPrefix = `${apiPrefix}${url.startsWith('/') ? url : `/${url}`}`
 
   // 7.解构出对应的请求方法、params、body参数
-  const { method, params, body } = options
+  const { method, params, body, skipForbiddenRedirect } = options
+  delete options.skipForbiddenRedirect
 
   // 8.如果请求是GET方法，并且传递了params参数
   if (method === 'GET' && params) {
@@ -87,7 +89,11 @@ const baseFetch = <T>(url: string, fetchOptions: FetchOptionType): Promise<T> =>
           } else if (json.code === httpCode.notFound) {
             await router.push({ name: 'errors-not-found' })
           } else if (json.code === httpCode.forbidden) {
-            await router.push({ name: 'errors-forbidden' })
+            if (skipForbiddenRedirect) {
+              reject(new Error(json.message || 'Forbidden'))
+            } else {
+              await router.push({ name: 'errors-forbidden' })
+            }
           } else {
             ElMessage.error(json.message)
             reject(new Error(json.message))
