@@ -275,11 +275,11 @@ v1 固定约束：
 - 已新增能力摘要、routing policy 和 preflight 诊断 API。
 - 前端已展示 Worker 能力摘要、Planner 绑定 Worker 能力摘要、routing policy JSON 编辑/校验/保存、preflight 诊断和任务页 preflight 结果。
 
-仍未实现的 v2 架构边界：
+仍未实现但设计已固定的 v2 架构边界：
 
 - A2A 外部 WorkerAgent 注册、Agent Card 同步、绑定和 text `message/send` executor。
 - 动态重规划 `RouterPlannerAgent.update_plan()`。
-- 任务页展示 preflight、A2A call trace、重规划原因和新旧计划。
+- 任务页展示 A2A call trace、重规划原因和新旧计划。
 
 v2 当前代码承载点：
 
@@ -298,6 +298,14 @@ v2 实施顺序：
 2. v2.2 再实现 A2A 外部 Worker：新增 `a2a_agents` 表，`agents.target_ref_type = a2a_agent` 指向该表，`WorkerRuntime` 增加 text `message/send` executor。
 3. v2.3 最后实现动态重规划：新增 `RouterPlannerAgent.update_plan()`，只允许改写未执行 step，并对新计划再次执行 preflight。
 
+v2.2 A2A 数据和运行时边界：
+
+- `a2a_agents` 保存远程 Agent 注册信息、Agent Card 快照、同步状态和 `auth_ref`，不保存明文凭据。
+- 映射出的外部 Worker 使用 `agent_type = worker`、`product_category = a2a`、`target_ref_type = a2a_agent`。
+- `agent_versions.worker_config.executor_type = a2a`，并保存 `a2a.card_snapshot` 和 `capability_summary`，保证历史任务回放稳定。
+- `WorkerRuntime` 根据 `executor_type` 或 `target_ref_type` 派发到 `A2AWorkerExecutor`；Planner 协议不增加 A2A 专用字段。
+- A2A 调用结果必须归一化为 `WorkerResult`，并写入 `WorkerCall` 和 `TraceEvent`。
+
 v2.2 A2A 安全边界：
 
 - 默认只允许 `https://` A2A base URL；本地开发例外必须显式配置。
@@ -307,6 +315,15 @@ v2.2 A2A 安全边界：
 - v2.2 不上传本地文件、不转发内部文件 URL、不启用 streaming、push notification 或远程回调。
 - A2A 凭据只保存 `auth_ref`，明文继续走平台敏感配置体系。
 - 任务页、Trace、WorkerCall 必须脱敏 Authorization、cookie、token、签名参数和敏感 headers。
+
+v2.3 重规划边界：
+
+- 不新增表；每次重规划追加新的 `AgentPlan` 和对应 `AgentStep`，通过 `plan_json.replan` 记录 parent plan、失败 step、原因、attempt、替换 step 和新 preflight。
+- 已完成 step 不可改写；新计划只包含后续要执行的 step。
+- 每个任务默认最多自动重规划一次，避免无限循环。
+- 新计划仍必须经过 `RouterRuntime.validate_plan()`、绑定校验、依赖校验和 capability preflight。
+- `TraceEvent` 使用 `planner.replan.*` 记录 requested/generated/validated/applied/fallback/limit_exceeded。
+- 任务页按同一 `task_id` 展示原计划、新计划、失败原因、改派 Worker 和最终完成/未完成说明。
 
 ## 9. 验证命令
 
