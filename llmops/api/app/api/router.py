@@ -1,11 +1,12 @@
 from fastapi import FastAPI
 
 from app.api.routers.account import router as account_router
+from app.api.routers.agent import router as agent_router
+from app.api.routers.agent_task import router as agent_task_router
 from app.api.routers.ai import router as ai_router
 from app.api.routers.analysis import router as analysis_router
 from app.api.routers.api_key import router as api_key_router
 from app.api.routers.api_tool import router as api_tool_router
-from app.api.routers.agent_task import router as agent_task_router
 from app.api.routers.app import router as app_router
 from app.api.routers.assistant_agent import router as assistant_agent_router
 from app.api.routers.audio import router as audio_router
@@ -42,6 +43,7 @@ def register_routers(app: FastAPI) -> None:
     app.include_router(ai_router)
     app.include_router(api_key_router)
     app.include_router(app_router)
+    app.include_router(agent_router)
     app.include_router(agent_task_router)
     app.include_router(assistant_agent_router)
     app.include_router(audio_router)

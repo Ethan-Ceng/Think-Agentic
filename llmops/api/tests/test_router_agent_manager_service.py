@@ -323,6 +323,8 @@ def test_create_manager_run_uses_llm_planner_plan() -> None:
         "planner.started",
         "planner.generated",
         "planner.validated",
+        "router.capability_preflight.started",
+        "router.capability_preflight.succeeded",
         "router.manager_run.created",
     ]
 
@@ -388,8 +390,93 @@ def test_create_manager_run_falls_back_when_planner_fails() -> None:
         "planner.generated",
         "planner.failed",
         "planner.fallback",
+        "router.capability_preflight.started",
+        "router.capability_preflight.succeeded",
         "router.manager_run.created",
     ]
+
+
+def test_create_manager_run_fails_with_structured_preflight_error() -> None:
+    tenant_id = uuid.uuid4()
+    router_agent_id = uuid.uuid4()
+    worker_agent_id = uuid.uuid4()
+    account = Account(id=tenant_id, name="tester", email="tester@example.test")
+
+    class FakeLanguageModelService:
+        def load_language_model(self, model_config, *, session, account):  # noqa: ANN001
+            return BaseLanguageModel(provider="fake", model="planner", parameters={})
+
+    class FakePlannerAgent:
+        def create_plan(self, *, model, planner_input):  # noqa: ANN001
+            return PlannerResult(
+                plan=RouterPlan(
+                    router_id=str(router_agent_id),
+                    user_intent=planner_input.query,
+                    risk_assessment={"risk_level": "low", "source": "llm_planner_v1"},
+                    steps=[
+                        RouterPlanStep(
+                            step_id="step_1",
+                            worker_id=str(worker_agent_id),
+                            task="search latest weather alert",
+                        )
+                    ],
+                )
+            )
+
+    class FakeRouterService(RouterAgentManagerService):
+        def get_router_agent(self, session, tenant_id, agent_id):  # noqa: ANN001
+            return Agent(
+                id=agent_id,
+                tenant_id=tenant_id,
+                name="Planner",
+                runtime_type="router",
+                product_category="planner",
+                status="draft",
+            )
+
+        def list_bound_workers(self, session, *, tenant_id, router_agent_id):  # noqa: ANN001
+            return [
+                Agent(
+                    id=worker_agent_id,
+                    tenant_id=tenant_id,
+                    name="Weather",
+                    runtime_type="worker",
+                    product_category="custom",
+                    status="published",
+                    target_ref_type="app",
+                    target_ref_id=str(uuid.uuid4()),
+                )
+            ]
+
+        def _worker_capability_map(self, session, workers, *, account):  # noqa: ANN001
+            return {
+                str(worker_agent_id): {
+                    "schema_version": "worker_capability_v2",
+                    "input_modalities": ["text/plain"],
+                    "model_features": ["tool_call"],
+                    "semantic_tags": ["weather"],
+                }
+            }
+
+    session = FakeSession()
+    service = FakeRouterService(
+        planner_agent=FakePlannerAgent(),
+        language_model_service=FakeLanguageModelService(),
+    )
+
+    run = service.create_manager_run(
+        session,
+        tenant_id=tenant_id,
+        router_agent_id=router_agent_id,
+        user_input={"query": "搜索最新广州天气预警"},
+        account=account,
+    )
+
+    assert run.task.status == TaskStatus.FAILED
+    assert run.task.error_code == "capability_missing:search"
+    assert run.plan.plan_json["preflight"]["status"] == "failed"
+    assert run.steps[0].input_json["preflight"]["checks"][0]["error_code"] == "capability_missing:search"
+    assert run.steps[0].status == TaskStatus.FAILED
 
 
 def test_execute_manager_run_steps_invokes_legacy_app_worker() -> None:

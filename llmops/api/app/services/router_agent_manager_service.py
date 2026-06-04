@@ -19,6 +19,7 @@ from app.models.agent import Agent, AgentBinding, AgentVersion
 from app.models.app import App
 from app.models.conversation import Message
 from app.models.task import AgentPlan, AgentStep, AgentTask
+from app.services.agent_capability_service import AgentCapabilityService
 from app.services.app_service import AppService
 from app.services.base_service import BaseService
 from app.services.file_service import FileService
@@ -60,6 +61,7 @@ class RouterAgentManagerService(BaseService):
         worker_runtime: WorkerRuntime | None = None,
         planner_agent: RouterPlannerAgent | None = None,
         app_service: AppService | None = None,
+        capability_service: AgentCapabilityService | None = None,
         file_service: FileService | None = None,
         language_model_service: LanguageModelService | None = None,
         trace_service: TraceService | None = None,
@@ -69,6 +71,7 @@ class RouterAgentManagerService(BaseService):
         self.app_service = app_service or AppService()
         self.worker_runtime = worker_runtime or WorkerRuntime(app_service=self.app_service)
         self.planner_agent = planner_agent or RouterPlannerAgent()
+        self.capability_service = capability_service or AgentCapabilityService()
         self.file_service = file_service or FileService()
         self.language_model_service = language_model_service or LanguageModelService()
         self.trace_service = trace_service or TraceService()
@@ -147,6 +150,7 @@ class RouterAgentManagerService(BaseService):
             )
             .one_or_none()
         )
+        existing_routing_policy = self._routing_policy_for_agent(session, existing) if existing is not None else {}
         version_payload = {
             "model_config": config["model_config"],
             "prompt_config": {
@@ -161,6 +165,8 @@ class RouterAgentManagerService(BaseService):
                 "max_steps": 5,
                 "allow_parallel": False,
                 "allow_required_approval": False,
+                "routing_policy": existing_routing_policy
+                or self.capability_service.validate_routing_policy({})["routing_policy"],
             },
             "worker_config": {},
             "capability_bindings": [],
@@ -242,7 +248,14 @@ class RouterAgentManagerService(BaseService):
             )
             .one_or_none()
         )
-        version_payload = descriptor.to_version_payload()
+        existing_summary = self._capability_summary_for_agent(session, existing) if existing is not None else {}
+        version_payload = self.capability_service.attach_summary_to_version_payload(
+            agent_payload=descriptor.to_agent_payload(),
+            version_payload=descriptor.to_version_payload(),
+            session=session,
+            account=account,
+            preserve_manual_overrides_from=existing_summary,
+        )
         if existing is not None:
             version = self.create(
                 session,
@@ -423,6 +436,11 @@ class RouterAgentManagerService(BaseService):
                 "conditions": binding.conditions or {},
                 "worker_agent": self._agent_payload(worker),
                 "worker_app": self._app_payload(worker_app_map.get(str(worker.target_ref_id))),
+                "capability_summary": self.capability_service.ensure_worker_capability_summary(
+                    session,
+                    worker,
+                    account=account,
+                ),
                 "created_at": self._timestamp(binding.created_at),
                 "updated_at": self._timestamp(binding.updated_at),
             }
@@ -734,7 +752,22 @@ class RouterAgentManagerService(BaseService):
                 user_input=user_input,
                 account=account,
             )
-            run = self._persist_manager_plan_for_task(session, task=task, plan=plan, user_input=user_input)
+            preflight_result = self._preflight_plan(
+                session,
+                task=task,
+                router_agent=planner_agent,
+                workers=selected_workers,
+                plan=plan,
+                user_input=user_input,
+                account=account,
+            )
+            run = self._persist_manager_plan_for_task(
+                session,
+                task=task,
+                plan=plan,
+                user_input=user_input,
+                preflight_result=preflight_result,
+            )
             self._record_manager_run_created(session, run)
         except Exception as exc:  # noqa: BLE001
             self.task_engine.fail_task(
@@ -745,6 +778,12 @@ class RouterAgentManagerService(BaseService):
                 final_result={"error": str(exc)},
             )
             yield emit(QueueEvent.ERROR, observation=str(exc))
+            return
+
+        if preflight_result.get("status") == "failed":
+            error_code, user_message = self._first_preflight_error(preflight_result)
+            self._fail_run_for_preflight(session, run=run, error_code=error_code, user_message=user_message)
+            yield emit(QueueEvent.ERROR, observation=user_message, tool="router.capability_preflight")
             return
 
         yield emit(
@@ -797,6 +836,27 @@ class RouterAgentManagerService(BaseService):
                 return
 
             self.task_engine.start_step(session, step)
+            if self._step_preflight_failed(step):
+                error_code, user_message = self._step_preflight_error(step)
+                self.task_engine.fail_step(session, step, error_code=error_code, error_message=user_message)
+                self.task_engine.fail_task(
+                    session,
+                    run.task,
+                    error_code=error_code,
+                    error_message=user_message,
+                    final_result={"step_key": step.step_key, "preflight": step.input_json.get("preflight")},
+                )
+                self.trace_service.record(
+                    session,
+                    tenant_id=run.task.tenant_id,
+                    event_type="router.capability_preflight.failed",
+                    task=run.task,
+                    plan=run.plan,
+                    step=step,
+                    payload=step.input_json.get("preflight") or {},
+                )
+                yield emit(QueueEvent.ERROR, observation=user_message, tool="router.capability_preflight")
+                return
             worker = self.get_worker_agent(session, run.task.tenant_id, step.worker_agent_id)
             task_text = str((step.input_json or {}).get("task") or "")
             yield emit(
@@ -1069,6 +1129,7 @@ class RouterAgentManagerService(BaseService):
         user_id: uuid.UUID | None = None,
         session_id: uuid.UUID | None = None,
         conversation_id: uuid.UUID | None = None,
+        preflight_result: dict[str, Any] | None = None,
     ) -> RouterManagerRunResult:
         self.router_runtime.validate_plan(plan)
         task = self.task_engine.create_task(
@@ -1081,7 +1142,13 @@ class RouterAgentManagerService(BaseService):
             conversation_id=conversation_id,
         )
         self.task_engine.start_task(session, task)
-        result = self._persist_manager_plan_for_task(session, task=task, plan=plan, user_input=user_input)
+        result = self._persist_manager_plan_for_task(
+            session,
+            task=task,
+            plan=plan,
+            user_input=user_input,
+            preflight_result=preflight_result,
+        )
         self._record_manager_run_created(session, result)
         return result
 
@@ -1266,6 +1333,11 @@ class RouterAgentManagerService(BaseService):
             version = session.get(AgentVersion, worker.published_version_id or worker.draft_version_id)
         capability_bindings = version.capability_bindings if version is not None else []
         worker_config = version.worker_config if version is not None else {}
+        capability_summary = (
+            worker_config.get("capability_summary")
+            if isinstance(worker_config, dict) and isinstance(worker_config.get("capability_summary"), dict)
+            else self.capability_service.ensure_worker_capability_summary(session, worker)
+        )
         return PlannerWorkerDescriptor(
             worker_id=str(worker.id),
             name=worker.name,
@@ -1275,7 +1347,10 @@ class RouterAgentManagerService(BaseService):
             target_ref_type=worker.target_ref_type,
             target_ref_id=worker.target_ref_id,
             capabilities=capability_bindings if isinstance(capability_bindings, list) else [],
-            config_summary={"worker_config": worker_config if isinstance(worker_config, dict) else {}},
+            config_summary={
+                "worker_config": worker_config if isinstance(worker_config, dict) else {},
+                "capability_summary": capability_summary,
+            },
         )
 
     def _router_model_config(self, session: Session, router_agent: Agent) -> dict[str, Any]:
@@ -1292,11 +1367,16 @@ class RouterAgentManagerService(BaseService):
         task: AgentTask,
         plan: RouterPlan,
         user_input: dict[str, Any],
+        preflight_result: dict[str, Any] | None = None,
     ) -> RouterManagerRunResult:
+        plan_json = plan.model_dump(mode="json")
+        if preflight_result is not None:
+            plan_json["preflight"] = preflight_result
+        preflight_by_step = self._preflight_by_step(preflight_result)
         persisted_plan = self.task_engine.create_plan(
             session,
             task=task,
-            plan_json=plan.model_dump(mode="json"),
+            plan_json=plan_json,
             risk_level=str(plan.risk_assessment.get("risk_level") or "low"),
             schema_version=plan.schema_version,
         )
@@ -1307,7 +1387,11 @@ class RouterAgentManagerService(BaseService):
                 step_key=step.step_id,
                 worker_agent_id=uuid.UUID(step.worker_id),
                 dependencies=step.dependencies,
-                input_json={"task": step.task, "user_input": user_input},
+                input_json={
+                    "task": step.task,
+                    "user_input": user_input,
+                    "preflight": preflight_by_step.get(step.step_id),
+                },
                 execution_mode=step.execution_mode,
             )
             for step in plan.steps
@@ -1340,6 +1424,8 @@ class RouterAgentManagerService(BaseService):
         run: RouterManagerRunResult,
         account: Account,
     ) -> RouterManagerRunResult:
+        if run.task.status in {TaskStatus.SUCCEEDED.value, TaskStatus.FAILED.value, TaskStatus.CANCELLED.value}:
+            return run
         try:
             input_files = self._input_file_refs(session, account, run.task.user_input)
         except Exception as exc:
@@ -1364,6 +1450,26 @@ class RouterAgentManagerService(BaseService):
         accumulated_artifacts: list[dict[str, Any]] = []
         for step in run.steps:
             self.task_engine.start_step(session, step)
+            if self._step_preflight_failed(step):
+                error_code, user_message = self._step_preflight_error(step)
+                self.task_engine.fail_step(session, step, error_code=error_code, error_message=user_message)
+                self.task_engine.fail_task(
+                    session,
+                    run.task,
+                    error_code=error_code,
+                    error_message=user_message,
+                    final_result={"step_key": step.step_key, "preflight": step.input_json.get("preflight")},
+                )
+                self.trace_service.record(
+                    session,
+                    tenant_id=run.task.tenant_id,
+                    event_type="router.capability_preflight.failed",
+                    task=run.task,
+                    plan=run.plan,
+                    step=step,
+                    payload=step.input_json.get("preflight") or {},
+                )
+                return run
             worker = self.get_worker_agent(session, run.task.tenant_id, step.worker_agent_id)
             invocation = self._build_worker_invocation(
                 run=run,
@@ -1584,8 +1690,26 @@ class RouterAgentManagerService(BaseService):
             user_input=user_input,
             account=account,
         )
-        result = self._persist_manager_plan_for_task(session, task=task, plan=plan, user_input=user_input)
+        preflight_result = self._preflight_plan(
+            session,
+            task=task,
+            router_agent=router,
+            workers=selected_workers,
+            plan=plan,
+            user_input=user_input,
+            account=account,
+        )
+        result = self._persist_manager_plan_for_task(
+            session,
+            task=task,
+            plan=plan,
+            user_input=user_input,
+            preflight_result=preflight_result,
+        )
         self._record_manager_run_created(session, result)
+        if preflight_result.get("status") == "failed":
+            error_code, user_message = self._first_preflight_error(preflight_result)
+            self._fail_run_for_preflight(session, run=result, error_code=error_code, user_message=user_message)
         return result
 
     def get_router_agent(self, session: Session, tenant_id: uuid.UUID, agent_id: uuid.UUID) -> Agent:
@@ -1599,6 +1723,195 @@ class RouterAgentManagerService(BaseService):
         if agent is None or agent.tenant_id != tenant_id or agent.runtime_type != "worker":
             raise NotFoundException("Worker agent not found")
         return agent
+
+    def get_app_worker_capability_summary(
+        self,
+        session: Session,
+        *,
+        app_id: uuid.UUID,
+        account: Account,
+    ) -> dict[str, Any]:
+        app = self.app_service.get_app(session, app_id, account)
+        if (getattr(app, "agent_type", "worker") or "worker") != "worker":
+            raise FailException("Only WorkerAgent apps have capability summaries")
+        existing = self._find_app_worker_agent(session, account.id, app_id)
+        if existing is not None:
+            version = self._active_version(session, existing)
+            summary = self.capability_service.ensure_worker_capability_summary(session, existing, account=account)
+            return {
+                "app_id": str(app_id),
+                "agent_id": str(existing.id),
+                "version_id": str(version.id) if version is not None else "",
+                "capability_summary": summary,
+                "warnings": [],
+            }
+
+        descriptor = self.app_service.app_to_worker_agent_descriptor(session, app_id, account)
+        version_payload = self.capability_service.attach_summary_to_version_payload(
+            agent_payload=descriptor.to_agent_payload(),
+            version_payload=descriptor.to_version_payload(),
+            session=session,
+            account=account,
+        )
+        return {
+            "app_id": str(app_id),
+            "agent_id": "",
+            "version_id": "",
+            "capability_summary": version_payload["worker_config"]["capability_summary"],
+            "warnings": [],
+        }
+
+    def refresh_app_worker_capability_summary(
+        self,
+        session: Session,
+        *,
+        app_id: uuid.UUID,
+        account: Account,
+        preserve_manual_overrides: bool = True,
+    ) -> dict[str, Any]:
+        worker_agent, _ = self.create_worker_agent_from_app(
+            session,
+            tenant_id=account.id,
+            app_id=app_id,
+            account=account,
+            status="published",
+        )
+        return self.capability_service.refresh_agent_capability_summary(
+            session,
+            worker_agent.id,
+            account,
+            preserve_manual_overrides=preserve_manual_overrides,
+        )
+
+    def patch_app_worker_capability_summary(
+        self,
+        session: Session,
+        *,
+        app_id: uuid.UUID,
+        account: Account,
+        manual_overrides: dict[str, Any],
+    ) -> dict[str, Any]:
+        worker_agent, _ = self.create_worker_agent_from_app(
+            session,
+            tenant_id=account.id,
+            app_id=app_id,
+            account=account,
+            status="published",
+        )
+        return self.capability_service.patch_agent_capability_summary(
+            session,
+            worker_agent.id,
+            account,
+            manual_overrides=manual_overrides,
+        )
+
+    def get_planner_routing_policy(
+        self,
+        session: Session,
+        *,
+        planner_app_id: uuid.UUID,
+        account: Account,
+    ) -> dict[str, Any]:
+        planner_agent, version = self.create_planner_agent_from_app(
+            session,
+            tenant_id=account.id,
+            app_id=planner_app_id,
+            account=account,
+        )
+        routing_policy = self._routing_policy_for_version(version)
+        return {
+            "app_id": str(planner_app_id),
+            "agent_id": str(planner_agent.id),
+            "version_id": str(version.id),
+            "routing_policy": routing_policy,
+        }
+
+    def save_planner_routing_policy(
+        self,
+        session: Session,
+        *,
+        planner_app_id: uuid.UUID,
+        account: Account,
+        routing_policy: dict[str, Any],
+    ) -> dict[str, Any]:
+        validation = self.capability_service.validate_routing_policy(routing_policy)
+        if not validation["valid"]:
+            raise FailException("routing_policy_invalid")
+        planner_agent, version = self.create_planner_agent_from_app(
+            session,
+            tenant_id=account.id,
+            app_id=planner_app_id,
+            account=account,
+        )
+        router_config = dict(version.router_config or {})
+        router_config["routing_policy"] = validation["routing_policy"]
+        self.update(session, version, router_config=router_config)
+        return {
+            "app_id": str(planner_app_id),
+            "agent_id": str(planner_agent.id),
+            "version_id": str(version.id),
+            "routing_policy": validation["routing_policy"],
+        }
+
+    def validate_planner_routing_policy(self, routing_policy: dict[str, Any]) -> dict[str, Any]:
+        return self.capability_service.validate_routing_policy(routing_policy)
+
+    def preflight_planner_workers(
+        self,
+        session: Session,
+        *,
+        planner_app_id: uuid.UUID,
+        account: Account,
+        message: str,
+        input_modalities: list[str] | None = None,
+        candidate_worker_ids: list[uuid.UUID] | None = None,
+    ) -> dict[str, Any]:
+        planner_agent, _ = self.create_planner_agent_from_app(
+            session,
+            tenant_id=account.id,
+            app_id=planner_app_id,
+            account=account,
+        )
+        workers = self.list_bound_workers(session, tenant_id=account.id, router_agent_id=planner_agent.id)
+        workers = self._select_workers(workers, candidate_worker_ids)
+        worker_capabilities = self._worker_capability_map(session, workers, account=account)
+        routing_policy = self._routing_policy_for_agent(session, planner_agent)
+        user_input = {"query": message, "input_modalities": input_modalities or []}
+        results = []
+        for worker in workers:
+            plan = RouterPlan(
+                router_id=str(planner_agent.id),
+                user_intent=message,
+                steps=[RouterPlanStep(step_id="diagnostic", worker_id=str(worker.id), task=message)],
+            )
+            preflight = self.router_runtime.preflight_plan(
+                plan,
+                worker_capabilities=worker_capabilities,
+                user_input=user_input,
+                routing_policy=routing_policy,
+            )
+            result = preflight["results"][0] if preflight.get("results") else {}
+            first_failed_check = next(
+                (check for check in result.get("checks", []) if not check.get("passed")),
+                {},
+            )
+            results.append(
+                {
+                    "worker_id": str(worker.id),
+                    "worker_name": worker.name,
+                    "passed": bool(result.get("passed", True)),
+                    "error_code": first_failed_check.get("error_code"),
+                    "user_message": first_failed_check.get("user_message") or "",
+                    "checks": result.get("checks", []),
+                    "capability_snapshot": result.get("capability_snapshot", {}),
+                }
+            )
+        suggested_worker_ids = [result["worker_id"] for result in results if result["passed"]]
+        return {
+            "status": "succeeded" if suggested_worker_ids else "failed",
+            "results": results,
+            "suggested_worker_ids": suggested_worker_ids,
+        }
 
     def _get_planner_binding(
         self,
@@ -1742,6 +2055,162 @@ class RouterAgentManagerService(BaseService):
         requested = {str(worker_id) for worker_id in requested_worker_ids}
         return [worker for worker in workers if str(worker.id) in requested]
 
+    def _preflight_plan(
+        self,
+        session: Session,
+        *,
+        task: AgentTask,
+        router_agent: Agent,
+        workers: list[Agent],
+        plan: RouterPlan,
+        user_input: dict[str, Any],
+        account: Account | None,
+    ) -> dict[str, Any]:
+        self.trace_service.record(
+            session,
+            tenant_id=task.tenant_id,
+            event_type="router.capability_preflight.started",
+            task=task,
+            payload={
+                "router_agent_id": str(router_agent.id),
+                "worker_ids": [str(worker.id) for worker in workers],
+                "step_count": len(plan.steps),
+            },
+        )
+        result = self.router_runtime.preflight_plan(
+            plan,
+            worker_capabilities=self._worker_capability_map(session, workers, account=account),
+            user_input=user_input,
+            routing_policy=self._routing_policy_for_agent(session, router_agent),
+        )
+        self.trace_service.record(
+            session,
+            tenant_id=task.tenant_id,
+            event_type=f"router.capability_preflight.{result.get('status')}",
+            task=task,
+            payload=result,
+        )
+        return result
+
+    def _worker_capability_map(
+        self,
+        session: Session,
+        workers: list[Agent],
+        *,
+        account: Account | None,
+    ) -> dict[str, dict[str, Any]]:
+        return {
+            str(worker.id): self.capability_service.ensure_worker_capability_summary(session, worker, account=account)
+            for worker in workers
+        }
+
+    def _routing_policy_for_agent(self, session: Session, agent: Agent | None) -> dict[str, Any]:
+        if agent is None:
+            return self.capability_service.validate_routing_policy({})["routing_policy"]
+        return self._routing_policy_for_version(self._active_version(session, agent))
+
+    def _routing_policy_for_version(self, version: AgentVersion | None) -> dict[str, Any]:
+        router_config = version.router_config if version is not None and isinstance(version.router_config, dict) else {}
+        policy = router_config.get("routing_policy") if isinstance(router_config.get("routing_policy"), dict) else {}
+        return self.capability_service.validate_routing_policy(policy)["routing_policy"]
+
+    def _capability_summary_for_agent(self, session: Session, agent: Agent | None) -> dict[str, Any]:
+        if agent is None:
+            return {}
+        version = self._active_version(session, agent)
+        if version is None or not isinstance(version.worker_config, dict):
+            return {}
+        summary = version.worker_config.get("capability_summary")
+        return summary if isinstance(summary, dict) else {}
+
+    @staticmethod
+    def _active_version(session: Session, agent: Agent) -> AgentVersion | None:
+        version_id = agent.published_version_id or agent.draft_version_id
+        if version_id is None:
+            return None
+        return session.get(AgentVersion, version_id)
+
+    @staticmethod
+    def _preflight_by_step(preflight_result: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+        if not isinstance(preflight_result, dict):
+            return {}
+        results = preflight_result.get("results")
+        if not isinstance(results, list):
+            return {}
+        return {
+            str(result.get("step_id") or ""): result
+            for result in results
+            if isinstance(result, dict) and str(result.get("step_id") or "")
+        }
+
+    @staticmethod
+    def _step_preflight_failed(step: AgentStep) -> bool:
+        input_json = step.input_json if isinstance(step.input_json, dict) else {}
+        preflight = input_json.get("preflight") if isinstance(input_json.get("preflight"), dict) else {}
+        return preflight.get("status") == "failed" or preflight.get("passed") is False
+
+    @staticmethod
+    def _step_preflight_error(step: AgentStep) -> tuple[str, str]:
+        input_json = step.input_json if isinstance(step.input_json, dict) else {}
+        preflight = input_json.get("preflight") if isinstance(input_json.get("preflight"), dict) else {}
+        for check in preflight.get("checks", []) if isinstance(preflight.get("checks"), list) else []:
+            if isinstance(check, dict) and not check.get("passed"):
+                return str(check.get("error_code") or "capability_summary_invalid"), str(
+                    check.get("user_message") or "Worker 能力校验未通过。"
+                )
+        return "capability_summary_invalid", "Worker 能力校验未通过。"
+
+    @staticmethod
+    def _first_preflight_error(preflight_result: dict[str, Any]) -> tuple[str, str]:
+        for result in preflight_result.get("results", []) if isinstance(preflight_result.get("results"), list) else []:
+            if not isinstance(result, dict):
+                continue
+            for check in result.get("checks", []) if isinstance(result.get("checks"), list) else []:
+                if isinstance(check, dict) and not check.get("passed"):
+                    return str(check.get("error_code") or "capability_summary_invalid"), str(
+                        check.get("user_message") or "Worker 能力校验未通过。"
+                    )
+        return "capability_summary_invalid", "Worker 能力校验未通过。"
+
+    def _fail_run_for_preflight(
+        self,
+        session: Session,
+        *,
+        run: RouterManagerRunResult,
+        error_code: str,
+        user_message: str,
+    ) -> None:
+        for step in run.steps:
+            if self._step_preflight_failed(step):
+                self.task_engine.fail_step(session, step, error_code=error_code, error_message=user_message)
+        self.task_engine.fail_task(
+            session,
+            run.task,
+            error_code=error_code,
+            error_message=user_message,
+            final_result={"preflight": (run.plan.plan_json or {}).get("preflight", {})},
+        )
+        self.trace_service.record(
+            session,
+            tenant_id=run.task.tenant_id,
+            event_type="router.capability_preflight.failed",
+            task=run.task,
+            plan=run.plan,
+            payload={"error_code": error_code, "user_message": user_message},
+        )
+
+    def _find_app_worker_agent(self, session: Session, tenant_id: uuid.UUID, app_id: uuid.UUID) -> Agent | None:
+        return (
+            session.query(Agent)
+            .filter(
+                Agent.tenant_id == tenant_id,
+                Agent.runtime_type == "worker",
+                Agent.target_ref_type == "app",
+                Agent.target_ref_id == str(app_id),
+            )
+            .one_or_none()
+        )
+
     def _build_worker_invocation(
         self,
         *,
@@ -1755,6 +2224,7 @@ class RouterAgentManagerService(BaseService):
         user_input = step.input_json.get("user_input") if isinstance(step.input_json, dict) else {}
         image_urls = user_input.get("image_urls") if isinstance(user_input, dict) else []
         recent_history = self._recent_history_from_user_input(user_input)
+        preflight = step.input_json.get("preflight") if isinstance(step.input_json, dict) else None
         return WorkerInvocation(
             trace_id=run.trace_id,
             tenant_id=run.task.tenant_id,
@@ -1778,11 +2248,13 @@ class RouterAgentManagerService(BaseService):
                 "image_urls": image_urls if isinstance(image_urls, list) else [],
                 "artifacts": artifacts or [],
                 "recent_history": recent_history,
+                "preflight": preflight if isinstance(preflight, dict) else {},
             },
             execution_policy={
                 "execution_agent_type": self._worker_execution_agent_type(worker),
                 "target_ref_type": worker.target_ref_type,
                 "target_ref_id": worker.target_ref_id,
+                "capability_snapshot": preflight.get("capability_snapshot", {}) if isinstance(preflight, dict) else {},
             },
         )
 

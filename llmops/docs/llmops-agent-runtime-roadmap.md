@@ -560,14 +560,30 @@ v2 验收通过标准：
 
 - `agents.target_ref_type` / `agents.target_ref_id` 已能表达 Worker 背后的目标资源。
 - `agents.product_category` 可用于区分 `custom`、`a2a` 等产品来源。
-- `agent_versions.worker_config`、`router_config`、`capability_bindings` 已是 JSONB，可承载能力摘要、编排规则和 A2A 快照。
+- `agent_versions.worker_config`、`router_config`、`capability_bindings` 已是 JSONB；当前已承载内部 Worker 能力摘要和 Planner 编排规则，后续继续承载 A2A 快照。
 - `agent_bindings` 已能表达 PlannerAgent 到 WorkerAgent 的绑定关系，A2A 外部 Worker 不需要单独绑定表。
 - `WorkerRuntime` 当前只派发到 `ReActWorkerAgent`，`ReActWorkerAgent` 当前只支持 `target_ref_type = app`。v2.2 需要新增 A2A executor 分支。
-- `RouterRuntime.validate_plan()` 当前只做计划结构、绑定和依赖校验。v2.1 需要新增 capability preflight。
+- `RouterRuntime.validate_plan()` 负责计划结构、绑定和依赖校验；`RouterRuntime.preflight_plan()` 已负责能力硬约束校验。
 
 下一步先做 v2.1，不先做 A2A。v2.1 是 v2.2 A2A 和 v2.3 重规划的地基。
 
 #### 7.10.1 v2.1 能力感知地基
+
+2026-06-04 落地状态：
+
+- v2.1-1 到 v2.1-4 主链路已完成。
+- 已新增 `worker_capability_v2`、`routing_policy_v1`、错误码和中文用户提示映射。
+- 内部 WorkerAgent 同步 AgentVersion 时会生成 `worker_config.capability_summary`，并保留人工 `manual_overrides`。
+- Planner worker descriptor 已注入 `capability_summary`。
+- `RouterRuntime.preflight_plan()` 已支持图片输入和搜索/最新信息硬约束。
+- Planner 调试和 manager run 已接入 preflight；失败会写入 `AgentPlan.plan_json.preflight`、`AgentStep.input_json.preflight` 和 `TraceEvent`，并阻止 Worker 调用。
+- 已新增 `/apps/{app_id}/capability-summary`、`/agents/{agent_id}/capability-summary`、`/apps/{planner_app_id}/planner/routing-policy` 和 `/apps/{planner_app_id}/planner/preflight` 后端接口。
+- 前端已接入 Worker 能力摘要展示、Planner 绑定 Worker 能力摘要、routing policy JSON 编辑/校验/保存、preflight 诊断和任务页 preflight 展示。
+- 自动化验证通过：`uv run ruff check app tests`、`uv run pytest -q`、`pnpm type-check`、`pnpm build`，后端测试结果为 `146 passed`。
+
+仍待完成：
+
+- v2.1-5 真实服务手工验收记录：能力摘要刷新、routing policy 保存、preflight 阻断、任务页展示和 v1 Planner/Worker 回归 session/task id。
 
 数据设计：
 
@@ -1123,11 +1139,11 @@ v2.3 手工验收：
 
 按 PR 或任务批次推进：
 
-1. v2.1-1：后端 schema 和服务骨架。定义 `capability_summary`、`routing_policy`、错误码常量、用户提示映射，不改变 Planner 行为。
-2. v2.1-2：内部 Worker 能力摘要生成。覆盖模型、工具、知识库、工作流和手动 overrides。
-3. v2.1-3：Planner descriptor 注入和 Router preflight。先只做硬阻断，不做自动重规划。
-4. v2.1-4：前端能力摘要、编排规则 JSON 编辑器和任务页 preflight 展示。
-5. v2.1-5：v1 回归和 v2.1 验收矩阵补齐。
+1. v2.1-1：后端 schema 和服务骨架。定义 `capability_summary`、`routing_policy`、错误码常量、用户提示映射，不改变 Planner 行为。已完成。
+2. v2.1-2：内部 Worker 能力摘要生成。覆盖模型、工具、知识库、工作流和手动 overrides。已完成。
+3. v2.1-3：Planner descriptor 注入和 Router preflight。先只做硬阻断，不做自动重规划。已完成。
+4. v2.1-4：前端能力摘要、编排规则 JSON 编辑器和任务页 preflight 展示。已完成。
+5. v2.1-5：v1 回归和 v2.1 验收矩阵补齐。自动化回归已完成，真实服务手工验收记录待补。
 6. v2.2-1：`a2a_agents` 迁移、模型、服务、SSR F/URL 安全校验和 Agent Card 同步。
 7. v2.2-2：A2A Agent 映射为外部 WorkerAgent，并接入现有 `AgentBinding`。
 8. v2.2-3：`A2AWorkerExecutor` 和 WorkerRuntime 派发，支持 text `message/send`。

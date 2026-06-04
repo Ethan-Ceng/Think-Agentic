@@ -154,3 +154,20 @@ class UpdatePlannerWorkerBindingRequest(BaseModel):
     priority: int = Field(0, ge=0, le=100)
     conditions: dict = Field(default_factory=dict)
 
+
+class RefreshCapabilitySummaryRequest(BaseModel):
+    preserve_manual_overrides: bool = True
+
+
+class PatchCapabilitySummaryRequest(BaseModel):
+    manual_overrides: dict = Field(default_factory=dict)
+
+
+class RoutingPolicyRequest(BaseModel):
+    routing_policy: dict = Field(default_factory=dict)
+
+
+class PlannerPreflightRequest(BaseModel):
+    message: str = Field(..., min_length=1)
+    input_modalities: list[str] = Field(default_factory=list)
+    candidate_worker_ids: list[UUID] = Field(default_factory=list)

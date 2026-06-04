@@ -36,7 +36,12 @@ def generate_suggested_questions(
     session: Session = Depends(get_db_session),
     svc: WebAppService = Depends(get_web_app_service),
 ):
-    end_user, questions = svc.generate_suggested_questions(session, token, req.message_id, _get_end_user_id(request, token))
+    end_user, questions = svc.generate_suggested_questions(
+        session,
+        token,
+        req.message_id,
+        _get_end_user_id(request, token),
+    )
     response = success_json(questions)
     _set_end_user_cookie(response, token, end_user.id)
     return response

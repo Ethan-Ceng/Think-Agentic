@@ -10,6 +10,7 @@ from app.core.tools.builtin_tools.providers import BuiltinProviderManager
 from app.infrastructure.db import get_session
 from app.models.account import Account
 from app.services.account_service import AccountService
+from app.services.agent_capability_service import AgentCapabilityService
 from app.services.agent_task_service import AgentTaskService
 from app.services.ai_service import AIService
 from app.services.analysis_service import AnalysisService
@@ -77,6 +78,10 @@ def get_app_service() -> AppService:
 
 def get_agent_task_service() -> AgentTaskService:
     return AgentTaskService()
+
+
+def get_agent_capability_service() -> AgentCapabilityService:
+    return AgentCapabilityService()
 
 
 def get_router_agent_manager_service() -> RouterAgentManagerService:

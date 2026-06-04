@@ -264,11 +264,19 @@ v1 固定约束：
 - 增加 WorkerAgent 能力模板。
 - 明确能力不足时的用户提示。
 
-已定稿但未实现的 v2 架构边界：
+已落地的 v2.1 后端边界：
 
-- Worker capability descriptor v2。
-- Planner routing policy 配置。
-- Router capability preflight 和结构化错误 taxonomy。
+- Worker capability descriptor v2 已定义为 `worker_capability_v2`，并保存到 `agent_versions.worker_config.capability_summary`。
+- 内部 WorkerAgent 能力摘要已能从模型 features、工具、知识库、工作流和描述生成，并支持 `manual_overrides`。
+- Planner routing policy 已定义为 `routing_policy_v1`，保存到 `agent_versions.router_config.routing_policy`。
+- Router capability preflight 已接入 `RouterRuntime`，支持图片输入和搜索/最新信息硬约束。
+- Planner worker descriptor 已注入 `capability_summary`，用于能力感知计划生成。
+- Planner 调试和 manager run 已在计划落库后、Worker 调用前执行 preflight；失败会写入 plan、step 和 trace，并以结构化错误终止。
+- 已新增能力摘要、routing policy 和 preflight 诊断 API。
+- 前端已展示 Worker 能力摘要、Planner 绑定 Worker 能力摘要、routing policy JSON 编辑/校验/保存、preflight 诊断和任务页 preflight 结果。
+
+仍未实现的 v2 架构边界：
+
 - A2A 外部 WorkerAgent 注册、Agent Card 同步、绑定和 text `message/send` executor。
 - 动态重规划 `RouterPlannerAgent.update_plan()`。
 - 任务页展示 preflight、A2A call trace、重规划原因和新旧计划。
@@ -277,12 +285,12 @@ v2 当前代码承载点：
 
 - `agents.target_ref_type` / `agents.target_ref_id` 已能表达 Worker 背后的目标资源。
 - `agents.product_category` 可标识 `custom`、`a2a` 等产品来源。
-- `agent_versions.worker_config` 可保存 `capability_summary`、`executor_type` 和 A2A 快照。
-- `agent_versions.router_config` 可保存 `routing_policy`。
+- `agent_versions.worker_config` 已保存内部 Worker 的 `capability_summary`，后续仍可保存 `executor_type` 和 A2A 快照。
+- `agent_versions.router_config` 已保存 `routing_policy`。
 - `agent_versions.capability_bindings` 可继续保存工具、知识库、workflow 或 A2A skills 摘要。
 - `agent_bindings` 继续作为 PlannerAgent 绑定内部 Worker 和外部 A2A Worker 的唯一绑定模型。
 - `WorkerRuntime` 当前只实际派发到 App/ReAct Worker，v2.2 需要增加 A2A executor 分支。
-- `RouterRuntime` 当前只做计划结构和绑定校验，v2.1 需要增加 capability preflight。
+- `RouterRuntime` 已增加 capability preflight；后续 v2.3 需要在重规划新计划上再次执行 preflight。
 
 v2 实施顺序：
 

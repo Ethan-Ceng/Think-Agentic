@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onMounted, ref, watch } from 'vue'
+import { ElMessage } from 'element-plus'
 import LongTermMemoryAbilityItem from './abilities/LongTermMemoryAbilityItem.vue'
 import OpeningAbilityItem from './abilities/OpeningAbilityItem.vue'
 import SuggestedAfterAnswerAbilityItem from './abilities/SuggestedAfterAnswerAbilityItem.vue'
@@ -9,6 +10,13 @@ import ToolsAbilityItem from './abilities/ToolsAbilityItem.vue'
 import WorkflowsAbilityItem from './abilities/WorkflowsAbilityItem.vue'
 import SpeechToTextAbilityItem from './abilities/SpeechToTextAbilityItem.vue'
 import TextToSpeechAbilitiItem from './abilities/TextToSpeechAbilitiItem.vue'
+import CapabilitySummaryPanel from './CapabilitySummaryPanel.vue'
+import type { WorkerCapabilitySummary } from '@/models/app'
+import {
+  getAppCapabilitySummary,
+  patchAppCapabilitySummary,
+  refreshAppCapabilitySummary,
+} from '@/services/app'
 
 // 1.定义自定义组件所需数据
 const props = defineProps({
@@ -28,6 +36,52 @@ const defaultActivateKeys = [
   'text_to_speech',
 ]
 const activeCollapseNames = ref<string[]>([...defaultActivateKeys])
+const capabilityLoading = ref(false)
+const capabilitySummary = ref<WorkerCapabilitySummary | null>(null)
+
+const loadCapabilitySummary = async () => {
+  if (!props.app_id) return
+  capabilityLoading.value = true
+  try {
+    const resp = await getAppCapabilitySummary(props.app_id)
+    capabilitySummary.value = resp.data.capability_summary || null
+  } finally {
+    capabilityLoading.value = false
+  }
+}
+
+const refreshCapabilitySummary = async () => {
+  if (!props.app_id) return
+  capabilityLoading.value = true
+  try {
+    const resp = await refreshAppCapabilitySummary(props.app_id, {
+      preserve_manual_overrides: true,
+    })
+    capabilitySummary.value = resp.data.capability_summary || null
+    ElMessage.success('能力摘要已刷新')
+  } finally {
+    capabilityLoading.value = false
+  }
+}
+
+const saveCapabilityOverrides = async (manual_overrides: Record<string, any>) => {
+  if (!props.app_id) return
+  capabilityLoading.value = true
+  try {
+    const resp = await patchAppCapabilitySummary(props.app_id, { manual_overrides })
+    capabilitySummary.value = resp.data.capability_summary || null
+    ElMessage.success('能力摘要已更新')
+  } finally {
+    capabilityLoading.value = false
+  }
+}
+
+watch(
+  () => props.app_id,
+  () => loadCapabilitySummary(),
+)
+
+onMounted(loadCapabilitySummary)
 </script>
 
 <template>
@@ -41,6 +95,16 @@ const activeCollapseNames = ref<string[]>([...defaultActivateKeys])
     </div>
     <!-- 应用能力列表：水平与底部留白，避免与边框贴死 -->
     <div class="min-h-0 flex-1 overflow-y-auto scrollbar-y-sleek px-3">
+      <capability-summary-panel
+        class="my-3"
+        title="Worker 能力摘要"
+        subtitle="用于 Planner 选择 Worker 和运行前校验"
+        :summary="capabilitySummary"
+        :loading="capabilityLoading"
+        editable
+        @refresh="refreshCapabilitySummary"
+        @save-overrides="saveCapabilityOverrides"
+      />
       <el-collapse v-model="activeCollapseNames" class="min-w-0">
         <!-- 扩展插件组件 -->
         <tools-ability-item

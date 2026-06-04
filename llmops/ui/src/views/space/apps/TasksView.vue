@@ -168,6 +168,30 @@ const workerAnswer = (call: WorkerCallItem) => {
   return String(call.result_json?.answer || call.result_json?.data?.answer || call.result_json?.summary || call.result_json?.error || '')
 }
 
+const taskPreflight = (task: AgentMessageTask | AgentTaskDetail) => {
+  const preflight = task.plan?.plan_json?.preflight
+  return preflight && typeof preflight === 'object' ? preflight : null
+}
+
+const stepPreflight = (step: AgentStepItem) => {
+  const preflight = step.input_json?.preflight
+  return preflight && typeof preflight === 'object' ? preflight : null
+}
+
+const preflightChecks = (preflight: Record<string, any> | null) => {
+  return Array.isArray(preflight?.checks) ? preflight.checks : []
+}
+
+const firstFailedPreflightCheck = (preflight: Record<string, any> | null) => {
+  return preflightChecks(preflight).find((check) => !check?.passed)
+}
+
+const preflightStatusType = (status?: string, passed?: boolean) => {
+  if (passed === false || status === 'failed') return 'danger'
+  if (passed === true || status === 'succeeded') return 'success'
+  return 'info'
+}
+
 const stepOutputSummary = (step: AgentStepItem) => {
   return String(step.output_json?.answer || step.output_json?.summary || step.output_json?.error_message || step.output_json?.error || '')
 }
@@ -473,6 +497,56 @@ onMounted(async () => {
                                 </div>
                               </div>
 
+                              <div v-if="taskPreflight(task)" class="border border-slate-200 bg-white p-2">
+                                <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+                                  <div class="text-xs font-medium text-slate-700">Preflight</div>
+                                  <el-tag
+                                    size="small"
+                                    :type="preflightStatusType(taskPreflight(task)?.status)"
+                                  >
+                                    {{ taskPreflight(task)?.status || 'skipped' }}
+                                  </el-tag>
+                                </div>
+                                <div class="grid grid-cols-1 gap-2 md:grid-cols-2">
+                                  <div
+                                    v-for="result in taskPreflight(task)?.results || []"
+                                    :key="`${task.id}-${result.step_id}-${result.worker_id}`"
+                                    class="bg-slate-50 p-2"
+                                  >
+                                    <div class="flex flex-wrap items-center gap-2">
+                                      <span class="truncate text-xs font-medium text-slate-900">
+                                        {{ result.step_id }}
+                                      </span>
+                                      <el-tag
+                                        size="small"
+                                        :type="preflightStatusType(result.status, result.passed)"
+                                      >
+                                        {{ result.passed ? '通过' : '阻断' }}
+                                      </el-tag>
+                                    </div>
+                                    <p
+                                      v-if="firstFailedPreflightCheck(result)"
+                                      class="mt-1 break-words text-xs text-red-600"
+                                    >
+                                      {{
+                                        firstFailedPreflightCheck(result)?.user_message ||
+                                        firstFailedPreflightCheck(result)?.error_code
+                                      }}
+                                    </p>
+                                    <div class="mt-2 flex flex-wrap gap-1">
+                                      <el-tag
+                                        v-for="check in result.checks || []"
+                                        :key="`${result.step_id}-${check.rule_id}-${check.error_code || 'ok'}`"
+                                        size="small"
+                                        :type="preflightStatusType('', check.passed)"
+                                      >
+                                        {{ check.rule_id }}
+                                      </el-tag>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+
                               <el-empty v-if="!task.steps.length" description="暂无执行步骤" />
                               <el-timeline v-else>
                                 <el-timeline-item
@@ -502,6 +576,37 @@ onMounted(async () => {
                                     <p v-if="stepOutputSummary(step)" class="mt-2 line-clamp-3 break-words text-xs text-slate-500">
                                       {{ stepOutputSummary(step) }}
                                     </p>
+
+                                    <div v-if="stepPreflight(step)" class="mt-3 border border-slate-200 bg-slate-50 p-2">
+                                      <div class="flex flex-wrap items-center justify-between gap-2">
+                                        <div class="text-xs font-medium text-slate-700">Preflight</div>
+                                        <el-tag
+                                          size="small"
+                                          :type="preflightStatusType(stepPreflight(step)?.status, stepPreflight(step)?.passed)"
+                                        >
+                                          {{ stepPreflight(step)?.passed === false ? '阻断' : '通过' }}
+                                        </el-tag>
+                                      </div>
+                                      <p
+                                        v-if="firstFailedPreflightCheck(stepPreflight(step))"
+                                        class="mt-2 break-words text-xs text-red-600"
+                                      >
+                                        {{
+                                          firstFailedPreflightCheck(stepPreflight(step))?.user_message ||
+                                          firstFailedPreflightCheck(stepPreflight(step))?.error_code
+                                        }}
+                                      </p>
+                                      <div class="mt-2 flex flex-wrap gap-1">
+                                        <el-tag
+                                          v-for="check in preflightChecks(stepPreflight(step))"
+                                          :key="`${step.id}-${check.rule_id}-${check.error_code || 'ok'}`"
+                                          size="small"
+                                          :type="preflightStatusType('', check.passed)"
+                                        >
+                                          {{ check.rule_id }}
+                                        </el-tag>
+                                      </div>
+                                    </div>
 
                                     <div v-if="workerCallsForStep(task, step.id).length" class="mt-3 space-y-2">
                                       <div

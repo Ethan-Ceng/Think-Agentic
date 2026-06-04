@@ -15,7 +15,11 @@ from app.schemas.app import (
     GetAppsWithPageRequest,
     GetDebugConversationMessagesWithPageRequest,
     GetPublishHistoriesWithPageRequest,
+    PatchCapabilitySummaryRequest,
+    PlannerPreflightRequest,
     PublishHistoryResponse,
+    RefreshCapabilitySummaryRequest,
+    RoutingPolicyRequest,
     UpdateAppRequest,
     UpdateDebugConversationSummaryRequest,
     UpdatePlannerWorkerBindingRequest,
@@ -169,6 +173,111 @@ def delete_planner_worker(
 ):
     svc.delete_planner_worker_binding(session, planner_app_id=app_id, binding_id=binding_id, account=current_user)
     return success_message("Delete planner worker binding success")
+
+
+@router.get("/{app_id}/capability-summary")
+def get_app_capability_summary(
+    app_id: UUID,
+    session: Session = Depends(get_db_session),
+    current_user: Account = Depends(get_current_account),
+    svc: RouterAgentManagerService = Depends(get_router_agent_manager_service),
+):
+    return success_json(svc.get_app_worker_capability_summary(session, app_id=app_id, account=current_user))
+
+
+@router.post("/{app_id}/capability-summary/refresh")
+def refresh_app_capability_summary(
+    app_id: UUID,
+    req: RefreshCapabilitySummaryRequest,
+    session: Session = Depends(get_db_session),
+    current_user: Account = Depends(get_current_account),
+    svc: RouterAgentManagerService = Depends(get_router_agent_manager_service),
+):
+    return success_json(
+        svc.refresh_app_worker_capability_summary(
+            session,
+            app_id=app_id,
+            account=current_user,
+            preserve_manual_overrides=req.preserve_manual_overrides,
+        )
+    )
+
+
+@router.patch("/{app_id}/capability-summary")
+def patch_app_capability_summary(
+    app_id: UUID,
+    req: PatchCapabilitySummaryRequest,
+    session: Session = Depends(get_db_session),
+    current_user: Account = Depends(get_current_account),
+    svc: RouterAgentManagerService = Depends(get_router_agent_manager_service),
+):
+    return success_json(
+        svc.patch_app_worker_capability_summary(
+            session,
+            app_id=app_id,
+            account=current_user,
+            manual_overrides=req.manual_overrides,
+        )
+    )
+
+
+@router.get("/{app_id}/planner/routing-policy")
+def get_planner_routing_policy(
+    app_id: UUID,
+    session: Session = Depends(get_db_session),
+    current_user: Account = Depends(get_current_account),
+    svc: RouterAgentManagerService = Depends(get_router_agent_manager_service),
+):
+    return success_json(svc.get_planner_routing_policy(session, planner_app_id=app_id, account=current_user))
+
+
+@router.put("/{app_id}/planner/routing-policy")
+def save_planner_routing_policy(
+    app_id: UUID,
+    req: RoutingPolicyRequest,
+    session: Session = Depends(get_db_session),
+    current_user: Account = Depends(get_current_account),
+    svc: RouterAgentManagerService = Depends(get_router_agent_manager_service),
+):
+    return success_json(
+        svc.save_planner_routing_policy(
+            session,
+            planner_app_id=app_id,
+            account=current_user,
+            routing_policy=req.routing_policy,
+        )
+    )
+
+
+@router.post("/{app_id}/planner/routing-policy/validate")
+def validate_planner_routing_policy(
+    app_id: UUID,
+    req: RoutingPolicyRequest,
+    current_user: Account = Depends(get_current_account),
+    svc: RouterAgentManagerService = Depends(get_router_agent_manager_service),
+):
+    _ = app_id, current_user
+    return success_json(svc.validate_planner_routing_policy(req.routing_policy))
+
+
+@router.post("/{app_id}/planner/preflight")
+def preflight_planner_workers(
+    app_id: UUID,
+    req: PlannerPreflightRequest,
+    session: Session = Depends(get_db_session),
+    current_user: Account = Depends(get_current_account),
+    svc: RouterAgentManagerService = Depends(get_router_agent_manager_service),
+):
+    return success_json(
+        svc.preflight_planner_workers(
+            session,
+            planner_app_id=app_id,
+            account=current_user,
+            message=req.message,
+            input_modalities=req.input_modalities,
+            candidate_worker_ids=req.candidate_worker_ids,
+        )
+    )
 
 
 @router.get("/{app_id}/draft-app-config")

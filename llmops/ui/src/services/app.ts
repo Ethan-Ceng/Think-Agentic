@@ -1,6 +1,7 @@
 import { del, get, patch, post, put, ssePost } from '@/utils/request'
 import type {
   BindPlannerWorkerRequest,
+  CapabilitySummaryResponse,
   CreateAppRequest,
   GetAppResponse,
   GetAppsWithPageRequest,
@@ -11,7 +12,14 @@ import type {
   GetPlannerWorkersResponse,
   GetPublishedConfigResponse,
   GetPublishHistoriesWithPageResponse,
+  PatchCapabilitySummaryRequest,
+  PlannerPreflightRequest,
+  PlannerPreflightResponse,
   RegenerateWebAppTokenResponse,
+  RefreshCapabilitySummaryRequest,
+  RoutingPolicyRequest,
+  RoutingPolicyResponse,
+  RoutingPolicyValidateResponse,
   UpdateAppRequest,
   UpdateDraftAppConfigRequest,
   UpdatePlannerWorkerBindingRequest,
@@ -158,4 +166,37 @@ export const updatePlannerWorkerBinding = (
 
 export const deletePlannerWorkerBinding = (app_id: string, binding_id: string) => {
   return del<BaseResponse<any>>(`/apps/${app_id}/planner/workers/${binding_id}`)
+}
+
+export const getAppCapabilitySummary = (app_id: string) => {
+  return get<CapabilitySummaryResponse>(`/apps/${app_id}/capability-summary`)
+}
+
+export const refreshAppCapabilitySummary = (
+  app_id: string,
+  req: RefreshCapabilitySummaryRequest = { preserve_manual_overrides: true },
+) => {
+  return post<CapabilitySummaryResponse>(`/apps/${app_id}/capability-summary/refresh`, { body: req })
+}
+
+export const patchAppCapabilitySummary = (app_id: string, req: PatchCapabilitySummaryRequest) => {
+  return patch<CapabilitySummaryResponse>(`/apps/${app_id}/capability-summary`, { body: req })
+}
+
+export const getPlannerRoutingPolicy = (app_id: string) => {
+  return get<RoutingPolicyResponse>(`/apps/${app_id}/planner/routing-policy`)
+}
+
+export const savePlannerRoutingPolicy = (app_id: string, req: RoutingPolicyRequest) => {
+  return put<RoutingPolicyResponse>(`/apps/${app_id}/planner/routing-policy`, { body: req })
+}
+
+export const validatePlannerRoutingPolicy = (app_id: string, req: RoutingPolicyRequest) => {
+  return post<RoutingPolicyValidateResponse>(`/apps/${app_id}/planner/routing-policy/validate`, {
+    body: req,
+  })
+}
+
+export const preflightPlannerWorkers = (app_id: string, req: PlannerPreflightRequest) => {
+  return post<PlannerPreflightResponse>(`/apps/${app_id}/planner/preflight`, { body: req })
 }

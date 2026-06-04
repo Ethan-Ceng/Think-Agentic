@@ -173,6 +173,7 @@ export type PlannerWorkerBinding = {
     agent_type: AgentType
     status: string
   } | null
+  capability_summary?: WorkerCapabilitySummary
   created_at: number
   updated_at: number
 }
@@ -191,3 +192,81 @@ export type UpdatePlannerWorkerBindingRequest = {
   priority: number
   conditions: Record<string, any>
 }
+
+export type WorkerCapabilitySummary = {
+  schema_version?: string
+  executor_type?: string
+  input_modalities?: string[]
+  output_modalities?: string[]
+  semantic_tags?: string[]
+  skills?: {
+    id?: string
+    name?: string
+    description?: string
+    tags?: string[]
+    input_modes?: string[]
+    output_modes?: string[]
+  }[]
+  tool_names?: string[]
+  model_features?: string[]
+  constraints?: Record<string, any>
+  manual_overrides?: Record<string, any>
+  generated_at?: number
+}
+
+export type CapabilitySummaryResponse = BaseResponse<{
+  app_id?: string
+  agent_id: string
+  version_id: string
+  refreshed?: boolean
+  capability_summary: WorkerCapabilitySummary
+  warnings?: Record<string, any>[]
+}>
+
+export type RefreshCapabilitySummaryRequest = {
+  preserve_manual_overrides: boolean
+}
+
+export type PatchCapabilitySummaryRequest = {
+  manual_overrides: Record<string, any>
+}
+
+export type RoutingPolicyResponse = BaseResponse<{
+  app_id: string
+  agent_id: string
+  version_id: string
+  routing_policy: Record<string, any>
+}>
+
+export type RoutingPolicyRequest = {
+  routing_policy: Record<string, any>
+}
+
+export type RoutingPolicyValidateResponse = BaseResponse<{
+  valid: boolean
+  routing_policy: Record<string, any>
+  errors: Record<string, any>[]
+  warnings: Record<string, any>[]
+}>
+
+export type PlannerPreflightRequest = {
+  message: string
+  input_modalities: string[]
+  candidate_worker_ids?: string[]
+}
+
+export type PlannerPreflightResult = {
+  worker_id: string
+  worker_name?: string
+  passed: boolean
+  error_code?: string
+  user_message?: string
+  checks: Record<string, any>[]
+  capability_snapshot: WorkerCapabilitySummary
+}
+
+export type PlannerPreflightResponse = BaseResponse<{
+  status: 'succeeded' | 'failed' | string
+  results: PlannerPreflightResult[]
+  suggested_worker_ids: string[]
+}>
