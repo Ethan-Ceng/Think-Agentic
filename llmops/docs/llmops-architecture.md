@@ -81,7 +81,8 @@ Object Storage / local storage
 - API provider 调用。
 - Dataset retrieval。
 - Workflow 调用。
-- 后续可扩展 MCP、A2A、Sandbox 等外部执行器。
+- v2 优先扩展 A2A 外部 WorkerAgent。
+- 后续再扩展 MCP、Sandbox、API 等外部执行器。
 
 ## 4. AI 应用模型
 
@@ -139,6 +140,27 @@ PlannerAgent 调试复用统一入口：
 ```
 
 后端根据 `agent_type = planner` 将调试请求路由到 Planner 调试链路。对用户来说，不需要理解独立的 Planner debug API。
+
+### 4.3 v2 外部 WorkerAgent 口径
+
+v2 后 WorkerAgent 不只包含本系统 App Worker，也包含可被平台治理和调度的外部 Agent。
+
+A2A 外部 Agent 的架构口径：
+
+- A2A 不进入插件广场混管，也不作为 Planner 直接可见工具。
+- A2A Agent 同步为外部 WorkerAgent，仍通过 AI 应用体系展示和管理。
+- 数据形态使用 `agent_type = worker`、`target_ref_type = a2a_agent`、`target_ref_id = <a2a_agent_id>`。
+- 版本配置使用 `worker_config.executor_type = a2a` 保存协议、Agent Card、凭据引用和能力快照。
+- PlannerAgent 通过同一套 `AgentBinding` 绑定本系统 WorkerAgent 和外部 A2A WorkerAgent。
+- Planner 只看到 Worker descriptor、routing policy 和 `WorkerResult`，不直接处理 A2A 协议细节。
+- WorkerRuntime 根据 `target_ref_type` / `executor_type` 派发到 App executor 或 A2A executor。
+
+能力感知编排的架构口径：
+
+- Worker descriptor 进入版本化 `worker_config.capability_summary`。
+- Worker 编排规则进入 `router_config.routing_policy`，不写死在代码和普通提示词里。
+- RouterRuntime 在计划落库或 step 执行前做 capability preflight。
+- 能力不匹配、模型不支持、远程 Agent 不可用等错误统一归类，并映射为产品化提示。
 
 ## 5. Agent Runtime 数据模型
 
@@ -231,13 +253,52 @@ v1 固定约束：
 - 文件输入和 artifact 已接入 Runtime。
 - PlannerAgent v1 基础编排闭环已跑通。
 - PlannerAgent 多轮调试已传递 `recent_history` 和 `conversation_id`。
+- 2026-06-04 真实联调确认：`GAODE_API_KEY` / `SERPER_API_KEY` 生效后，内置高德天气和 Serper 搜索可由 Worker 能力调用；PlannerAgent 绑定对应 Worker 后，可通过 `/apps/{app_id}/debug-chat` 成功回答广州实时天气问题。
+- 2026-06-04 最后调试 session `0e37f677-e29c-4b41-a533-299b4e821035` 抽检确认：10 个 Planner 任务和 11 次 Worker 调用均可关联 plan、step、worker call、trace；多轮短追问、多 step、多 Worker 和 Worker 失败路径已覆盖。v1 基础闭环按大体通过处理。
+- 图片上传和图片识别输入链路已通过：图片可进入 task 和 worker invocation，支持视觉能力的 Worker 可正常返回图片内容说明。
 
 仍需收尾的 v1 产品化事项：
 
-- 固定 PlannerAgent 验收清单。
-- 用真实任务记录确认任务页展示完整。
+- fallback、Worker 产物 artifact、未绑定 Worker、非法 plan、停止调试等边界继续作为非阻塞专项验证。
+- 优化“搜索/预警/最新信息”等意图下的 Worker 选择稳定性。
 - 增加 WorkerAgent 能力模板。
 - 明确能力不足时的用户提示。
+
+已定稿但未实现的 v2 架构边界：
+
+- Worker capability descriptor v2。
+- Planner routing policy 配置。
+- Router capability preflight 和结构化错误 taxonomy。
+- A2A 外部 WorkerAgent 注册、Agent Card 同步、绑定和 text `message/send` executor。
+- 动态重规划 `RouterPlannerAgent.update_plan()`。
+- 任务页展示 preflight、A2A call trace、重规划原因和新旧计划。
+
+v2 当前代码承载点：
+
+- `agents.target_ref_type` / `agents.target_ref_id` 已能表达 Worker 背后的目标资源。
+- `agents.product_category` 可标识 `custom`、`a2a` 等产品来源。
+- `agent_versions.worker_config` 可保存 `capability_summary`、`executor_type` 和 A2A 快照。
+- `agent_versions.router_config` 可保存 `routing_policy`。
+- `agent_versions.capability_bindings` 可继续保存工具、知识库、workflow 或 A2A skills 摘要。
+- `agent_bindings` 继续作为 PlannerAgent 绑定内部 Worker 和外部 A2A Worker 的唯一绑定模型。
+- `WorkerRuntime` 当前只实际派发到 App/ReAct Worker，v2.2 需要增加 A2A executor 分支。
+- `RouterRuntime` 当前只做计划结构和绑定校验，v2.1 需要增加 capability preflight。
+
+v2 实施顺序：
+
+1. v2.1 先实现能力感知地基，不新增 A2A 表：复用 `worker_config.capability_summary`、`router_config.routing_policy`，新增 preflight、错误码和任务页展示。
+2. v2.2 再实现 A2A 外部 Worker：新增 `a2a_agents` 表，`agents.target_ref_type = a2a_agent` 指向该表，`WorkerRuntime` 增加 text `message/send` executor。
+3. v2.3 最后实现动态重规划：新增 `RouterPlannerAgent.update_plan()`，只允许改写未执行 step，并对新计划再次执行 preflight。
+
+v2.2 A2A 安全边界：
+
+- 默认只允许 `https://` A2A base URL；本地开发例外必须显式配置。
+- 默认禁止内网、环回、链路本地、metadata 地址和保留网段，DNS 解析后必须再次校验最终 IP。
+- 禁止自动跟随跨 host 重定向；如允许重定向，重定向后的 host/IP 必须重新校验。
+- Agent Card 拉取、message/send 调用必须有超时、最大响应体和协议版本校验。
+- v2.2 不上传本地文件、不转发内部文件 URL、不启用 streaming、push notification 或远程回调。
+- A2A 凭据只保存 `auth_ref`，明文继续走平台敏感配置体系。
+- 任务页、Trace、WorkerCall 必须脱敏 Authorization、cookie、token、签名参数和敏感 headers。
 
 ## 9. 验证命令
 
@@ -263,6 +324,18 @@ PlannerAgent v1 最近一次完整验证记录：
 - API 服务 `/docs` 可访问。
 - 前端调试页可通过 `/apps/{app_id}/debug-chat` 运行 PlannerAgent。
 
+2026-06-04 手工联调记录：
+
+- Docker Compose 重新创建 `llmops-api` 和 `llmops-celery` 后启动正常。
+- UI `http://localhost:3100` 返回 200。
+- API `http://localhost:5011/docs` 返回 200。
+- UI 代理 `http://localhost:3100/api/docs` 返回 200。
+- 内置工具正常管理器路径调用 `gaode_weather` 成功返回广州天气预报。
+- 内置工具正常管理器路径调用 `google_serper` 成功返回搜索结果。
+- PlannerAgent 绑定天气/搜索 Worker 后，真实调试问题“今天广州天气怎么样”可成功返回实时天气结果。
+- 最后调试 session `0e37f677-e29c-4b41-a533-299b4e821035` 抽检通过：plan、step、worker call、trace、多轮、多 step、多 Worker、Worker error 主链路均有真实落库记录。
+- 图片上传和图片识别输入链路已通过；fallback 命中数为 0，WorkerResult artifact 均为空，后两项未作为本轮 v1 主链路阻塞。
+
 ## 10. 架构规则
 
 后续开发需要保持以下规则：
@@ -274,4 +347,8 @@ PlannerAgent v1 最近一次完整验证记录：
 - 所有 Worker 输出归一化为 `WorkerResult`。
 - 所有运行事件归一化为 `TraceEvent`。
 - 新的 executor 类型必须隐藏在 WorkerRuntime 后面，不能污染 Planner 协议。
+- A2A 外部 Agent 必须以外部 WorkerAgent 接入，不进入插件广场，也不作为 Planner 直接工具。
+- A2A 外部调用必须经过 URL/SSRF 防护、超时、响应体大小限制、凭据脱敏和审计记录。
+- Worker 能力摘要必须版本化保存，Planner 计划回放时使用当时的能力快照。
+- Worker 编排规则属于 `router_config.routing_policy`，代码负责解析、渲染和执行 preflight。
 - 前端优先复用 AI 应用、预览调试和任务详情，不提前拆出复杂独立控制台。
