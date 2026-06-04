@@ -42,7 +42,7 @@ watch(
       <!-- 左侧：编排 -->
       <el-container
         direction="vertical"
-        class="!m-0 !flex !min-h-0 !min-w-0 !flex-1 !flex-col !overflow-hidden border-slate-200/70 xl:!border-r"
+        class="editor-pane !m-0 !flex !min-h-0 !min-w-0 !flex-1 !flex-col !overflow-hidden border-slate-200/70 xl:!border-r"
       >
         <el-header
           class="!flex !h-auto !min-h-[4.25rem] !items-center !gap-4 !border-b !border-slate-200/60 !bg-white/95 !px-4 !py-3 !backdrop-blur-sm"
@@ -95,8 +95,8 @@ watch(
 
       <!-- 右侧：预览与调试 -->
       <el-aside
-        width="420px"
-        class="preview-aside !m-0 flex !w-full !min-w-0 !max-w-none flex-col !overflow-hidden border-t border-slate-200/60 bg-gradient-to-b from-white via-slate-50/35 to-slate-50/90 !p-0 shadow-none xl:!w-[min(420px,40vw)] xl:!max-w-[480px] xl:!shrink-0 xl:!border-l xl:!border-t-0 xl:shadow-[inset_10px_0_28px_-18px_rgba(15,23,42,0.07)]"
+        width="33.333%"
+        class="preview-aside !m-0 flex !w-full !min-w-0 !max-w-none flex-col !overflow-hidden border-t border-slate-200/60 bg-gradient-to-b from-white via-slate-50/35 to-slate-50/90 !p-0 shadow-none xl:!shrink-0 xl:!border-l xl:!border-t-0 xl:shadow-[inset_10px_0_28px_-18px_rgba(15,23,42,0.07)]"
       >
         <preview-debug-header
           :app_id="String(route.params?.app_id)"
@@ -130,9 +130,16 @@ watch(
     flex-direction: row !important;
   }
 
+  .detail-orchestrate :deep(.editor-pane.el-container) {
+    flex: 0 0 66.666667% !important;
+    width: 66.666667% !important;
+    max-width: 66.666667% !important;
+  }
+
   .detail-orchestrate :deep(.preview-aside.el-aside) {
-    width: min(420px, 40vw) !important;
-    max-width: 480px;
+    flex: 0 0 33.333333% !important;
+    width: 33.333333% !important;
+    max-width: 33.333333% !important;
   }
 }
 
