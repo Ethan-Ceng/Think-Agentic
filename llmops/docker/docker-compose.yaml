@@ -28,6 +28,7 @@ services:
       MIGRATION_ENABLED: 'true'
       # JWT 加密秘钥
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev-jwt-secret-change-me-please-rotate}
+      SETTING_CRYPTO_KEY: ${SETTING_CRYPTO_KEY:-}
       # 服务配置
       SERVICE_IP: ${SERVICE_IP:-127.0.0.1}
       SERVICE_API_PREFIX: ${SERVICE_API_PREFIX:-http://localhost:5011}
@@ -136,6 +137,7 @@ services:
       SERVICE_API_PREFIX: ${SERVICE_API_PREFIX:-http://localhost:5011}
       # JWT 加密秘钥
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev-jwt-secret-change-me-please-rotate}
+      SETTING_CRYPTO_KEY: ${SETTING_CRYPTO_KEY:-}
       # CSRF 校验开关
       WTF_CSRF_ENABLED: 'false'
       # SQLAlchemy 数据库配置

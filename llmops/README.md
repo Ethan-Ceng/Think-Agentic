@@ -79,9 +79,8 @@ Password: Llmops1234
 Docker Compose 默认使用本地文件存储：
 
 ```yaml
-FILE_STORAGE_TYPE: local
 LOCAL_STORAGE_ROOT: /app/api/storage/uploads
-LOCAL_STORAGE_BASE_URL: http://localhost:3000/api/upload-files
+LOCAL_STORAGE_BASE_URL: http://localhost:3100/api/upload-files
 ```
 
 上传文件会保存在宿主机目录：
@@ -93,28 +92,16 @@ docker/volumes/app/storage/uploads
 上传接口返回的图片地址形如：
 
 ```text
-http://localhost:3000/api/upload-files/2026/05/08/<file>.png
+http://localhost:3100/api/upload-files/2026/05/08/<file>.png
 ```
 
 这里必须是完整 URL，因为工作流图标、应用图标、图片输入等字段会校验 URL 格式。
-如需在生产环境使用腾讯 COS，将 `FILE_STORAGE_TYPE` 改为 `cos`，并配置
-`COS_SECRET_ID`、`COS_SECRET_KEY`、`COS_REGION`、`COS_BUCKET` 等变量。
+如需在生产环境使用腾讯 COS，优先在控制台 `设置 -> 存储` 中配置并保存到数据库。
 
-### 4.3 默认 LLM 配置
+### 4.3 模型供应商配置
 
-系统默认模型通过 `docker/.env` 配置。新建应用会使用这组默认值：
-
-```dotenv
-OPENAI_API_KEY=your-api-key
-OPENAI_API_BASE=https://api.openai.com/v1
-DEFAULT_LLM_PROVIDER=openai
-DEFAULT_LLM_MODEL=gpt-4o-mini
-DEFAULT_LLM_TEMPERATURE=0.5
-DEFAULT_LLM_TOP_P=0.85
-DEFAULT_LLM_FREQUENCY_PENALTY=0.2
-DEFAULT_LLM_PRESENCE_PENALTY=0.2
-DEFAULT_LLM_MAX_TOKENS=8192
-```
+模型供应商、Base URL、API Key 和默认模型优先在控制台 `设置 -> 模型供应商` 中配置，
+并加密保存到数据库。`docker/.env` 不再作为本地调试的主要模型配置入口。
 
 可用的 provider/model 定义在：
 
@@ -122,20 +109,8 @@ DEFAULT_LLM_MAX_TOKENS=8192
 api/app/core/language_model/providers/
 ```
 
-例如使用 DeepSeek：
-
-```dotenv
-DEEPSEEK_API_KEY=your-api-key
-DEEPSEEK_API_BASE=https://api.deepseek.com
-DEFAULT_LLM_PROVIDER=deepseek
-DEFAULT_LLM_MODEL=deepseek-chat
-```
-
-修改后重建 API 与 Celery：
-
-```powershell
-docker compose -f docker\docker-compose.yaml up -d --build llmops-api llmops-celery
-```
+内置工具凭据暂未纳入插件管理配置页，天气和搜索仍通过 `docker/.env` 中的
+`GAODE_API_KEY`、`SERPER_API_KEY` 传入。
 
 ### 4.4 （可选）启用外层 Nginx（80/443）
 
