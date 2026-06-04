@@ -42,10 +42,42 @@ const constraints = computed(() => safeSummary.value.constraints || {})
 
 const hasSummary = computed(() => Boolean(safeSummary.value.schema_version))
 
+const editableOverrideTemplate = () => {
+  const summary = safeSummary.value
+  const template: Record<string, any> = {}
+  const listFields = ['input_modalities', 'output_modalities', 'semantic_tags', 'tool_names', 'model_features']
+  listFields.forEach((field) => {
+    const value = summary[field as keyof WorkerCapabilitySummary]
+    if (Array.isArray(value)) {
+      template[field] = [...value]
+    }
+  })
+  if (Array.isArray(summary.skills)) {
+    template.skills = summary.skills.map((skill) => ({ ...skill }))
+  }
+  if (summary.constraints && typeof summary.constraints === 'object') {
+    template.constraints = { ...summary.constraints }
+  }
+  return template
+}
+
+const editorPayload = () => {
+  const manualOverrides = safeSummary.value.manual_overrides || {}
+  if (Object.keys(manualOverrides).length) {
+    return manualOverrides
+  }
+  return editableOverrideTemplate()
+}
+
 const openEditor = () => {
   overrideError.value = ''
-  overrideText.value = JSON.stringify(safeSummary.value.manual_overrides || {}, null, 2)
+  overrideText.value = JSON.stringify(editorPayload(), null, 2)
   editorVisible.value = true
+}
+
+const clearOverrides = () => {
+  overrideError.value = ''
+  overrideText.value = '{}'
 }
 
 const saveOverrides = () => {
@@ -78,7 +110,7 @@ watch(
   () => props.summary?.manual_overrides,
   () => {
     if (editorVisible.value) {
-      overrideText.value = JSON.stringify(safeSummary.value.manual_overrides || {}, null, 2)
+      overrideText.value = JSON.stringify(editorPayload(), null, 2)
     }
   },
 )
@@ -189,6 +221,9 @@ watch(
     </div>
 
     <el-dialog v-model="editorVisible" title="人工修正" width="680px" destroy-on-close>
+      <div class="mb-2 text-xs leading-5 text-slate-500">
+        保存内容会作为 manual_overrides 覆盖自动推断结果；删除不需要修正的字段即可保留自动推断。
+      </div>
       <el-input
         v-model="overrideText"
         type="textarea"
@@ -199,6 +234,7 @@ watch(
       />
       <p v-if="overrideError" class="mt-2 text-xs text-red-600">{{ overrideError }}</p>
       <template #footer>
+        <el-button @click="clearOverrides">清空覆盖</el-button>
         <el-button @click="editorVisible = false">取消</el-button>
         <el-button type="primary" @click="saveOverrides">保存</el-button>
       </template>
