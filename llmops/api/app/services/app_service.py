@@ -53,6 +53,15 @@ class RuntimeCapability:
     config: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class RuntimeCapabilityResult:
+    observation: str
+    status: str = "succeeded"
+    error_code: str = ""
+    error_message: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
 @dataclass
 class AppService(BaseService):
     capability_adapter: ToolCapabilityAdapter = field(default_factory=ToolCapabilityAdapter)
@@ -503,6 +512,7 @@ class AppService(BaseService):
         image_urls: list[str],
         account: Account,
         conversation_id: UUID | None = None,
+        runtime_policy: dict[str, Any] | None = None,
     ):
         app = self.get_app(session, app_id, account)
         config = self._config_to_dict(self.get_or_create_draft_config(session, app))
@@ -514,6 +524,7 @@ class AppService(BaseService):
             image_urls=image_urls,
             account=account,
             conversation_id=conversation_id,
+            runtime_policy=runtime_policy,
         )
 
     def run_app_agent(
@@ -527,8 +538,10 @@ class AppService(BaseService):
         account: Account,
         conversation_id: UUID | None = None,
         conversation_summary: str = "",
+        runtime_policy: dict[str, Any] | None = None,
     ):
         start_at = time.perf_counter()
+        runtime_policy = self.normalize_worker_runtime_policy(runtime_policy or config.get("runtime_policy"))
         long_term_memory = conversation_summary if config["long_term_memory"].get("enable", False) else ""
         if long_term_memory:
             yield AgentThought(
@@ -577,7 +590,12 @@ class AppService(BaseService):
                     else []
                 )
                 capability_context = ""
-                capabilities = self._build_runtime_capabilities(session, config, account)
+                capabilities = self._build_runtime_capabilities(
+                    session,
+                    config,
+                    account,
+                    runtime_policy=runtime_policy,
+                )
                 if capabilities and not self._supports_iterative_capabilities(llm):
                     capability_context, capability_thoughts = self._execute_configured_capabilities(
                         session,
@@ -585,6 +603,7 @@ class AppService(BaseService):
                         config,
                         query,
                         account,
+                        runtime_policy=runtime_policy,
                     )
                     yield from capability_thoughts
 
@@ -611,6 +630,7 @@ class AppService(BaseService):
                         capabilities=capabilities,
                         account=account,
                         start_at=start_at,
+                        runtime_policy=runtime_policy,
                     )
                     return
 
@@ -652,14 +672,17 @@ class AppService(BaseService):
         capabilities: list[RuntimeCapability],
         account: Account,
         start_at: float,
+        runtime_policy: dict[str, Any] | None = None,
     ):
+        runtime_policy = self.normalize_worker_runtime_policy(runtime_policy)
+        max_iterations = int(runtime_policy["max_iterations"])
         runtime = ChatCompletionRuntime()
         capability_map = {capability.name: capability for capability in capabilities}
         messages = self._initial_iterative_messages(llm, system_prompt, history, query, image_urls, capabilities)
         tool_schemas = self._capabilities_to_openai_tools(capabilities)
         use_provider_tool_call = ModelFeature.TOOL_CALL in llm.features
 
-        for iteration_count in range(1, self._max_iteration_count() + 1):
+        for iteration_count in range(1, max_iterations + 1):
             if AgentQueueManager.is_stopped(task_id):
                 yield AgentThought(id=uuid4(), task_id=task_id, event=QueueEvent.STOP)
                 return
@@ -690,6 +713,13 @@ class AppService(BaseService):
                 task_id=task_id,
                 event=QueueEvent.AGENT_THOUGHT,
                 thought=json.dumps([tool_call.__dict__ for tool_call in tool_calls], ensure_ascii=False),
+                metadata={
+                    "iteration": iteration_count,
+                    "runtime_policy": {
+                        "max_iterations": runtime_policy["max_iterations"],
+                        "allowed_executor_types": runtime_policy["allowed_executor_types"],
+                    },
+                },
                 message=messages,
                 total_token_count=self._result_token_count(response.usage, query, response.content),
                 latency=time.perf_counter() - start_at,
@@ -701,23 +731,44 @@ class AppService(BaseService):
                 messages.append({"role": "assistant", "content": response.content})
 
             for tool_call in tool_calls:
+                metadata: dict[str, Any] = {}
                 if tool_call.parse_error:
                     observation = tool_call.parse_error
                     event = QueueEvent.AGENT_ACTION
+                    metadata = {
+                        "status": "failed",
+                        "error_code": "tool_argument_parse_error",
+                        "error_message": observation,
+                        "executor_type": "tool",
+                    }
                 else:
                     capability = capability_map.get(tool_call.name)
                     if capability is None:
                         observation = f"Tool does not exist: {tool_call.name}"
                         event = QueueEvent.AGENT_ACTION
+                        metadata = {
+                            "status": "failed",
+                            "error_code": "worker_capability_missing",
+                            "error_message": observation,
+                            "executor_type": "tool",
+                        }
                     else:
                         event = self._capability_event(capability)
-                        observation = self._invoke_runtime_capability(
+                        capability_result = self._invoke_runtime_capability_result(
                             session,
                             capability,
                             tool_call.args,
                             account,
                             query,
                         )
+                        observation = capability_result.observation
+                        metadata = capability_result.metadata
+                        if capability_result.error_code:
+                            metadata = {
+                                **metadata,
+                                "error_code": capability_result.error_code,
+                                "error_message": capability_result.error_message,
+                            }
 
                 yield AgentThought(
                     id=uuid4(),
@@ -726,11 +777,12 @@ class AppService(BaseService):
                     observation=observation,
                     tool=tool_call.name,
                     tool_input=tool_call.args,
+                    metadata=metadata,
                     latency=time.perf_counter() - start_at,
                 )
                 self._append_tool_observation(messages, tool_call, observation, use_provider_tool_messages)
 
-            if iteration_count == self._max_iteration_count():
+            if iteration_count == max_iterations:
                 yield from self._yield_answer(
                     task_id=task_id,
                     query=query,
@@ -905,12 +957,109 @@ class AppService(BaseService):
     def _max_iteration_count() -> int:
         return 5
 
+    @classmethod
+    def normalize_worker_runtime_policy(cls, policy: dict[str, Any] | None) -> dict[str, Any]:
+        raw = policy if isinstance(policy, dict) else {}
+        max_iterations = cls._bounded_int(
+            raw.get("max_iterations", raw.get("max_iteration_count", cls._max_iteration_count())),
+            default=cls._max_iteration_count(),
+            minimum=1,
+            maximum=20,
+        )
+        allow_tool_calls = cls._as_bool(raw.get("allow_tool_calls"), default=True)
+        allow_builtin_tools = cls._as_bool(
+            raw.get("allow_builtin_tools", raw.get("allow_tools", raw.get("allow_tool"))),
+            default=True,
+        )
+        allow_api = cls._as_bool(raw.get("allow_api", raw.get("allow_api_tools")), default=True)
+        allow_workflow = cls._as_bool(raw.get("allow_workflow", raw.get("allow_workflows")), default=True)
+        allow_dataset_value = raw.get(
+            "allow_dataset",
+            raw.get("allow_datasets", raw.get("allow_knowledge_base", raw.get("allow_rag"))),
+        )
+        allow_dataset = cls._as_bool(allow_dataset_value, default=True)
+        allow_mcp = cls._as_bool(raw.get("allow_mcp"), default=False)
+        allow_sandbox = cls._as_bool(raw.get("allow_sandbox"), default=False)
+        executor_order = ["tool", "api", "workflow", "dataset", "knowledge_base", "mcp", "sandbox"]
+        configured_executors = raw.get("allowed_executor_types", raw.get("executor_types"))
+        if isinstance(configured_executors, list):
+            allowed = {str(item).strip().lower() for item in configured_executors if str(item).strip()}
+        else:
+            allowed = set(executor_order)
+        if not allow_tool_calls:
+            allowed.clear()
+        if not allow_builtin_tools:
+            allowed.discard("tool")
+        if not allow_api:
+            allowed.discard("api")
+        if not allow_workflow:
+            allowed.discard("workflow")
+        if not allow_dataset:
+            allowed.discard("dataset")
+            allowed.discard("knowledge_base")
+        if not allow_mcp:
+            allowed.discard("mcp")
+        if not allow_sandbox:
+            allowed.discard("sandbox")
+
+        memory_raw = raw.get("memory_compaction") if isinstance(raw.get("memory_compaction"), dict) else {}
+        return {
+            "schema_version": "worker_runtime_policy_v1",
+            "max_iterations": max_iterations,
+            "allow_tool_calls": allow_tool_calls,
+            "allowed_executor_types": [item for item in executor_order if item in allowed],
+            "allow_builtin_tools": allow_builtin_tools,
+            "allow_api": allow_api,
+            "allow_workflow": allow_workflow,
+            "allow_dataset": allow_dataset,
+            "allow_mcp": allow_mcp,
+            "allow_sandbox": allow_sandbox,
+            "memory_compaction": {
+                "enabled": cls._as_bool(memory_raw.get("enabled"), default=True),
+                "max_items": cls._bounded_int(memory_raw.get("max_items"), default=20, minimum=1, maximum=100),
+                "max_observation_chars": cls._bounded_int(
+                    memory_raw.get("max_observation_chars"),
+                    default=500,
+                    minimum=80,
+                    maximum=4000,
+                ),
+                "max_message_chars": cls._bounded_int(
+                    memory_raw.get("max_message_chars"),
+                    default=1000,
+                    minimum=120,
+                    maximum=8000,
+                ),
+            },
+        }
+
+    @staticmethod
+    def _as_bool(value: Any, *, default: bool) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+        return bool(value)
+
+    @staticmethod
+    def _bounded_int(value: Any, *, default: int, minimum: int, maximum: int) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            parsed = default
+        return max(minimum, min(maximum, parsed))
+
     def _build_runtime_capabilities(
         self,
         session: Session,
         config: dict[str, Any],
         account: Account,
+        runtime_policy: dict[str, Any] | None = None,
     ) -> list[RuntimeCapability]:
+        runtime_policy = self.normalize_worker_runtime_policy(runtime_policy)
+        if not runtime_policy["allow_tool_calls"]:
+            return []
         capabilities: list[RuntimeCapability] = []
         seen_names: set[str] = set()
 
@@ -965,7 +1114,23 @@ class AppService(BaseService):
             )
             seen_names.add(name)
 
-        return capabilities
+        return self._filter_runtime_capabilities(capabilities, runtime_policy)
+
+    def _filter_runtime_capabilities(
+        self,
+        capabilities: list[RuntimeCapability],
+        runtime_policy: dict[str, Any],
+    ) -> list[RuntimeCapability]:
+        allowed = set(runtime_policy["allowed_executor_types"])
+        return [
+            capability
+            for capability in capabilities
+            if self._capability_allowed_by_policy(capability, allowed)
+        ]
+
+    def _capability_allowed_by_policy(self, capability: RuntimeCapability, allowed: set[str]) -> bool:
+        executor_type = self._capability_executor_type(capability)
+        return executor_type in allowed or (executor_type == "dataset" and "knowledge_base" in allowed)
 
     def _tool_config_to_capability(
         self,
@@ -987,6 +1152,25 @@ class AppService(BaseService):
             config=descriptor.config,
         )
 
+    @classmethod
+    def _capability_executor_type(cls, capability: RuntimeCapability) -> str:
+        if capability.kind == "workflow":
+            return "workflow"
+        if capability.kind in {"dataset", "knowledge_base"}:
+            return "dataset"
+        if capability.kind == "tool":
+            return cls._tool_config_executor_type(capability.config.get("tool_config", {}))
+        if capability.kind in {"mcp", "sandbox"}:
+            return capability.kind
+        return "tool"
+
+    @staticmethod
+    def _tool_config_executor_type(tool_config: dict[str, Any]) -> str:
+        tool_type = str(tool_config.get("type") or "")
+        if tool_type == "api_tool":
+            return "api"
+        return "tool"
+
     def _invoke_runtime_capability(
         self,
         session: Session,
@@ -995,20 +1179,76 @@ class AppService(BaseService):
         account: Account,
         query: str,
     ) -> str:
+        return self._invoke_runtime_capability_result(session, capability, tool_input, account, query).observation
+
+    def _invoke_runtime_capability_result(
+        self,
+        session: Session,
+        capability: RuntimeCapability,
+        tool_input: dict[str, Any],
+        account: Account,
+        query: str,
+    ) -> RuntimeCapabilityResult:
+        start_at = time.perf_counter()
+        executor_type = self._capability_executor_type(capability)
+        base_metadata = {
+            "status": "succeeded",
+            "capability_name": capability.name,
+            "capability_kind": capability.kind,
+            "executor_type": executor_type,
+            "target_ref_type": self._capability_target_ref_type(capability),
+            "target_ref_id": self._capability_target_ref_id(capability),
+        }
         try:
             if capability.kind == "tool":
-                return self._execute_configured_tool(session, capability.config["tool_config"], tool_input, account)
+                observation = self._execute_configured_tool(
+                    session,
+                    capability.config["tool_config"],
+                    tool_input,
+                    account,
+                )
+                return RuntimeCapabilityResult(
+                    observation=str(observation),
+                    metadata={**base_metadata, "latency": time.perf_counter() - start_at},
+                )
             if capability.kind in {"dataset", "knowledge_base"}:
                 app_config = capability.config["app_config"]
                 dataset_query = str(tool_input.get("query") or query)
                 context, hits = self._retrieve_dataset_context(session, app_config, dataset_query, account)
-                return json.dumps(hits, ensure_ascii=False, default=str) if hits else context
+                observation = json.dumps(hits, ensure_ascii=False, default=str) if hits else context
+                return RuntimeCapabilityResult(
+                    observation=observation,
+                    metadata={
+                        **base_metadata,
+                        "dataset_hit_count": len(hits),
+                        "latency": time.perf_counter() - start_at,
+                    },
+                )
             if capability.kind == "workflow":
                 workflow_id = UUID(str(capability.config["workflow_id"]))
                 workflow = session.get(Workflow, workflow_id)
                 if workflow is None:
                     raise NotFoundException("Workflow does not exist")
-                return self._execute_workflow_capability(session, workflow, tool_input, account)
+                workflow_result = self._execute_workflow_capability_result(session, workflow, tool_input, account)
+                metadata = {
+                    **base_metadata,
+                    **workflow_result.metadata,
+                    "workflow_id": str(workflow.id),
+                    "workflow_name": workflow.name,
+                    "latency": time.perf_counter() - start_at,
+                }
+                if workflow_result.status != "succeeded":
+                    return RuntimeCapabilityResult(
+                        observation=self._capability_failure_observation(
+                            executor_type,
+                            workflow_result.error_message or workflow_result.observation,
+                        ),
+                        status="failed",
+                        error_code=workflow_result.error_code or "workflow_execution_failed",
+                        error_message=workflow_result.error_message or workflow_result.observation,
+                        metadata={**metadata, "status": "failed"},
+                    )
+                return RuntimeCapabilityResult(observation=workflow_result.observation, metadata=metadata)
             if capability.kind == "create_app":
                 app = self.auto_create_app(
                     session,
@@ -1016,13 +1256,75 @@ class AppService(BaseService):
                     str(tool_input.get("description") or "").strip(),
                     account.id,
                 )
-                return json.dumps(
-                    {"id": str(app.id), "name": app.name, "description": app.description},
-                    ensure_ascii=False,
+                return RuntimeCapabilityResult(
+                    observation=json.dumps(
+                        {"id": str(app.id), "name": app.name, "description": app.description},
+                        ensure_ascii=False,
+                    ),
+                    metadata={**base_metadata, "latency": time.perf_counter() - start_at},
                 )
         except Exception as exc:
-            return f"{capability.kind.title()} execution failed: {exc}"
-        return f"Unsupported capability type: {capability.kind}"
+            error_message = str(exc)
+            return RuntimeCapabilityResult(
+                observation=self._capability_failure_observation(executor_type, error_message),
+                status="failed",
+                error_code=f"{executor_type}_execution_failed",
+                error_message=error_message,
+                metadata={
+                    **base_metadata,
+                    "status": "failed",
+                    "error_code": f"{executor_type}_execution_failed",
+                    "error_message": error_message,
+                    "latency": time.perf_counter() - start_at,
+                },
+            )
+        error_message = f"Unsupported capability type: {capability.kind}"
+        return RuntimeCapabilityResult(
+            observation=error_message,
+            status="failed",
+            error_code="unsupported_capability_type",
+            error_message=error_message,
+            metadata={
+                **base_metadata,
+                "status": "failed",
+                "error_code": "unsupported_capability_type",
+                "error_message": error_message,
+                "latency": time.perf_counter() - start_at,
+            },
+        )
+
+    @staticmethod
+    def _capability_target_ref_type(capability: RuntimeCapability) -> str:
+        if capability.kind == "workflow":
+            return "workflow"
+        if capability.kind in {"dataset", "knowledge_base"}:
+            return "dataset_collection"
+        tool_config = capability.config.get("tool_config", {})
+        return str(tool_config.get("type") or capability.kind)
+
+    @staticmethod
+    def _capability_target_ref_id(capability: RuntimeCapability) -> str:
+        if capability.kind == "workflow":
+            return str(capability.config.get("workflow_id") or "")
+        if capability.kind in {"dataset", "knowledge_base"}:
+            return ",".join(str(item) for item in capability.config.get("dataset_ids", []) or [])
+        tool_config = capability.config.get("tool_config", {})
+        provider_id = str(tool_config.get("provider_id") or "")
+        tool_id = str(tool_config.get("tool_id") or "")
+        return f"{provider_id}/{tool_id}" if provider_id or tool_id else ""
+
+    @staticmethod
+    def _capability_failure_observation(executor_type: str, error_message: str) -> str:
+        labels = {
+            "api": "API",
+            "workflow": "Workflow",
+            "dataset": "Dataset",
+            "knowledge_base": "Dataset",
+            "mcp": "MCP",
+            "sandbox": "Sandbox",
+            "tool": "Tool",
+        }
+        return f"{labels.get(executor_type, 'Tool')} execution failed: {error_message}"
 
     @staticmethod
     def _capability_event(capability: RuntimeCapability) -> QueueEvent:
@@ -1146,6 +1448,16 @@ class AppService(BaseService):
         name = re.sub(r"[^A-Za-z0-9_-]", "_", value.strip())
         return (name or "tool")[:64]
 
+    @staticmethod
+    def _preview_json(value: Any, *, limit: int = 260) -> str:
+        if value in (None, {}, []):
+            return ""
+        try:
+            text = json.dumps(value, ensure_ascii=False, default=str)
+        except TypeError:
+            text = str(value)
+        return text if len(text) <= limit else f"{text[:limit]}..."
+
     @classmethod
     def _result_token_count(cls, usage: dict[str, Any], query: str, answer: str) -> int:
         if usage.get("total_tokens") is not None:
@@ -1194,20 +1506,40 @@ class AppService(BaseService):
         config: dict[str, Any],
         query: str,
         account: Account,
+        runtime_policy: dict[str, Any] | None = None,
     ) -> tuple[str, list[AgentThought]]:
+        runtime_policy = self.normalize_worker_runtime_policy(runtime_policy)
+        allowed_executors = set(runtime_policy["allowed_executor_types"])
         observations: list[str] = []
         thoughts: list[AgentThought] = []
 
         for tool_config in config.get("tools", []) or []:
             if not isinstance(tool_config, dict):
                 continue
+            executor_type = self._tool_config_executor_type(tool_config)
+            if executor_type not in allowed_executors:
+                continue
             tool_name = self._tool_config_name(tool_config)
             tool_input = self._default_tool_input(tool_config, query)
             start_at = time.perf_counter()
             try:
                 observation = self._execute_configured_tool(session, tool_config, tool_input, account)
+                metadata = {
+                    "status": "succeeded",
+                    "executor_type": executor_type,
+                    "target_ref_type": str(tool_config.get("type") or ""),
+                    "latency": time.perf_counter() - start_at,
+                }
             except Exception as exc:
-                observation = f"Tool execution failed: {exc}"
+                observation = self._capability_failure_observation(executor_type, str(exc))
+                metadata = {
+                    "status": "failed",
+                    "executor_type": executor_type,
+                    "target_ref_type": str(tool_config.get("type") or ""),
+                    "error_code": f"{executor_type}_execution_failed",
+                    "error_message": str(exc),
+                    "latency": time.perf_counter() - start_at,
+                }
 
             observations.append(f"{tool_name or 'tool'}: {observation}")
             thoughts.append(
@@ -1218,20 +1550,41 @@ class AppService(BaseService):
                     observation=str(observation),
                     tool=tool_name,
                     tool_input=tool_input,
+                    metadata=metadata,
                     latency=time.perf_counter() - start_at,
                 )
             )
 
         for workflow_id in self._parse_uuid_list(config.get("workflows", []) or []):
+            if "workflow" not in allowed_executors:
+                continue
             start_at = time.perf_counter()
             workflow = session.get(Workflow, workflow_id)
             if workflow is None or workflow.account_id != account.id or workflow.status != "published":
                 continue
             workflow_input = self._default_workflow_input(workflow.graph or {}, query)
-            try:
-                observation = self._execute_workflow_capability(session, workflow, workflow_input, account)
-            except Exception as exc:
-                observation = f"Workflow execution failed: {exc}"
+            workflow_result = self._execute_workflow_capability_result(session, workflow, workflow_input, account)
+            observation = workflow_result.observation
+            metadata = {
+                **workflow_result.metadata,
+                "status": workflow_result.status,
+                "executor_type": "workflow",
+                "target_ref_type": "workflow",
+                "target_ref_id": str(workflow.id),
+                "workflow_id": str(workflow.id),
+                "workflow_name": workflow.name,
+                "latency": time.perf_counter() - start_at,
+            }
+            if workflow_result.status != "succeeded":
+                observation = self._capability_failure_observation(
+                    "workflow",
+                    workflow_result.error_message or workflow_result.observation,
+                )
+                metadata = {
+                    **metadata,
+                    "error_code": workflow_result.error_code or "workflow_execution_failed",
+                    "error_message": workflow_result.error_message or workflow_result.observation,
+                }
 
             observations.append(f"{workflow.tool_call_name}: {observation}")
             thoughts.append(
@@ -1242,6 +1595,7 @@ class AppService(BaseService):
                     observation=str(observation),
                     tool=workflow.tool_call_name,
                     tool_input=workflow_input,
+                    metadata=metadata,
                     latency=time.perf_counter() - start_at,
                 )
             )
@@ -1305,17 +1659,55 @@ class AppService(BaseService):
         inputs: dict[str, Any],
         account: Account,
     ) -> str:
+        return self._execute_workflow_capability_result(session, workflow, inputs, account).observation
+
+    def _execute_workflow_capability_result(
+        self,
+        session: Session,
+        workflow: Workflow,
+        inputs: dict[str, Any],
+        account: Account,
+    ) -> RuntimeCapabilityResult:
         workflow_service = WorkflowService()
         graph = workflow_service.validate_publish_graph(workflow.graph or {})
         node_results: list[dict[str, Any]] = []
+        workflow_nodes: list[dict[str, Any]] = []
         for node in workflow_service._ordered_nodes(graph):
             result = workflow_service._execute_node(session, node, node_results, inputs, account)
             node_results.append(result)
+            workflow_nodes.append(self._workflow_node_trace(result))
             if result["status"] != "succeeded":
-                return result["error"]
+                error_message = str(result.get("error") or "Workflow node failed")
+                return RuntimeCapabilityResult(
+                    observation=self._capability_failure_observation("workflow", error_message),
+                    status="failed",
+                    error_code="workflow_node_failed",
+                    error_message=error_message,
+                    metadata={
+                        "workflow_nodes": workflow_nodes,
+                        "failed_node": workflow_nodes[-1] if workflow_nodes else {},
+                    },
+                )
         if node_results:
-            return json.dumps(node_results[-1].get("outputs", {}), ensure_ascii=False, default=str)
-        return "{}"
+            return RuntimeCapabilityResult(
+                observation=json.dumps(node_results[-1].get("outputs", {}), ensure_ascii=False, default=str),
+                metadata={"workflow_nodes": workflow_nodes},
+            )
+        return RuntimeCapabilityResult(observation="{}", metadata={"workflow_nodes": workflow_nodes})
+
+    @staticmethod
+    def _workflow_node_trace(result: dict[str, Any]) -> dict[str, Any]:
+        node_data = result.get("node_data") if isinstance(result.get("node_data"), dict) else {}
+        return {
+            "node_id": str(node_data.get("id") or ""),
+            "node_type": str(node_data.get("node_type") or ""),
+            "title": str(node_data.get("title") or node_data.get("name") or ""),
+            "status": str(result.get("status") or ""),
+            "latency": float(result.get("latency") or 0),
+            "error": str(result.get("error") or ""),
+            "input_preview": AppService._preview_json(result.get("inputs") or {}, limit=260),
+            "output_preview": AppService._preview_json(result.get("outputs") or {}, limit=260),
+        }
 
     @staticmethod
     def _default_tool_input(tool_config: dict[str, Any], query: str) -> dict[str, Any]:

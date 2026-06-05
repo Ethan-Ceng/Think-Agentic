@@ -27,6 +27,7 @@ class AgentThought(BaseModel):
     observation: str = ""
     tool: str = ""
     tool_input: dict = Field(default_factory=dict)
+    metadata: dict = Field(default_factory=dict)
     message: list[dict] = Field(default_factory=list)
     message_token_count: int = 0
     message_unit_price: float = 0.0

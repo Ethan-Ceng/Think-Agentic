@@ -621,10 +621,12 @@ def test_execute_manager_run_steps_invokes_legacy_app_worker() -> None:
             image_urls,
             account,
             conversation_id,
+            runtime_policy,
         ):
             assert query == "summarize sales notes"
             assert image_urls == []
             assert conversation_id == expected_conversation_id
+            assert runtime_policy["max_iterations"] == 5
             yield AgentThought(
                 id=uuid.uuid4(),
                 task_id=task_id,
@@ -681,13 +683,16 @@ def test_execute_manager_run_steps_invokes_legacy_app_worker() -> None:
     assert worker_calls[0].invocation_json["execution_policy"]["execution_agent_type"] == "react_worker"
     assert worker_calls[0].invocation_json["execution_policy"]["executor_type"] == "app"
     assert worker_calls[0].result_json["schema_version"] == "worker_result_v1"
+    assert worker_calls[0].result_json["data"]["runtime"]["mode"] == "worker_react_v1"
     trace_events = [item for item in session.added if isinstance(item, TraceEvent)]
     assert [event.event_type for event in trace_events] == [
         "router.manager_run.created",
         "router.step.started",
         "worker.call.started",
-        "worker.event.agent_message",
-        "worker.event.agent_end",
+        "worker.runtime.started",
+        "worker.runtime.state_changed",
+        "worker.memory.compacted",
+        "worker.runtime.completed",
         "worker.call.succeeded",
         "router.step.succeeded",
         "router.manager_run.succeeded",
@@ -725,11 +730,13 @@ def test_execute_manager_run_steps_passes_input_files_to_worker_context() -> Non
             image_urls,
             account,
             conversation_id,
+            runtime_policy,
         ):
             assert "summarize sales notes" in query
             assert "Input files:" in query
             assert "Quarterly notes mention expansion revenue." in query
             assert conversation_id is None
+            assert runtime_policy["allow_tool_calls"] is True
             yield AgentThought(
                 id=uuid.uuid4(),
                 task_id=task_id,

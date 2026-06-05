@@ -1,6 +1,6 @@
 # LLMOps 平台架构与当前实现
 
-记录日期：2026-06-04。
+记录日期：2026-06-05。
 
 本文是 `llmops` 当前架构和实现边界的最终汇总版，用于替代旧的架构总结、企业平台计划和平台底座待办文档。
 
@@ -81,8 +81,8 @@ Object Storage / local storage
 - API provider 调用。
 - Dataset retrieval。
 - Workflow 调用。
-- v2 优先扩展 A2A 外部 WorkerAgent。
-- 后续再扩展 MCP、Sandbox、API 等外部执行器。
+- A2A 外部 Agent 仍以外部 WorkerAgent 接入，当前暂缓专项实施。
+- V5 优先增强 WorkerAgent Runtime：Worker 内部可在自身任务边界内选择 RAG、工具、Workflow、API、MCP 或 sandbox executor。
 
 ## 4. AI 应用模型
 
@@ -114,6 +114,42 @@ WorkerRuntime.invoke()
   -> ChatCompletionRuntime
   -> tools / dataset / workflow
   -> WorkerResult
+```
+
+V5 后 WorkerAgent 的能力边界进一步明确为“局部 ReAct 执行 Agent”：
+
+- WorkerAgent 可以在单个 `WorkerInvocation` 内做局部步骤规划和工具选择。
+- WorkerAgent 可以调用自身配置的 RAG、工具、Workflow、API executor；MCP/sandbox 预留 policy 和事件协议，后续独立接入。
+- WorkerAgent 可以返回内部工具事件、`confidence`、`retryable`、`replan_signal`、`missing_info`、短期记忆压缩摘要和产物引用。
+- WorkerAgent 不调用其他 WorkerAgent，不修改 `RouterPlan`，不绕过 Planner 的绑定和调度关系。
+- PlannerAgent 仍只看到 Worker descriptor、routing policy 和 `WorkerResult`，不直接理解 Worker 内部工具协议。
+
+V5 Worker 内部事件建议统一为：
+
+```text
+worker.runtime.started
+worker.runtime.state_changed
+worker.runtime.iteration_started
+worker.tool.started
+worker.tool.succeeded
+worker.tool.failed
+worker.memory.compacted
+worker.runtime.completed
+worker.runtime.failed
+worker.runtime.cancelled
+```
+
+Worker 是否需要重规划不通过单独事件抢占 Planner 决策，而是写入 `WorkerResult.data.replan_signal` 和终止事件 payload，由 Router/Planner 读取后决定是否重规划。
+
+V5 运行记录的访问面分为两层：
+
+- 后台排障面：`WorkerCall.result_json`、`TraceEvent.payload`、`WorkerResult.data.thoughts`、`events[].payload.raw_event` 和任务页 `Runtime JSON` 只面向登录后的平台后台用户，用于排查 Planner/Worker 调度和 executor 执行问题。
+- 发布端调用面：Web App Chat、OpenAPI Chat 和微信等发布渠道不读取 `WorkerCall` / `TraceEvent` / V5 Runtime JSON。它们仍可能返回普通 App 执行链路的 `agent_thoughts`，用于展示“运行流程”，其中可能包含工具输入、工具输出或知识库检索 observation。外部终端用户场景建议通过发布配置控制 `agent_thoughts` 是否展示，默认隐藏运行流程，只展示最终 answer。
+
+Worker 内部状态机建议固定为：
+
+```text
+preparing -> reasoning -> tool_calling -> observing -> summarizing -> completed|failed|cancelled
 ```
 
 ### 4.2 PlannerAgent
@@ -279,7 +315,10 @@ v1 固定约束：
 仍未实现但设计已固定的 v2 架构边界：
 
 - 动态重规划 `RouterPlannerAgent.update_plan()` 已落地。
-- 任务页已展示重规划原因、新旧计划、attempt 和 replan trace；A2A call trace 在 A2A 专项中补充。
+- 任务页已展示重规划原因、新旧计划、attempt、replan trace、Agent 名称、Worker 执行任务、选择理由、Step 输入输出、WorkerCall Invocation/Result 摘要和调度回放。
+- Planner dry-run 已落地，可只生成 plan 和 preflight 结果，不创建任务、不调用 Worker，用于排查 Worker 选择。
+- PlannerAgent 页面不会直接读取自身 `capability-summary`；Worker 能力摘要只属于 WorkerAgent，Planner 在绑定列表中查看和使用各 Worker 的能力摘要。
+- A2A call trace 在 A2A 专项中补充。
 - A2A 外部 WorkerAgent 注册、Agent Card 同步、绑定和 text `message/send` executor；该部分设计固定但暂缓实施。
 
 v2 当前代码承载点：
@@ -292,12 +331,12 @@ v2 当前代码承载点：
 - `agent_bindings` 继续作为 PlannerAgent 绑定内部 Worker 和外部 A2A Worker 的唯一绑定模型。
 - `WorkerRuntime` 当前只实际派发到 App/ReAct Worker，v2.2 先预留 executor 字段和展示口径，v2.4 再增加 A2A executor 分支。
 - `RouterRuntime` 已增加 capability preflight；v2.3 已在重规划新计划上再次执行 preflight。
-- 现有 Planner 绑定和调试链路中仍有按 `worker_app_id` 或 `target_ref_type = app` 的兼容逻辑；v2.2 开始前必须把可调度 Worker 查询统一到 WorkerAgent 维度，只在读取本系统 App 展示信息时过滤 `target_ref_type = app`。
+- Planner 绑定、候选 Worker、requested worker、preflight 和任务页已统一到 WorkerAgent id 维度；`worker_app_id` 只作为本系统 App Worker 的兼容绑定入口，读取 App 展示信息时才依赖 `target_ref_type = app`。
 
 v2 实施顺序：
 
 1. v2.1 先实现能力感知地基，不新增 A2A 表：复用 `worker_config.capability_summary`、`router_config.routing_policy`，新增 preflight、错误码和任务页展示。
-2. v2.2 先硬化 PlannerAgent + 内部 WorkerAgent 主流程：统一 WorkerAgent id 口径，支持 `worker_agent_id` 绑定，清理 `target_ref_type = app` 隐含限制，并让任务页按 WorkerAgent 展示。
+2. v2.2 已硬化 PlannerAgent + 内部 WorkerAgent 主流程：统一 WorkerAgent id 口径，支持 `worker_agent_id` 绑定，清理 `target_ref_type = app` 隐含限制，并让任务页按 WorkerAgent 展示。
 3. v2.3 已实现动态重规划：新增 `RouterPlannerAgent.update_plan()`，只允许改写未执行 step，并对新计划再次执行 preflight。
 4. v2.4 后续再实现 A2A 外部 Worker：新增 `a2a_agents` 表，`agents.target_ref_type = a2a_agent` 指向该表，`WorkerRuntime` 增加 text `message/send` executor。
 

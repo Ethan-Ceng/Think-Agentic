@@ -11,7 +11,7 @@ from app.core.app import DEFAULT_APP_CONFIG
 from app.core.config import Settings
 from app.models.account import Account
 from app.schemas.app import AppPageResponse
-from app.services.app_service import AppService
+from app.services.app_service import AppService, RuntimeCapability
 from app.services.router_agent_manager_service import PlannerDebugStreamEvent, RouterAgentManagerService
 
 
@@ -79,6 +79,42 @@ def test_app_runtime_capability_can_auto_create_app(monkeypatch) -> None:
         "description": "Summarize docs",
         "account_id": account.id,
     }
+
+
+def test_app_runtime_policy_can_disable_tool_calls() -> None:
+    account = Account(id=uuid.uuid4(), name="tester", email="tester@example.test")
+    capabilities = AppService()._build_runtime_capabilities(  # noqa: SLF001
+        None,
+        {"tools": [{"type": "builtin_tool", "provider_id": "time", "tool_id": "current_time", "params": {}}]},
+        account,
+        runtime_policy={"allow_tool_calls": False},
+    )
+
+    assert capabilities == []
+
+
+def test_app_runtime_capability_result_normalizes_api_error() -> None:
+    account = Account(id=uuid.uuid4(), name="tester", email="tester@example.test")
+    capability = RuntimeCapability(
+        name="missing_api",
+        description="Missing API",
+        parameters={"type": "object", "properties": {}},
+        kind="tool",
+        config={"tool_config": {"type": "api_tool", "provider_id": "invalid", "tool_id": "missing_api"}},
+    )
+
+    result = AppService()._invoke_runtime_capability_result(  # noqa: SLF001
+        None,
+        capability,
+        {},
+        account,
+        "query",
+    )
+
+    assert result.status == "failed"
+    assert result.error_code == "api_execution_failed"
+    assert result.observation.startswith("API execution failed:")
+    assert result.metadata["executor_type"] == "api"
 
 
 def test_app_page_response_keeps_legacy_fields() -> None:

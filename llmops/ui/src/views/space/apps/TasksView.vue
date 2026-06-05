@@ -432,6 +432,100 @@ const workerOutputSummary = (call: WorkerCallItem) => {
   return call.result_preview || workerAnswer(call)
 }
 
+const workerRuntime = (call: WorkerCallItem) => {
+  const runtime = call.result_json?.data?.runtime || call.result_json?.runtime
+  return runtime && typeof runtime === 'object' ? runtime : null
+}
+
+const workerInternalSteps = (call: WorkerCallItem) => {
+  const steps = call.result_json?.data?.internal_steps || call.result_json?.internal_steps
+  return Array.isArray(steps) ? steps : []
+}
+
+const workerResultEvents = (call: WorkerCallItem) => {
+  const events = call.result_json?.events
+  return Array.isArray(events) ? events : []
+}
+
+const workerToolEvents = (call: WorkerCallItem) => {
+  return workerResultEvents(call).filter((event: Record<string, any>) =>
+    String(event.event_type || '').startsWith('worker.tool.'),
+  )
+}
+
+const workerRuntimeFinalState = (call: WorkerCallItem) => {
+  return String(workerRuntime(call)?.final_state || call.status || '')
+}
+
+const workerRuntimeLabel = (call: WorkerCallItem) => {
+  const runtime = workerRuntime(call)
+  if (!runtime) return ''
+  const iterations = Number(runtime.iterations || 0)
+  const maxIterations = Number(runtime.max_iterations || 0)
+  if (!iterations && !maxIterations) return String(runtime.mode || '')
+  return `${iterations}/${maxIterations || '-'} 轮`
+}
+
+const workerRuntimePolicyLabel = (call: WorkerCallItem) => {
+  const executors = workerRuntime(call)?.policy?.allowed_executor_types
+  if (!Array.isArray(executors) || executors.length === 0) return ''
+  return executors.join(' / ')
+}
+
+const workerMemoryCompaction = (call: WorkerCallItem) => {
+  const memory = call.result_json?.data?.memory_compaction || call.result_json?.memory_compaction
+  return memory && typeof memory === 'object' ? memory : null
+}
+
+const workerReplanSignal = (call: WorkerCallItem) => {
+  const signal = call.result_json?.data?.replan_signal || call.result_json?.replan_signal
+  return signal && typeof signal === 'object' ? signal : null
+}
+
+const workerReplanLabel = (call: WorkerCallItem) => {
+  const signal = workerReplanSignal(call)
+  if (!signal?.needs_replan) return ''
+  return String(signal.reason || 'needs_replan')
+}
+
+const workerEventStatusType = (status?: string) => {
+  if (status === 'failed') return 'danger'
+  if (status === 'succeeded' || status === 'completed') return 'success'
+  if (status === 'cancelled') return 'warning'
+  return 'info'
+}
+
+const workerToolName = (event: Record<string, any>) => {
+  return String(event.payload?.tool_name || event.payload?.tool || event.payload?.raw_event?.tool || 'tool')
+}
+
+const workerToolExecutor = (event: Record<string, any>) => {
+  return String(event.payload?.executor_type || event.payload?.tool_kind || event.payload?.metadata?.executor_type || '')
+}
+
+const workerToolInputSummary = (event: Record<string, any>) => {
+  return String(
+    event.payload?.tool_input_preview ||
+      toPreview(event.payload?.tool_input || event.payload?.raw_event?.tool_input || {}, 160),
+  )
+}
+
+const workerToolOutputSummary = (event: Record<string, any>) => {
+  return String(
+    event.payload?.observation_preview ||
+      event.message ||
+      event.payload?.raw_event?.observation ||
+      '',
+  )
+}
+
+const workerToolWorkflowNodeLabel = (event: Record<string, any>) => {
+  const nodes = event.payload?.workflow_nodes
+  if (!Array.isArray(nodes) || nodes.length === 0) return ''
+  const failed = nodes.find((node: Record<string, any>) => node.status === 'failed')
+  return failed ? `${nodes.length} nodes · failed: ${failed.title || failed.node_type}` : `${nodes.length} nodes`
+}
+
 const fileName = (file: AgentFileRef | AgentArtifactRef) => {
   return file.name || file.metadata?.file?.name || file.file_id || file.id || '未命名文件'
 }
@@ -958,6 +1052,109 @@ onMounted(async () => {
                                             <p class="line-clamp-3 break-words text-xs text-slate-500">
                                               {{ workerOutputSummary(call) || '-' }}
                                             </p>
+                                          </div>
+                                        </div>
+
+                                        <div
+                                          v-if="workerRuntime(call) || workerInternalSteps(call).length || workerToolEvents(call).length"
+                                          class="mt-3 border-t border-slate-200 pt-2"
+                                        >
+                                          <div class="flex flex-wrap items-center justify-between gap-2">
+                                            <div class="flex flex-wrap items-center gap-2">
+                                              <span class="text-xs font-medium text-slate-700">Worker Runtime</span>
+                                              <el-tag
+                                                v-if="workerRuntimeFinalState(call)"
+                                                size="small"
+                                                :type="workerEventStatusType(workerRuntimeFinalState(call))"
+                                              >
+                                                {{ workerRuntimeFinalState(call) }}
+                                              </el-tag>
+                                              <span v-if="workerRuntimeLabel(call)" class="text-xs text-slate-400">
+                                                {{ workerRuntimeLabel(call) }}
+                                              </span>
+                                              <el-tag
+                                                v-if="workerRuntimePolicyLabel(call)"
+                                                size="small"
+                                                type="info"
+                                              >
+                                                {{ workerRuntimePolicyLabel(call) }}
+                                              </el-tag>
+                                              <el-tag
+                                                v-if="workerReplanLabel(call)"
+                                                size="small"
+                                                type="warning"
+                                              >
+                                                replan: {{ workerReplanLabel(call) }}
+                                              </el-tag>
+                                            </div>
+                                            <el-button
+                                              v-if="workerRuntime(call)"
+                                              size="small"
+                                              @click="openJson('Worker Runtime', call.result_json?.data)"
+                                            >
+                                              Runtime JSON
+                                            </el-button>
+                                          </div>
+
+                                          <p
+                                            v-if="workerMemoryCompaction(call)?.summary"
+                                            class="mt-2 line-clamp-2 break-words text-xs text-slate-500"
+                                          >
+                                            Memory: {{ workerMemoryCompaction(call)?.summary }}
+                                          </p>
+
+                                          <div v-if="workerInternalSteps(call).length" class="mt-2 flex flex-wrap gap-1">
+                                            <el-tag
+                                              v-for="internalStep in workerInternalSteps(call)"
+                                              :key="`${call.id}-${internalStep.internal_step_id || internalStep.tool_name}`"
+                                              size="small"
+                                              :type="workerEventStatusType(internalStep.status)"
+                                            >
+                                              {{ internalStep.tool_name || internalStep.goal || internalStep.internal_step_id }}
+                                            </el-tag>
+                                          </div>
+
+                                          <div v-if="workerToolEvents(call).length" class="mt-2 space-y-1">
+                                            <div
+                                              v-for="event in workerToolEvents(call)"
+                                              :key="`${call.id}-${event.event_type}-${event.payload?.tool_call_id || event.id}`"
+                                              class="flex flex-wrap items-start justify-between gap-2 border border-slate-200 bg-white px-2 py-1"
+                                            >
+                                              <div class="min-w-0 flex-1">
+                                                <div class="flex flex-wrap items-center gap-2">
+                                                  <el-tag size="small" :type="workerEventStatusType(event.status)">
+                                                    {{ event.event_type.replace('worker.tool.', '') }}
+                                                  </el-tag>
+                                                  <span class="truncate text-xs font-medium text-slate-800">
+                                                    {{ workerToolName(event) }}
+                                                  </span>
+                                                  <el-tag v-if="workerToolExecutor(event)" size="small" type="info">
+                                                    {{ workerToolExecutor(event) }}
+                                                  </el-tag>
+                                                  <span
+                                                    v-if="workerToolWorkflowNodeLabel(event)"
+                                                    class="text-xs text-slate-400"
+                                                  >
+                                                    {{ workerToolWorkflowNodeLabel(event) }}
+                                                  </span>
+                                                </div>
+                                                <p
+                                                  v-if="workerToolInputSummary(event)"
+                                                  class="mt-1 line-clamp-1 break-words text-xs text-slate-500"
+                                                >
+                                                  输入：{{ workerToolInputSummary(event) }}
+                                                </p>
+                                                <p
+                                                  v-if="workerToolOutputSummary(event)"
+                                                  class="mt-1 line-clamp-2 break-words text-xs text-slate-500"
+                                                >
+                                                  结果：{{ workerToolOutputSummary(event) }}
+                                                </p>
+                                              </div>
+                                              <el-button link type="primary" @click="openJson('Worker Tool Event', event)">
+                                                JSON
+                                              </el-button>
+                                            </div>
                                           </div>
                                         </div>
                                       </div>

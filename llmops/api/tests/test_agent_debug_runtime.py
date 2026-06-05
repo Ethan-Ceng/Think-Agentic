@@ -409,6 +409,66 @@ def test_app_service_returns_tool_argument_parse_error_as_observation(monkeypatc
     assert thoughts[2].answer == "Retried."
 
 
+def test_app_service_iterative_agent_respects_runtime_policy_max_iterations(monkeypatch) -> None:
+    account = Account(id=uuid.uuid4(), name="tester", email="tester@example.test")
+    task_id = uuid.uuid4()
+    llm = BaseLanguageModel(
+        provider="openai",
+        model="gpt-4o-mini",
+        features=[ModelFeature.TOOL_CALL],
+    )
+    capabilities = AppService()._build_runtime_capabilities(  # noqa: SLF001
+        None,
+        {"tools": [{"type": "builtin_tool", "provider_id": "time", "tool_id": "current_time", "params": {}}]},
+        account,
+    )
+
+    def fake_create_response(self, **kwargs):  # noqa: ANN001
+        return ChatCompletionResult(
+            content="",
+            message={
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {"name": "current_time", "arguments": "{}"},
+                    }
+                ],
+            },
+            tool_calls=[ChatToolCall(id="call-1", name="current_time", args={})],
+        )
+
+    monkeypatch.setattr(ChatCompletionRuntime, "create_response", fake_create_response)
+
+    thoughts = list(
+        AppService()._run_iterative_agent(  # noqa: SLF001
+            session=None,
+            task_id=task_id,
+            query="what time",
+            image_urls=[],
+            history=[],
+            system_prompt="system",
+            llm=llm,
+            review_config={"enable": False},
+            capabilities=capabilities,
+            account=account,
+            start_at=0,
+            runtime_policy={"max_iterations": 1},
+        )
+    )
+
+    assert [thought.event for thought in thoughts] == [
+        "agent_thought",
+        "agent_action",
+        "agent_message",
+        "agent_end",
+    ]
+    assert thoughts[0].metadata["runtime_policy"]["max_iterations"] == 1
+    assert "iteration count exceeded" in thoughts[2].answer
+
+
 def test_debug_chat_route_streams_service_generator() -> None:
     app_id = uuid.uuid4()
     account = Account(id=uuid.uuid4(), name="tester", email="tester@example.test")

@@ -1185,6 +1185,7 @@ class RouterAgentManagerService(BaseService):
                         status=worker_result.status,
                         error_code=worker_result.error_code,
                         summary=worker_result.summary,
+                        replan_signal=self._worker_replan_signal(worker_result),
                     ),
                 )
                 replan = self._maybe_replan(
@@ -2335,6 +2336,7 @@ class RouterAgentManagerService(BaseService):
                         status=worker_result.status,
                         error_code=worker_result.error_code,
                         summary=worker_result.summary,
+                        replan_signal=self._worker_replan_signal(worker_result),
                     ),
                 )
                 if terminal_status != TaskStatus.CANCELLED:
@@ -3768,13 +3770,19 @@ class RouterAgentManagerService(BaseService):
             self.trace_service.record(
                 session,
                 tenant_id=run.task.tenant_id,
-                event_type=f"worker.event.{event.event_type}",
+                event_type=self._trace_event_type_for_agent_event(event.event_type),
                 task=run.task,
                 plan=run.plan,
                 step=step,
                 worker_call=worker_call,
                 payload=event.model_dump(mode="json"),
             )
+
+    @staticmethod
+    def _trace_event_type_for_agent_event(event_type: str) -> str:
+        if event_type.startswith(("worker.", "tool.", "artifact.", "wait.", "approval.", "task.", "error.")):
+            return event_type
+        return f"worker.event.{event_type}"
 
     @staticmethod
     def _worker_execution_agent_type(worker: Agent) -> str:
@@ -3797,6 +3805,11 @@ class RouterAgentManagerService(BaseService):
         output = worker_result.model_dump(mode="json")
         output["answer"] = str(worker_result.data.get("answer") or worker_result.summary or "")
         return output
+
+    @staticmethod
+    def _worker_replan_signal(worker_result: WorkerResult) -> dict[str, Any]:
+        signal = worker_result.data.get("replan_signal") if isinstance(worker_result.data, dict) else {}
+        return signal if isinstance(signal, dict) else {}
 
     @staticmethod
     def _worker_terminal_status(worker_result: WorkerResult) -> TaskStatus:
