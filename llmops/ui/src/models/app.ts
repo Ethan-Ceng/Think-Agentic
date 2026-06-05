@@ -181,7 +181,8 @@ export type PlannerWorkerBinding = {
 export type GetPlannerWorkersResponse = BaseResponse<{ list: PlannerWorkerBinding[] }>
 
 export type BindPlannerWorkerRequest = {
-  worker_app_id: string
+  worker_app_id?: string
+  worker_agent_id?: string
   enabled: boolean
   priority: number
   conditions: Record<string, any>

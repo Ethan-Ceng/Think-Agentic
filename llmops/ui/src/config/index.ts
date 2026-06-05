@@ -1,5 +1,5 @@
 // api请求接口前缀
-export const apiPrefix: string = import.meta.env.VITE_API_PREFIX
+export const apiPrefix: string = import.meta.env.VITE_API_PREFIX || '/api'
 
 /** 应用名（与 `.env` 中 `VITE_TITLE`、`index.html` 标题一致） */
 export const appTitle: string = import.meta.env.VITE_TITLE || 'LLMOps'

@@ -110,6 +110,23 @@ export type CapabilityCallItem = {
   updated_at: number
 }
 
+export type TraceStepRef = {
+  id: string
+  plan_id: string
+  step_key: string
+  task: string
+  status: AgentTaskStatus | string
+  worker_agent: AgentRef
+} | null
+
+export type TraceWorkerCallRef = {
+  id: string
+  status: AgentTaskStatus | string
+  worker_agent: AgentRef
+  token_count: number
+  latency: number
+} | null
+
 export type TraceEventItem = {
   id: string
   trace_id: string
@@ -121,6 +138,9 @@ export type TraceEventItem = {
   approval_id: string | null
   event_type: string
   payload: Record<string, any>
+  agent?: AgentRef
+  step?: TraceStepRef
+  worker_call?: TraceWorkerCallRef
   token_count: number
   cost: number
   latency: number

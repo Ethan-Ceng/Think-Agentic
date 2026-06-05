@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 
 from app.api.router import register_routers
 from app.core.config import Settings, get_settings
@@ -31,14 +32,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         title=settings.app_name,
         debug=settings.debug,
         lifespan=lifespan,
+        docs_url=None,
+        redoc_url=None,
     )
     app.state.settings = settings
 
+    register_docs(app, settings)
     register_exception_handlers(app)
     register_middleware(app, settings)
     register_routers(app)
 
     return app
+
+
+def register_docs(app: FastAPI, settings: Settings) -> None:
+    @app.get("/docs", include_in_schema=False)
+    def swagger_ui_html():
+        return get_swagger_ui_html(
+            openapi_url="./openapi.json",
+            title=f"{settings.app_name} - Swagger UI",
+        )
+
+    @app.get("/redoc", include_in_schema=False)
+    def redoc_html():
+        return get_redoc_html(
+            openapi_url="./openapi.json",
+            title=f"{settings.app_name} - ReDoc",
+        )
 
 
 def register_middleware(app: FastAPI, settings: Settings) -> None:

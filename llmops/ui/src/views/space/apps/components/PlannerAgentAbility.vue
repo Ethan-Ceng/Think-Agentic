@@ -247,7 +247,10 @@ onMounted(loadData)
                   <div class="truncate text-sm font-medium text-slate-900">
                     {{ row.worker_app?.name || row.worker_agent.name }}
                   </div>
-                  <div class="truncate text-xs text-slate-400">{{ row.worker_agent.id }}</div>
+                  <div class="mt-0.5 flex min-w-0 flex-wrap items-center gap-1">
+                    <el-tag size="small" type="info">{{ row.worker_agent.target_ref_type || 'worker' }}</el-tag>
+                    <span class="truncate text-xs text-slate-400">{{ row.worker_agent.id }}</span>
+                  </div>
                 </div>
               </div>
             </template>

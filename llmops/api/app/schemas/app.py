@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.models.app import App, AppConfigVersion
 
@@ -143,10 +143,17 @@ class DebugChatRequest(BaseModel):
 
 
 class BindPlannerWorkerRequest(BaseModel):
-    worker_app_id: UUID
+    worker_app_id: UUID | None = None
+    worker_agent_id: UUID | None = None
     enabled: bool = True
     priority: int = Field(0, ge=0, le=100)
     conditions: dict = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def require_one_worker_reference(self) -> "BindPlannerWorkerRequest":
+        if bool(self.worker_app_id) == bool(self.worker_agent_id):
+            raise ValueError("Exactly one of worker_app_id or worker_agent_id is required")
+        return self
 
 
 class UpdatePlannerWorkerBindingRequest(BaseModel):

@@ -532,13 +532,13 @@ v2.1：能力感知地基
 - preflight 和错误 taxonomy。
 - 任务页展示 preflight 和错误提示。
 
-v2.2：A2A 外部 Worker
+v2.2：主流程硬化与 A2A-ready WorkerAgent 口径
 
-- A2A Agent 注册和 Agent Card 同步。
-- 外部 A2A Agent 映射为 WorkerAgent。
-- Planner 绑定 A2A Worker。
-- A2A text `message/send` executor。
-- A2A 调用 trace 和 `WorkerResult` 归一化。
+- Planner Worker 绑定接口支持 `worker_agent_id`，保留 `worker_app_id` 兼容内部 App Worker。
+- 可调度 Worker 查询统一以 WorkerAgent 为主，消除只支持 `target_ref_type = app` 的隐含限制。
+- Worker descriptor、preflight、任务页和 WorkerCall 统一展示 `target_ref_type`、`executor_type` 和 capability snapshot。
+- WorkerRuntime 保持现有 App/ReAct 主链路，同时预留 executor 派发边界。
+- 不新增 A2A 表，不实现 Agent Card 同步或 A2A executor。
 
 v2.3：动态重规划
 
@@ -546,14 +546,23 @@ v2.3：动态重规划
 - WorkerResult/error/trace 摘要进入重规划。
 - 改派备用 Worker。
 - 任务页展示原计划、新计划和重规划原因。
+- 已完成：一次自动重规划、旧计划 `superseded`、新计划二次 preflight、`planner.replan.*` trace、WorkerCall `plan_attempt` 和任务页 attempt 展示。
+
+v2.4：A2A 外部 WorkerAgent 接入
+
+- A2A Agent 注册和 Agent Card 同步。
+- 外部 A2A Agent 映射为 WorkerAgent。
+- Planner 绑定 A2A Worker。
+- A2A text `message/send` executor。
+- A2A 调用 trace 和 `WorkerResult` 归一化。
 
 v2 验收通过标准：
 
-- 同一个 Planner 可同时绑定本系统 Worker 和 A2A 外部 Worker。
+- 同一个 Planner 可稳定绑定和调度本系统 WorkerAgent。
 - Planner 能基于 descriptor 和 routing policy 选择合适 Worker。
 - 图片/文件/搜索等基础能力不匹配时 preflight 能阻断并给出结构化提示。
-- A2A text Agent 可被 Planner 调用，结果进入 `WorkerResult`、`WorkerCall`、`TraceEvent`。
 - Worker 失败后可重规划到另一个绑定 Worker，或给出明确不可完成原因。
+- A2A 设计边界保持可接入：外部 Agent 以后仍通过 WorkerAgent、`AgentBinding` 和 WorkerRuntime executor 接入。
 
 ### 7.10 v2 实施设计和下一步任务
 
@@ -563,10 +572,10 @@ v2 验收通过标准：
 - `agents.product_category` 可用于区分 `custom`、`a2a` 等产品来源。
 - `agent_versions.worker_config`、`router_config`、`capability_bindings` 已是 JSONB；当前已承载内部 Worker 能力摘要和 Planner 编排规则，后续继续承载 A2A 快照。
 - `agent_bindings` 已能表达 PlannerAgent 到 WorkerAgent 的绑定关系，A2A 外部 Worker 不需要单独绑定表。
-- `WorkerRuntime` 当前只派发到 `ReActWorkerAgent`，`ReActWorkerAgent` 当前只支持 `target_ref_type = app`。v2.2 需要新增 A2A executor 分支。
+- `WorkerRuntime` 当前只派发到 `ReActWorkerAgent`，`ReActWorkerAgent` 当前只支持 `target_ref_type = app`。v2.2 先预留 executor 字段和展示口径，v2.4 再新增 A2A executor 分支。
 - `RouterRuntime.validate_plan()` 负责计划结构、绑定和依赖校验；`RouterRuntime.preflight_plan()` 已负责能力硬约束校验。
 
-v2.1 能力感知地基已落地。下一步按 v2.2 A2A 外部 Worker、v2.3 动态重规划推进，完成后 V2 功能闭环关闭。
+v2.1 能力感知地基、v2.2 主流程硬化和 v2.3 动态重规划已落地，PlannerAgent + 内部 WorkerAgent 主流程已闭环；A2A 外部 WorkerAgent 设计已固定，但具体接入延后到 v2.4 或后续专项。
 
 #### 7.10.1 v2.1 能力感知地基
 
@@ -680,7 +689,53 @@ v2.1 验收用例：
 - 任务页能看到 preflight 成功或失败记录。
 - 现有 v1 Planner 调试和 Worker 调试链路不回退。
 
-#### 7.10.2 v2.2 A2A 外部 Worker
+#### 7.10.2 v2.2 主流程硬化与 A2A-ready 口径
+
+目标：
+
+- 先完成 PlannerAgent + 内部 WorkerAgent 主流程，不在本批次实现 A2A 远程调用。
+- 把 Planner 绑定、候选 Worker、preflight、任务页和 WorkerCall 的主键口径统一到 WorkerAgent id。
+- 保留 A2A 后续接入所需边界：`target_ref_type`、`target_ref_id`、`executor_type`、`AgentBinding` 和 WorkerRuntime executor 派发。
+
+非目标：
+
+- 不新增 `a2a_agents` 表。
+- 不实现 Agent Card discover/sync。
+- 不实现 `A2AWorkerExecutor`。
+- 不增加 A2A 前端添加弹窗或测试消息功能。
+
+后端任务：
+
+- 扩展 Planner Worker 绑定请求，支持 `worker_agent_id` 和 `worker_app_id` 二选一。
+- `worker_app_id` 继续走当前内部 App Worker 创建/同步路径；`worker_agent_id` 直接绑定已存在的 WorkerAgent。
+- 清理只允许 `Agent.target_ref_type == "app"` 的可调度 Worker 查询，改为以 `Agent.runtime_type == "worker"` 为准。
+- `requested_worker_app_ids` 仍保留给当前调试兼容；新增或内部转换为 WorkerAgent id 口径，避免未来 A2A 没有 app id 时被排除。
+- `_worker_execution_agent_type()` 和 `WorkerRuntime._execution_agent_type()` 先兼容 `executor_type` 字段；当前只实际派发 `app/react_worker`。
+- WorkerInvocation 的 `execution_policy` 写入 `target_ref_type`、`target_ref_id`、`executor_type`、`execution_agent_type` 和 capability snapshot。
+- 任务详情返回的 WorkerCall、step、trace 不依赖 `worker_app` 存在；`worker_agent` 是主展示对象。
+
+前端任务：
+
+- Planner Worker 绑定列表以 `worker_agent` 为主展示名称、类型、状态和能力摘要。
+- 内部 Worker 下拉仍可使用 App 列表；数据结构为后续 A2A WorkerAgent 列表预留入口。
+- 任务页展示 `target_ref_type` / `executor_type`，即使当前只有 `app/react_worker`。
+
+自动化测试：
+
+- 现有 `worker_app_id` 绑定内部 Worker 行为不回退。
+- 可通过 `worker_agent_id` 绑定已存在内部 WorkerAgent。
+- Planner 候选 Worker、preflight 和计划校验都使用 WorkerAgent id。
+- 任务详情在 `worker_app = null` 时仍能展示 `worker_agent` 和 capability summary。
+- WorkerRuntime 对 `executor_type = app` / `execution_agent_type = react_worker` 继续走 ReActWorkerAgent。
+
+手工验收：
+
+- 创建 PlannerAgent，绑定两个内部 WorkerAgent，调试问题能正常规划、调用和汇总。
+- 任务页能看到 plan、step、worker call、trace、preflight 和 WorkerAgent 信息。
+- 搜索/图片能力缺失场景仍被 preflight 阻断并显示中文提示。
+- 本批次完成后，不要求 A2A 远程 Agent 可注册或调用。
+
+#### 7.10.A A2A 外部 WorkerAgent 设计预留（暂缓实施）
 
 目标：
 
@@ -694,7 +749,16 @@ v2.1 验收用例：
 - 不把 A2A Agent 放入插件广场。
 - 不把 A2A Agent 暴露成 Planner prompt 里的普通工具。
 - 不支持文件上传、图片二进制转发、streaming、push notification、远程回调或长轮询任务。
-- 不实现完整 A2A artifact 生态；v2.2 只保存远程 artifact 摘要和文本结果。
+- 不实现完整 A2A artifact 生态；A2A 首期只保存远程 artifact 摘要和文本结果。
+
+设计确认口径：
+
+- A2A 只作为外部 WorkerAgent 接入。产品上可以说 Planner 添加 A2A 子 Agent，但数据模型里仍是 PlannerAgent 绑定一个 `runtime_type = "worker"` 的 Agent，不新增 Planner 子资源表。
+- PlannerAgent 不保存 A2A base URL、auth、协议状态，也不生成 A2A 专用 plan 字段；这些都属于外部 WorkerAgent 和 WorkerRuntime executor 的责任。
+- A2A Agent 必须先完成 discover/sync，映射出本地 WorkerAgent 后，才能被 Planner 绑定和调度。
+- 已同步但不可用的 A2A Agent 不能进入可调度 Worker 列表；只有映射 WorkerAgent 处于 `active` 或 `published` 状态，且绑定启用时，Planner 才能选择。
+- Planner prompt 只可看到脱敏后的 worker descriptor、skills、输入输出模态、semantic tags 和能力摘要；不得暴露 `auth_ref`、Authorization、cookie、签名 query 或完整远程响应体。
+- A2A Agent Card 后续重新同步只影响新的 WorkerAgent 草稿或新版本快照，不能覆盖历史任务使用过的 `capability_summary` 和 `card_snapshot`。
 
 数据设计：
 
@@ -733,7 +797,8 @@ a2a_agents
 - `agents.product_category = "a2a"`。
 - `agents.target_ref_type = "a2a_agent"`。
 - `agents.target_ref_id = str(a2a_agents.id)`。
-- `agent_versions.worker_config.executor_type = "a2a"`。
+- `agent_versions.worker_config.executor_type = "a2a"` 作为产品和能力摘要口径。
+- 兼容当前运行时字段，v2.4 实施 A2A 时必须让 `WorkerRuntime` 同时识别 `worker_config.executor_type = "a2a"` 和 `worker_config.execution_agent_type = "a2a_worker"`；写入版本时可以同时保存两者，直到运行时字段统一。
 - `agent_versions.worker_config.a2a.card_snapshot` 保存发布或草稿当时使用的 Agent Card 快照。
 - `agent_versions.worker_config.a2a.auth_ref` 只保存敏感配置引用。
 - `agent_versions.worker_config.capability_summary` 保存由 Agent Card 映射出的 `worker_capability_v2`。
@@ -798,7 +863,10 @@ API 设计：
 - `POST /a2a-agents/{id}/sync-card`：重新同步 Agent Card，刷新对应 WorkerAgent 草稿能力摘要。
 - `POST /a2a-agents/{id}/test-message`：发送 text 测试消息，不创建 Planner 任务。
 - `DELETE /a2a-agents/{id}`：软删除或禁用；已被 Planner 绑定时返回提示，优先禁用。
-- `POST /apps/{planner_app_id}/planner/workers`：复用现有绑定入口，绑定已映射出的 A2A WorkerAgent。
+- `POST /apps/{planner_app_id}/planner/workers`：复用现有绑定入口，但请求结构需要兼容两类来源：
+  - `worker_app_id`：现有本系统 WorkerAgent，保持当前行为。
+  - `worker_agent_id`：已存在的 WorkerAgent，用于绑定 A2A 映射出的外部 WorkerAgent。
+- `worker_app_id` 和 `worker_agent_id` 必须二选一；服务端最终都调用同一套 `AgentBinding` 逻辑。
 
 Runtime 设计：
 
@@ -816,16 +884,25 @@ PlannerAgent
 
 派发规则：
 
-- `WorkerRuntime._execution_agent_type()` 优先读取 `worker_config.executor_type`。
-- `executor_type = "a2a"` 或 `target_ref_type = "a2a_agent"` 时派发到 `A2AWorkerExecutor`。
-- `executor_type = "react_worker"` 或 `target_ref_type = "app"` 继续走现有 `ReActWorkerAgent`。
+- `WorkerRuntime._execution_agent_type()` 优先读取 `worker_config.executor_type`，并兼容当前已有的 `execution_agent_type` / `worker_runtime` 字段。
+- `executor_type = "a2a"`、`execution_agent_type = "a2a_worker"` 或 `target_ref_type = "a2a_agent"` 时派发到 `A2AWorkerExecutor`。
+- `executor_type = "app"`、`execution_agent_type = "react_worker"` 或 `target_ref_type = "app"` 继续走现有 `ReActWorkerAgent`。
+- `RouterAgentManagerService._build_worker_invocation()` 写入的 `execution_policy` 必须保留 `target_ref_type`、`target_ref_id`、`executor_type`、`execution_agent_type` 和当次 `capability_snapshot`，供任务页和历史回放使用。
+
+现有代码兼容点：
+
+- 绑定入口当前以 `worker_app_id` 为主；v2.2 必须新增按 `worker_agent_id` 绑定的路径，否则 A2A WorkerAgent 没有本地 app id 会无法绑定。
+- 任何只允许 `Agent.target_ref_type == "app"` 的 Planner 绑定、候选 Worker、requested worker 或任务详情查询逻辑，都必须改为面向 `Agent.runtime_type == "worker"`，仅在需要读取本系统 App 详情时才额外过滤 `target_ref_type == "app"`。
+- `_worker_execution_agent_type()` 不能再把非 app Worker 默认为 `react_worker`；A2A 必须明确进入 `a2a_worker` / `a2a` 分支。
+- `list_planner_worker_bindings()` 返回结构中，A2A Worker 的 `worker_app` 可以为 `null`，前端必须使用 `worker_agent` 和 `capability_summary` 展示名称、类型和能力。
+- preflight 的 `candidate_worker_ids` 使用 WorkerAgent id，不使用 app id；A2A 和内部 Worker 必须共用同一套 worker id 空间。
 
 message/send 输入：
 
 - `WorkerInvocation.task.task` 作为当前远程任务说明。
 - `WorkerInvocation.context.recent_history` 合并为文本上下文，但限制长度并脱敏。
 - `WorkerInvocation.context.input_files` 只作为文本摘要传入，不发送内部文件 URL。
-- `WorkerInvocation.context.image_urls` 在 v2.2 不转发；如输入包含图片，preflight 必须阻断不支持图片的 A2A Worker。
+- `WorkerInvocation.context.image_urls` 在 A2A 首期不转发；如输入包含图片，preflight 必须阻断不支持图片的 A2A Worker。
 
 WorkerResult 归一化：
 
@@ -867,10 +944,11 @@ trace 脱敏规则：
 - A2A Worker 详情页提供同步 Agent Card、测试消息、禁用、能力修正入口。
 - 任务页在 WorkerCall 中标识 A2A 外部调用并展示脱敏 trace。
 
-v2.2 自动化测试：
+v2.4 A2A 自动化测试：
 
 - Agent Card discover 成功并映射 `capability_summary`。
 - 注册 A2A Agent 后创建或更新对应 WorkerAgent。
+- A2A WorkerAgent 可以通过 `worker_agent_id` 绑定到 Planner，且不需要本地 `worker_app_id`。
 - 同一 Planner 能绑定内部 Worker 和 A2A Worker。
 - `WorkerRuntime` 能派发 `a2a_agent` executor。
 - A2A text `message/send` 成功后归一化为 `WorkerResult`。
@@ -880,13 +958,14 @@ v2.2 自动化测试：
 - SSRF 防护拒绝内网、metadata、非 HTTP(S) scheme。
 - Agent Card 重新同步不覆盖历史任务中的 capability snapshot。
 
-v2.2 手工验收：
+v2.4 A2A 手工验收：
 
 - 在 Planner Worker 编排区域添加外部 A2A Agent。
 - 同一个 Planner 同时绑定内部 Worker 和 A2A Worker。
 - Planner 选择 A2A Worker 后，A2A text `message/send` 调用成功。
 - 任务页能看到 A2A WorkerCall 和脱敏 trace。
 - Agent Card 重新同步后，新任务使用新快照，历史任务仍展示旧快照。
+- UI 中 A2A 可以表现为 Planner 的外部子 Agent，但详情、绑定、任务记录都显示它的 WorkerAgent 身份和 `target_ref_type = a2a_agent`。
 
 #### 7.10.3 v2.3 动态重规划
 
@@ -1224,6 +1303,8 @@ POST /apps/{planner_app_id}/planner/preflight
 - `routing_policy` 保存前必须 schema 校验。
 - preflight 诊断接口不创建 `AgentTask`，只用于配置页和调试前检查。
 - 真正任务执行时仍必须在服务端再次执行 preflight，不能信任前端诊断结果。
+- v2.2 起，Planner Worker 绑定接口必须支持按 `worker_agent_id` 绑定已存在的 WorkerAgent；`worker_app_id` 只代表本系统 App Worker 的兼容路径。v2.4 A2A 接入时复用该 `worker_agent_id` 路径。
+- 返回 Planner Worker 绑定列表时，`worker_agent` 是主对象；`worker_app` 仅在 `target_ref_type = "app"` 时存在，前端不得依赖 `worker_app` 判断绑定是否有效。
 
 #### 7.10.5 错误码和用户提示映射
 
@@ -1457,15 +1538,16 @@ v2.3 手工验收：
 3. v2.1-3：Planner descriptor 注入和 Router preflight。先只做硬阻断，不做自动重规划。已完成。
 4. v2.1-4：前端能力摘要、编排规则 JSON 编辑器和任务页 preflight 展示。已完成。
 5. v2.1-5：v1 回归和 v2.1 验收矩阵补齐。自动化回归和手工功能验收已完成，真实 session/task id 后续在 V2 回归记录中补充。
-6. v2.2-1：`a2a_agents` 迁移、模型、服务、SSRF/URL 安全校验和 Agent Card 同步。
-7. v2.2-2：A2A Agent 映射为外部 WorkerAgent，并接入现有 `AgentBinding`。
-8. v2.2-3：`A2AWorkerExecutor` 和 WorkerRuntime 派发，支持 text `message/send`。
-9. v2.2-4：A2A 前端添加/同步/测试/绑定/任务页 trace。
-10. v2.2-5：A2A 安全、协议错误和历史快照验收。
-11. v2.3-1：`RouterPlannerAgent.update_plan()` 和重规划输入输出 schema。
-12. v2.3-2：失败触发、改派、最多一次重规划和新计划二次校验。
-13. v2.3-3：任务页原计划/新计划/replan trace 展示。
-14. v2.3-4：完整 V2 回归：内部 Worker、A2A Worker、能力缺失、Worker 失败、历史任务回放。
+6. v2.2-0：主流程兼容清理。确认 Planner 绑定、候选 Worker、requested worker、任务页和 preflight 都以 WorkerAgent id 为主，消除只接受 `worker_app_id` 或 `target_ref_type = app` 的隐含限制。
+7. v2.2-1：Planner Worker 绑定接口支持 `worker_agent_id`，同时保留 `worker_app_id` 兼容内部 App Worker。
+8. v2.2-2：任务页、WorkerCall、TraceEvent 统一展示 WorkerAgent、`target_ref_type`、`executor_type` 和 capability snapshot。
+9. v2.2-3：内部 Worker 主流程回归：Planner 调试、多 Worker、能力缺失、Worker 失败、历史任务回放。
+10. v2.3-1：`RouterPlannerAgent.update_plan()` 和重规划输入输出 schema。已完成。
+11. v2.3-2：失败触发、改派、最多一次重规划和新计划二次校验。已完成。
+12. v2.3-3：任务页原计划/新计划/replan trace 展示。已完成。
+13. v2.3-4：完整主流程回归：内部 Worker、能力缺失、Worker 失败、历史任务回放。已完成。
+14. v2.4-1：A2A 专项启动条件确认：主流程回归通过，WorkerAgent id 口径稳定，executor 派发边界已落库和展示。
+15. v2.4-2：A2A Agent Card、外部 WorkerAgent 映射、A2A executor、安全和 trace 按专项实施。
 
 每个批次完成标准：
 
@@ -1514,14 +1596,14 @@ v2.3 手工验收：
 
 ## 10. v5：非 A2A executor 生态扩展
 
-目标：在 v2 已完成 `app` 和 `a2a_agent` 两类 Worker 调度后，把 WorkerRuntime 扩展为更完整的执行器生态，同时保持 Planner 协议稳定。
+目标：在 v2 主流程和后续 A2A 专项完成 `app`、`a2a_agent` 两类 Worker 调度后，把 WorkerRuntime 扩展为更完整的执行器生态，同时保持 Planner 协议稳定。
 
 执行类型演进：
 
 | target_ref_type | 状态 / 说明 |
 | --- | --- |
 | `app` | 现有本系统 WorkerAgent |
-| `a2a_agent` | v2.2 落地的外部 A2A WorkerAgent |
+| `a2a_agent` | v2.4 或后续专项落地的外部 A2A WorkerAgent |
 | `workflow` | 直接调用工作流 |
 | `mcp` | MCP 工具集合 Worker |
 | `sandbox` | 代码、浏览器、文件执行环境 |
@@ -1532,7 +1614,7 @@ v2.3 手工验收：
 - Planner 只面向 Worker descriptor、routing policy 和 `WorkerResult`。
 - WorkerRuntime 根据 `target_ref_type` 和 `worker_config.executor_type` 派发到不同 executor。
 - 每个 executor 必须把输出归一化为 `WorkerResult`。
-- A2A 已在 v2 作为外部 WorkerAgent 进入统一绑定体系，不等到 v5。
+- A2A 作为外部 WorkerAgent 进入统一绑定体系，不等到 v5；当前主流程先保留边界，具体 A2A 调用后续专项落地。
 - MCP、sandbox、api 不作为 Planner 内部协议，而是后续 Worker executor 扩展。
 
 ## 11. v6：评估、治理和生产化
@@ -1585,7 +1667,7 @@ v2.3 手工验收：
 - `llmops` 做平台控制面、运行治理和多 Agent 编排。
 - agentic 的 Planner/ReAct 思想作为运行面能力来源。
 - `llmops` 中的 PlannerAgent 编排多个独立 WorkerAgent。
-- agentic 中的 A2A 代码可作为 v2.2 的参考下限：能发现 Agent Card、能发起远程调用、能把失败作为结构化上下文返回。
+- agentic 中的 A2A 代码可作为 v2.4 A2A 专项的参考下限：能发现 Agent Card、能发起远程调用、能把失败作为结构化上下文返回。
 - `llmops` 的定稿方向是把外部 A2A Agent 表达为外部 WorkerAgent，通过 `AgentBinding` 绑定给 Planner，而不是放入插件广场，也不是作为 Planner prompt 里的普通工具。
 - agentic 中的工具、MCP、ReAct 执行经验后续可继续沉淀为 Worker executor 或 Worker capability。
 
@@ -1593,12 +1675,13 @@ v2.3 手工验收：
 
 1. v1 收尾：验收清单、任务页验证、Worker 模板、能力不足提示。
 2. v2.1 能力感知地基：`capability_summary`、routing policy、preflight、错误 taxonomy、任务页展示。
-3. v2.2 A2A 外部 Worker：Agent Card 同步、外部 WorkerAgent 映射、Planner 绑定、text `message/send` executor、调用 trace。
+3. v2.2 主流程硬化：WorkerAgent id 口径、Planner 绑定兼容、任务页和 trace 主链路。
 4. v2.3 动态重规划：`update_plan()`、失败后改派、原计划/新计划展示。
-5. v3 等待用户输入和人工审批。
-6. v4 并行 DAG。
-7. v5 非 A2A executor 生态扩展。
-8. v6 评估、治理和生产化。
+5. v2.4 A2A 外部 Worker：Agent Card 同步、外部 WorkerAgent 映射、Planner 绑定、text `message/send` executor、调用 trace。
+6. v3 等待用户输入和人工审批。
+7. v4 并行 DAG。
+8. v5 非 A2A executor 生态扩展。
+9. v6 评估、治理和生产化。
 
 当前不建议插入的大改：
 

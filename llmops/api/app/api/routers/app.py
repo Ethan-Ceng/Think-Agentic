@@ -130,10 +130,11 @@ def bind_planner_worker(
     current_user: Account = Depends(get_current_account),
     svc: RouterAgentManagerService = Depends(get_router_agent_manager_service),
 ):
-    binding = svc.bind_worker_app_to_planner(
+    binding = svc.bind_worker_to_planner(
         session,
         planner_app_id=app_id,
         worker_app_id=req.worker_app_id,
+        worker_agent_id=req.worker_agent_id,
         account=current_user,
         priority=req.priority,
         conditions=req.conditions,

@@ -10,7 +10,12 @@ from app.core.agent import AgentThought, QueueEvent
 from app.core.conversation import InvokeFrom, MessageStatus
 from app.core.exceptions import FailException, NotFoundException
 from app.core.memory.token_buffer_memory import TokenBufferMemory
-from app.domain.agent_runtime.planner import PlannerInput, PlannerWorkerDescriptor, RouterPlannerAgent
+from app.domain.agent_runtime.planner import (
+    PlannerInput,
+    PlannerReplanInput,
+    PlannerWorkerDescriptor,
+    RouterPlannerAgent,
+)
 from app.domain.agent_runtime.protocols import ArtifactRef, RouterPlan, RouterPlanStep, WorkerInvocation, WorkerResult
 from app.domain.agent_runtime.router_runtime import RouterRuntime
 from app.domain.agent_runtime.worker_runtime import WorkerRuntime
@@ -44,6 +49,17 @@ class PlannerDebugStreamEvent:
     thought: AgentThought
     conversation_id: uuid.UUID
     message_id: uuid.UUID
+
+
+@dataclass(frozen=True)
+class ReplanAttemptResult:
+    run: RouterManagerRunResult | None
+    error_code: str = ""
+    user_message: str = ""
+
+    @property
+    def applied(self) -> bool:
+        return self.run is not None
 
 
 class RouterAgentManagerService(BaseService):
@@ -402,6 +418,70 @@ class RouterAgentManagerService(BaseService):
             enabled=enabled,
         )
 
+    def bind_worker_agent_to_planner(
+        self,
+        session: Session,
+        *,
+        planner_app_id: uuid.UUID,
+        worker_agent_id: uuid.UUID,
+        account: Account,
+        priority: int = 0,
+        conditions: dict[str, Any] | None = None,
+        enabled: bool = True,
+    ) -> AgentBinding:
+        planner_agent, _ = self.create_planner_agent_from_app(
+            session,
+            tenant_id=account.id,
+            app_id=planner_app_id,
+            account=account,
+        )
+        worker_agent = self.get_worker_agent(session, account.id, worker_agent_id)
+        if worker_agent.status not in {"published", "active"}:
+            raise FailException("Worker agent must be published or active before binding")
+        return self.bind_worker(
+            session,
+            tenant_id=account.id,
+            router_agent_id=planner_agent.id,
+            worker_agent_id=worker_agent.id,
+            priority=priority,
+            conditions=conditions,
+            enabled=enabled,
+        )
+
+    def bind_worker_to_planner(
+        self,
+        session: Session,
+        *,
+        planner_app_id: uuid.UUID,
+        account: Account,
+        worker_app_id: uuid.UUID | None = None,
+        worker_agent_id: uuid.UUID | None = None,
+        priority: int = 0,
+        conditions: dict[str, Any] | None = None,
+        enabled: bool = True,
+    ) -> AgentBinding:
+        if bool(worker_app_id) == bool(worker_agent_id):
+            raise FailException("Exactly one of worker_app_id or worker_agent_id is required")
+        if worker_agent_id is not None:
+            return self.bind_worker_agent_to_planner(
+                session,
+                planner_app_id=planner_app_id,
+                worker_agent_id=worker_agent_id,
+                account=account,
+                priority=priority,
+                conditions=conditions,
+                enabled=enabled,
+            )
+        return self.bind_worker_app_to_planner(
+            session,
+            planner_app_id=planner_app_id,
+            worker_app_id=worker_app_id,
+            account=account,
+            priority=priority,
+            conditions=conditions,
+            enabled=enabled,
+        )
+
     def list_planner_worker_bindings(
         self,
         session: Session,
@@ -492,6 +572,7 @@ class RouterAgentManagerService(BaseService):
         query: str,
         account: Account,
         requested_worker_app_ids: list[uuid.UUID] | None = None,
+        requested_worker_ids: list[uuid.UUID] | None = None,
         input_file_ids: list[str] | None = None,
         image_urls: list[str] | None = None,
         raise_on_error: bool = True,
@@ -523,6 +604,7 @@ class RouterAgentManagerService(BaseService):
             planner_agent_id=planner_agent.id,
             account=account,
             requested_worker_app_ids=requested_worker_app_ids or [],
+            requested_worker_ids=requested_worker_ids or [],
         )
         user_input = {
             "query": query,
@@ -590,6 +672,7 @@ class RouterAgentManagerService(BaseService):
         query: str,
         account: Account,
         requested_worker_app_ids: list[uuid.UUID] | None = None,
+        requested_worker_ids: list[uuid.UUID] | None = None,
         input_file_ids: list[str] | None = None,
         image_urls: list[str] | None = None,
         on_task_created: Callable[[uuid.UUID], None] | None = None,
@@ -623,6 +706,7 @@ class RouterAgentManagerService(BaseService):
             planner_agent_id=planner_agent.id,
             account=account,
             requested_worker_app_ids=requested_worker_app_ids or [],
+            requested_worker_ids=requested_worker_ids or [],
         )
         user_input = {
             "query": query,
@@ -703,6 +787,7 @@ class RouterAgentManagerService(BaseService):
             payload={
                 "router_agent_id": str(planner_agent.id),
                 "worker_count": len(selected_workers),
+                "workers": self._worker_summary_payload(selected_workers),
                 "max_steps": 5,
                 "has_input_files": any(self._iter_input_file_ids(user_input)),
             },
@@ -782,9 +867,40 @@ class RouterAgentManagerService(BaseService):
 
         if preflight_result.get("status") == "failed":
             error_code, user_message = self._first_preflight_error(preflight_result)
-            self._fail_run_for_preflight(session, run=run, error_code=error_code, user_message=user_message)
-            yield emit(QueueEvent.ERROR, observation=user_message, tool="router.capability_preflight")
-            return
+            replan = self._maybe_replan(
+                session,
+                run=run,
+                router_agent=planner_agent,
+                workers=selected_workers,
+                account=account,
+                trigger="capability_preflight_failed",
+                failed_step=self._first_failed_preflight_step(run),
+                error_code=error_code,
+                user_message=user_message,
+                failure_payload={"preflight": preflight_result},
+            )
+            if replan.applied and replan.run is not None:
+                run = replan.run
+                plan = RouterPlan.model_validate(run.plan.plan_json)
+                yield emit(
+                    QueueEvent.AGENT_ACTION,
+                    observation="PlannerAgent replanned execution after preflight failure.",
+                    tool="planner.replan",
+                    tool_input=(run.plan.plan_json or {}).get("replan", {}),
+                )
+            else:
+                self._fail_run_for_preflight(
+                    session,
+                    run=run,
+                    error_code=replan.error_code or error_code,
+                    user_message=replan.user_message or user_message,
+                )
+                yield emit(
+                    QueueEvent.ERROR,
+                    observation=replan.user_message or user_message,
+                    tool="router.capability_preflight",
+                )
+                return
 
         yield emit(
             QueueEvent.AGENT_ACTION,
@@ -830,6 +946,16 @@ class RouterAgentManagerService(BaseService):
 
         step_outputs = []
         accumulated_artifacts: list[dict[str, Any]] = []
+
+        def execute_replanned_run(next_run: RouterManagerRunResult) -> RouterManagerRunResult:
+            return self.execute_manager_run_steps(
+                session,
+                run=next_run,
+                account=account,
+                _step_outputs=step_outputs,
+                _accumulated_artifacts=accumulated_artifacts,
+            )
+
         for step in run.steps:
             if stopped():
                 yield cancel_task()
@@ -839,13 +965,6 @@ class RouterAgentManagerService(BaseService):
             if self._step_preflight_failed(step):
                 error_code, user_message = self._step_preflight_error(step)
                 self.task_engine.fail_step(session, step, error_code=error_code, error_message=user_message)
-                self.task_engine.fail_task(
-                    session,
-                    run.task,
-                    error_code=error_code,
-                    error_message=user_message,
-                    final_result={"step_key": step.step_key, "preflight": step.input_json.get("preflight")},
-                )
                 self.trace_service.record(
                     session,
                     tenant_id=run.task.tenant_id,
@@ -854,6 +973,46 @@ class RouterAgentManagerService(BaseService):
                     plan=run.plan,
                     step=step,
                     payload=step.input_json.get("preflight") or {},
+                )
+                replan = self._maybe_replan(
+                    session,
+                    run=run,
+                    router_agent=planner_agent,
+                    workers=selected_workers,
+                    account=account,
+                    trigger="capability_preflight_failed",
+                    failed_step=step,
+                    error_code=error_code,
+                    user_message=user_message,
+                    failure_payload={"preflight": step.input_json.get("preflight") or {}},
+                    completed_steps=step_outputs,
+                )
+                if replan.applied and replan.run is not None:
+                    yield emit(
+                        QueueEvent.AGENT_ACTION,
+                        observation="PlannerAgent replanned execution after preflight failure.",
+                        tool="planner.replan",
+                        tool_input=(replan.run.plan.plan_json or {}).get("replan", {}),
+                    )
+                    run = execute_replanned_run(replan.run)
+                    answer = self._task_answer(run.task)
+                    if run.task.status == TaskStatus.SUCCEEDED.value:
+                        yield emit(
+                            QueueEvent.AGENT_MESSAGE,
+                            thought=answer,
+                            answer=answer,
+                            total_token_count=max(1, len(answer) // 4) if answer else 0,
+                        )
+                        yield emit(QueueEvent.AGENT_END)
+                    else:
+                        yield emit(QueueEvent.ERROR, observation=run.task.error_message, tool="planner.replan")
+                    return
+                self.task_engine.fail_task(
+                    session,
+                    run.task,
+                    error_code=replan.error_code or error_code,
+                    error_message=replan.user_message or user_message,
+                    final_result={"step_key": step.step_key, "preflight": step.input_json.get("preflight")},
                 )
                 yield emit(QueueEvent.ERROR, observation=user_message, tool="router.capability_preflight")
                 return
@@ -886,7 +1045,7 @@ class RouterAgentManagerService(BaseService):
                 task=run.task,
                 plan=run.plan,
                 step=step,
-                payload={"step_key": step.step_key, "worker_agent_id": str(worker.id)},
+                payload=self._worker_trace_payload(worker, step),
             )
             worker_call = self.task_engine.record_worker_call(
                 session,
@@ -902,12 +1061,12 @@ class RouterAgentManagerService(BaseService):
                 plan=run.plan,
                 step=step,
                 worker_call=worker_call,
-                payload={
-                    "worker_agent_id": str(worker.id),
-                    "target_ref_type": worker.target_ref_type,
-                    "target_ref_id": worker.target_ref_id,
-                    "execution_agent_type": invocation.execution_policy.get("execution_agent_type"),
-                },
+                payload=self._worker_trace_payload(
+                    worker,
+                    step,
+                    execution_agent_type=invocation.execution_policy.get("execution_agent_type"),
+                    executor_type=invocation.execution_policy.get("executor_type"),
+                ),
             )
             try:
                 worker_result = self._invoke_worker(session, worker, invocation, account)
@@ -920,24 +1079,18 @@ class RouterAgentManagerService(BaseService):
                     worker_result=worker_result,
                 )
             except Exception as exc:  # noqa: BLE001
+                error_message = str(exc)
                 self.task_engine.complete_worker_call(
                     session,
                     worker_call,
                     status=TaskStatus.FAILED,
-                    result_json={"error": str(exc)},
+                    result_json={"error": error_message},
                 )
                 self.task_engine.fail_step(
                     session,
                     step,
                     error_code="worker_execution_failed",
-                    error_message=str(exc),
-                )
-                self.task_engine.fail_task(
-                    session,
-                    run.task,
-                    error_code="worker_execution_failed",
-                    error_message=str(exc),
-                    final_result={"step_key": step.step_key},
+                    error_message=error_message,
                 )
                 self.trace_service.record(
                     session,
@@ -947,9 +1100,49 @@ class RouterAgentManagerService(BaseService):
                     plan=run.plan,
                     step=step,
                     worker_call=worker_call,
-                    payload={"step_key": step.step_key, "worker_agent_id": str(worker.id), "error": str(exc)},
+                    payload=self._worker_trace_payload(worker, step, error=error_message),
                 )
-                yield emit(QueueEvent.ERROR, observation=str(exc), tool=worker.name)
+                replan = self._maybe_replan(
+                    session,
+                    run=run,
+                    router_agent=planner_agent,
+                    workers=selected_workers,
+                    account=account,
+                    trigger="worker_failed",
+                    failed_step=step,
+                    error_code="worker_execution_failed",
+                    user_message=error_message,
+                    failure_payload={"exception": error_message},
+                    completed_steps=step_outputs,
+                )
+                if replan.applied and replan.run is not None:
+                    yield emit(
+                        QueueEvent.AGENT_ACTION,
+                        observation="PlannerAgent replanned execution after worker failure.",
+                        tool="planner.replan",
+                        tool_input=(replan.run.plan.plan_json or {}).get("replan", {}),
+                    )
+                    run = execute_replanned_run(replan.run)
+                    answer = self._task_answer(run.task)
+                    if run.task.status == TaskStatus.SUCCEEDED.value:
+                        yield emit(
+                            QueueEvent.AGENT_MESSAGE,
+                            thought=answer,
+                            answer=answer,
+                            total_token_count=max(1, len(answer) // 4) if answer else 0,
+                        )
+                        yield emit(QueueEvent.AGENT_END)
+                    else:
+                        yield emit(QueueEvent.ERROR, observation=run.task.error_message, tool="planner.replan")
+                    return
+                self.task_engine.fail_task(
+                    session,
+                    run.task,
+                    error_code=replan.error_code or "worker_execution_failed",
+                    error_message=replan.user_message or error_message,
+                    final_result={"step_key": step.step_key},
+                )
+                yield emit(QueueEvent.ERROR, observation=replan.user_message or error_message, tool=worker.name)
                 return
 
             output = self._worker_result_to_output(worker_result)
@@ -977,13 +1170,6 @@ class RouterAgentManagerService(BaseService):
                     yield emit(QueueEvent.STOP, observation=worker_result.summary or "PlannerAgent 调试已停止")
                     return
 
-                self.task_engine.fail_task(
-                    session,
-                    run.task,
-                    error_code=worker_result.error_code or "worker_execution_failed",
-                    error_message=worker_result.summary or "Worker execution failed",
-                    final_result={"step_key": step.step_key, "worker_result": output},
-                )
                 self.trace_service.record(
                     session,
                     tenant_id=run.task.tenant_id,
@@ -992,17 +1178,57 @@ class RouterAgentManagerService(BaseService):
                     plan=run.plan,
                     step=step,
                     worker_call=worker_call,
-                    payload={
-                        "step_key": step.step_key,
-                        "worker_agent_id": str(worker.id),
-                        "status": worker_result.status,
-                        "error_code": worker_result.error_code,
-                        "summary": worker_result.summary,
-                    },
+                    payload=self._worker_trace_payload(
+                        worker,
+                        step,
+                        status=worker_result.status,
+                        error_code=worker_result.error_code,
+                        summary=worker_result.summary,
+                    ),
+                )
+                replan = self._maybe_replan(
+                    session,
+                    run=run,
+                    router_agent=planner_agent,
+                    workers=selected_workers,
+                    account=account,
+                    trigger="worker_failed",
+                    failed_step=step,
+                    error_code=worker_result.error_code or "worker_execution_failed",
+                    user_message=worker_result.summary or "Worker execution failed",
+                    failure_payload={"worker_result": output},
+                    completed_steps=step_outputs,
+                )
+                if replan.applied and replan.run is not None:
+                    yield emit(
+                        QueueEvent.AGENT_ACTION,
+                        observation="PlannerAgent replanned execution after worker failure.",
+                        tool="planner.replan",
+                        tool_input=(replan.run.plan.plan_json or {}).get("replan", {}),
+                    )
+                    run = execute_replanned_run(replan.run)
+                    answer = self._task_answer(run.task)
+                    if run.task.status == TaskStatus.SUCCEEDED.value:
+                        yield emit(
+                            QueueEvent.AGENT_MESSAGE,
+                            thought=answer,
+                            answer=answer,
+                            total_token_count=max(1, len(answer) // 4) if answer else 0,
+                        )
+                        yield emit(QueueEvent.AGENT_END)
+                    else:
+                        yield emit(QueueEvent.ERROR, observation=run.task.error_message, tool="planner.replan")
+                    return
+                self.task_engine.fail_task(
+                    session,
+                    run.task,
+                    error_code=replan.error_code or worker_result.error_code or "worker_execution_failed",
+                    error_message=replan.user_message or worker_result.summary or "Worker execution failed",
+                    final_result={"step_key": step.step_key, "worker_result": output},
                 )
                 yield emit(
                     QueueEvent.ERROR,
-                    observation=worker_result.summary or "Worker execution failed",
+                    observation=replan.user_message or worker_result.summary or "Worker execution failed",
                     tool=worker.name,
                 )
                 return
@@ -1020,13 +1246,13 @@ class RouterAgentManagerService(BaseService):
                 plan=run.plan,
                 step=step,
                 worker_call=worker_call,
-                payload={
-                    "step_key": step.step_key,
-                    "worker_agent_id": str(worker.id),
-                    "answer_length": len(str(output.get("answer") or "")),
-                    "worker_result_status": worker_result.status,
-                    "artifact_count": len(step_artifacts),
-                },
+                payload=self._worker_trace_payload(
+                    worker,
+                    step,
+                    answer_length=len(str(output.get("answer") or "")),
+                    worker_result_status=worker_result.status,
+                    artifact_count=len(step_artifacts),
+                ),
             )
             self.trace_service.record(
                 session,
@@ -1035,7 +1261,7 @@ class RouterAgentManagerService(BaseService):
                 task=run.task,
                 plan=run.plan,
                 step=step,
-                payload={"step_key": step.step_key},
+                payload=self._worker_trace_payload(worker, step),
             )
             yield emit(
                 QueueEvent.AGENT_ACTION,
@@ -1216,6 +1442,7 @@ class RouterAgentManagerService(BaseService):
                         payload={
                             "step_count": len(plan.steps),
                             "worker_ids": [step.worker_id for step in plan.steps],
+                            "planned_steps": self._plan_step_payload(plan, workers),
                             "risk_level": plan.risk_assessment.get("risk_level") or "low",
                             "source": plan.risk_assessment.get("source") or "llm_planner_v1",
                         },
@@ -1245,6 +1472,8 @@ class RouterAgentManagerService(BaseService):
                 "reason": self._truncate(fallback_reason, 1000),
                 "source": "manager_rule_v1",
                 "selected_worker_ids": [step.worker_id for step in fallback_plan.steps],
+                "selected_workers": self._worker_summary_payload(workers),
+                "planned_steps": self._plan_step_payload(fallback_plan, workers),
             },
         )
         return fallback_plan
@@ -1368,10 +1597,13 @@ class RouterAgentManagerService(BaseService):
         plan: RouterPlan,
         user_input: dict[str, Any],
         preflight_result: dict[str, Any] | None = None,
+        replan_metadata: dict[str, Any] | None = None,
     ) -> RouterManagerRunResult:
         plan_json = plan.model_dump(mode="json")
         if preflight_result is not None:
             plan_json["preflight"] = preflight_result
+        if replan_metadata is not None:
+            plan_json["replan"] = self._json_ready(replan_metadata)
         preflight_by_step = self._preflight_by_step(preflight_result)
         persisted_plan = self.task_engine.create_plan(
             session,
@@ -1414,7 +1646,428 @@ class RouterAgentManagerService(BaseService):
                 "risk_level": result.plan.risk_level,
                 "plan_source": (result.plan.plan_json or {}).get("risk_assessment", {}).get("source", ""),
                 "status": result.task.status,
+                "steps": [
+                    {
+                        "step_id": str(step.id),
+                        "step_key": step.step_key,
+                        "worker_agent_id": str(step.worker_agent_id),
+                        "task": self._step_task_text(step),
+                    }
+                    for step in result.steps
+                ],
             },
+        )
+
+    def _maybe_replan(
+        self,
+        session: Session,
+        *,
+        run: RouterManagerRunResult,
+        router_agent: Agent,
+        workers: list[Agent],
+        account: Account | None,
+        trigger: str,
+        failed_step: AgentStep | None,
+        error_code: str,
+        user_message: str,
+        failure_payload: dict[str, Any] | None = None,
+        completed_steps: list[dict[str, Any]] | None = None,
+    ) -> ReplanAttemptResult:
+        if not self._replan_error_retryable(error_code):
+            self.trace_service.record(
+                session,
+                tenant_id=run.task.tenant_id,
+                event_type="planner.replan.fallback",
+                task=run.task,
+                plan=run.plan,
+                step=failed_step,
+                payload={
+                    "reason": "replan_error_not_retryable",
+                    "trigger": trigger,
+                    "error_code": error_code,
+                },
+            )
+            return ReplanAttemptResult(run=None, error_code=error_code, user_message=user_message)
+
+        routing_policy = self._routing_policy_for_agent(session, router_agent)
+        if not self._replan_policy_allows(routing_policy, trigger):
+            self.trace_service.record(
+                session,
+                tenant_id=run.task.tenant_id,
+                event_type="planner.replan.fallback",
+                task=run.task,
+                plan=run.plan,
+                step=failed_step,
+                payload={
+                    "reason": "replan_disabled_by_policy",
+                    "trigger": trigger,
+                    "error_code": error_code,
+                },
+            )
+            return ReplanAttemptResult(run=None, error_code=error_code, user_message=user_message)
+
+        attempt = self._next_replan_attempt(run.plan)
+        max_attempts = self._max_replan_attempts(routing_policy)
+        if attempt > max_attempts:
+            self.trace_service.record(
+                session,
+                tenant_id=run.task.tenant_id,
+                event_type="planner.replan.limit_exceeded",
+                task=run.task,
+                plan=run.plan,
+                step=failed_step,
+                payload={
+                    "trigger": trigger,
+                    "attempt": attempt,
+                    "max_attempts": max_attempts,
+                    "error_code": error_code,
+                },
+            )
+            return ReplanAttemptResult(
+                run=None,
+                error_code="replan_limit_exceeded",
+                user_message=user_message,
+            )
+
+        failure_payload = failure_payload or {}
+        candidate_workers = self._select_replan_workers(
+            workers,
+            trigger=trigger,
+            failed_step=failed_step,
+            failure_payload=failure_payload,
+        )
+        if not candidate_workers:
+            self.trace_service.record(
+                session,
+                tenant_id=run.task.tenant_id,
+                event_type="planner.replan.fallback",
+                task=run.task,
+                plan=run.plan,
+                step=failed_step,
+                payload={
+                    "reason": "replan_candidate_workers_missing",
+                    "trigger": trigger,
+                    "attempt": attempt,
+                    "error_code": error_code,
+                },
+            )
+            return ReplanAttemptResult(run=None, error_code=error_code, user_message=user_message)
+
+        failure = {
+            "trigger": trigger,
+            "error_code": error_code,
+            "user_message": user_message,
+            **failure_payload,
+        }
+        completed_steps = completed_steps or self._completed_step_payloads(run.steps)
+        self.trace_service.record(
+            session,
+            tenant_id=run.task.tenant_id,
+            event_type="planner.replan.requested",
+            task=run.task,
+            plan=run.plan,
+            step=failed_step,
+            payload={
+                "trigger": trigger,
+                "attempt": attempt,
+                "current_plan_id": str(run.plan.id),
+                "failed_step_id": str(failed_step.id) if failed_step else "",
+                "failed_step_key": failed_step.step_key if failed_step else "",
+                "failed_step_task": self._step_task_text(failed_step),
+                "candidate_worker_ids": [str(worker.id) for worker in candidate_workers],
+                "candidate_workers": self._worker_summary_payload(candidate_workers),
+                "error_code": error_code,
+            },
+        )
+
+        try:
+            replan = self._build_replan_or_fallback_plan(
+                session,
+                task=run.task,
+                router_agent=router_agent,
+                current_plan=run.plan,
+                failed_step=failed_step,
+                failure=failure,
+                completed_steps=completed_steps,
+                workers=candidate_workers,
+                account=account,
+                attempt=attempt,
+            )
+            preflight_result = self._preflight_plan(
+                session,
+                task=run.task,
+                router_agent=router_agent,
+                workers=candidate_workers,
+                plan=replan,
+                user_input=run.task.user_input or {},
+                account=account,
+                event_type_prefix="planner.replan.preflight",
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.trace_service.record(
+                session,
+                tenant_id=run.task.tenant_id,
+                event_type="planner.replan.fallback",
+                task=run.task,
+                plan=run.plan,
+                step=failed_step,
+                payload={
+                    "reason": "replan_generation_failed",
+                    "trigger": trigger,
+                    "attempt": attempt,
+                    "error": self._truncate(str(exc), 1000),
+                },
+            )
+            return ReplanAttemptResult(run=None, error_code=error_code, user_message=user_message)
+
+        if preflight_result.get("status") == "failed":
+            next_error_code, next_user_message = self._first_preflight_error(preflight_result)
+            self.trace_service.record(
+                session,
+                tenant_id=run.task.tenant_id,
+                event_type="planner.replan.fallback",
+                task=run.task,
+                plan=run.plan,
+                step=failed_step,
+                payload={
+                    "reason": "replan_preflight_failed",
+                    "trigger": trigger,
+                    "attempt": attempt,
+                    "error_code": next_error_code,
+                    "user_message": next_user_message,
+                },
+            )
+            return ReplanAttemptResult(run=None, error_code=next_error_code, user_message=next_user_message)
+
+        new_run = self._persist_manager_plan_for_task(
+            session,
+            task=run.task,
+            plan=replan,
+            user_input=run.task.user_input or {},
+            preflight_result=preflight_result,
+            replan_metadata={
+                "schema_version": "router_replan_v1",
+                "attempt": attempt,
+                "trigger": trigger,
+                "parent_plan_id": str(run.plan.id),
+                "failed_step_id": str(failed_step.id) if failed_step else "",
+                "failed_step_key": failed_step.step_key if failed_step else "",
+                "failed_worker_agent_id": str(failed_step.worker_agent_id) if failed_step else "",
+                "failure": failure,
+                "completed_steps": completed_steps,
+                "candidate_worker_ids": [str(worker.id) for worker in candidate_workers],
+                "preflight": preflight_result,
+            },
+        )
+        self._mark_replanned_step_failed(
+            session,
+            step=failed_step,
+            error_code=error_code,
+            user_message=user_message,
+        )
+        self._mark_plan_superseded(session, run.plan, superseded_by_plan_id=new_run.plan.id)
+        self._record_manager_run_created(session, new_run)
+        self.trace_service.record(
+            session,
+            tenant_id=run.task.tenant_id,
+            event_type="planner.replan.applied",
+            task=run.task,
+            plan=new_run.plan,
+            step=failed_step,
+            payload={
+                "attempt": attempt,
+                "trigger": trigger,
+                "parent_plan_id": str(run.plan.id),
+                "new_plan_id": str(new_run.plan.id),
+                "new_step_ids": [str(step.id) for step in new_run.steps],
+                "planned_steps": self._plan_step_payload(replan, candidate_workers),
+            },
+        )
+        return ReplanAttemptResult(run=new_run)
+
+    def _build_replan_or_fallback_plan(
+        self,
+        session: Session,
+        *,
+        task: AgentTask,
+        router_agent: Agent,
+        current_plan: AgentPlan,
+        failed_step: AgentStep | None,
+        failure: dict[str, Any],
+        completed_steps: list[dict[str, Any]],
+        workers: list[Agent],
+        account: Account | None,
+        attempt: int,
+    ) -> RouterPlan:
+        allowed_worker_ids = {str(worker.id) for worker in workers}
+        fallback_reason = ""
+        if account is None:
+            fallback_reason = "planner_account_context_missing"
+        else:
+            try:
+                model = self.language_model_service.load_language_model(
+                    self._router_model_config(session, router_agent),
+                    session=session,
+                    account=account,
+                )
+                replan_result = self.planner_agent.update_plan(
+                    model=model,
+                    replan_input=self._build_replan_input(
+                        session=session,
+                        task=task,
+                        router_agent=router_agent,
+                        current_plan=current_plan,
+                        failed_step=failed_step,
+                        failure=failure,
+                        completed_steps=completed_steps,
+                        workers=workers,
+                        attempt=attempt,
+                    ),
+                )
+                if replan_result.raw_output:
+                    self.trace_service.record(
+                        session,
+                        tenant_id=task.tenant_id,
+                        event_type="planner.replan.generated",
+                        task=task,
+                        plan=current_plan,
+                        step=failed_step,
+                        payload={
+                            "model": f"{model.provider}/{model.model}",
+                            "usage": replan_result.usage,
+                            "latency_ms": replan_result.latency_ms,
+                            "raw_output": self._truncate(replan_result.raw_output, 4000),
+                        },
+                        token_count=int(replan_result.usage.get("total_tokens") or 0),
+                        latency=float((replan_result.latency_ms or 0) / 1000),
+                    )
+                if replan_result.plan is None:
+                    fallback_reason = replan_result.error or "planner_replan_returned_empty_plan"
+                else:
+                    plan = self.router_runtime.validate_plan(
+                        replan_result.plan,
+                        allowed_worker_ids=allowed_worker_ids,
+                        router_id=str(router_agent.id),
+                        max_steps=5,
+                        allow_async=False,
+                        allow_required_approval=False,
+                    )
+                    self.trace_service.record(
+                        session,
+                        tenant_id=task.tenant_id,
+                        event_type="planner.replan.validated",
+                        task=task,
+                        plan=current_plan,
+                        step=failed_step,
+                        payload={
+                            "attempt": attempt,
+                            "step_count": len(plan.steps),
+                            "worker_ids": [step.worker_id for step in plan.steps],
+                            "planned_steps": self._plan_step_payload(plan, workers),
+                            "risk_level": plan.risk_assessment.get("risk_level") or "low",
+                            "source": plan.risk_assessment.get("source") or "llm_replan_v1",
+                        },
+                    )
+                    return plan
+            except Exception as exc:  # noqa: BLE001
+                fallback_reason = str(exc)
+
+        self.trace_service.record(
+            session,
+            tenant_id=task.tenant_id,
+            event_type="planner.replan.fallback",
+            task=task,
+            plan=current_plan,
+            step=failed_step,
+            payload={
+                "reason": self._truncate(fallback_reason, 1000),
+                "attempt": attempt,
+                "source": "manager_replan_rule_v1",
+                "selected_worker_ids": [str(worker.id) for worker in workers[:1]],
+                "selected_workers": self._worker_summary_payload(workers[:1]),
+            },
+        )
+        fallback_plan = self._build_rule_replan_plan(
+            router_agent=router_agent,
+            workers=workers,
+            user_input=task.user_input or {},
+            failed_step=failed_step,
+            attempt=attempt,
+        )
+        return self.router_runtime.validate_plan(
+            fallback_plan,
+            allowed_worker_ids=allowed_worker_ids,
+            router_id=str(router_agent.id),
+            max_steps=5,
+            allow_async=False,
+            allow_required_approval=False,
+        )
+
+    def _build_replan_input(
+        self,
+        *,
+        session: Session,
+        task: AgentTask,
+        router_agent: Agent,
+        current_plan: AgentPlan,
+        failed_step: AgentStep | None,
+        failure: dict[str, Any],
+        completed_steps: list[dict[str, Any]],
+        workers: list[Agent],
+        attempt: int,
+    ) -> PlannerReplanInput:
+        user_input = task.user_input or {}
+        return PlannerReplanInput(
+            router_id=str(router_agent.id),
+            original_query=self._user_query(user_input),
+            current_plan=current_plan.plan_json or {},
+            failed_step=self._step_failure_descriptor(failed_step),
+            failure=self._json_ready(failure),
+            completed_steps=self._json_ready(completed_steps),
+            workers=[self._planner_worker_descriptor(session=session, worker=worker) for worker in workers],
+            input_files=[],
+            recent_history=self._recent_history_from_user_input(user_input),
+            constraints={
+                "allow_parallel": False,
+                "allow_replan": True,
+                "allow_required_approval": False,
+                "execution_mode": "sync",
+                "max_steps": 5,
+            },
+            attempt=attempt,
+        )
+
+    def _build_rule_replan_plan(
+        self,
+        *,
+        router_agent: Agent,
+        workers: list[Agent],
+        user_input: dict[str, Any],
+        failed_step: AgentStep | None,
+        attempt: int,
+    ) -> RouterPlan:
+        if not workers:
+            raise FailException("Router agent has no available worker bindings for replan")
+        task_text = ""
+        if failed_step is not None and isinstance(failed_step.input_json, dict):
+            task_text = str(failed_step.input_json.get("task") or "")
+        task_text = task_text or self._user_query(user_input) or "Complete the remaining user request"
+        worker = workers[0]
+        return RouterPlan(
+            router_id=str(router_agent.id),
+            user_intent=self._user_query(user_input),
+            risk_assessment={"risk_level": "low", "source": "manager_replan_rule_v1"},
+            steps=[
+                RouterPlanStep(
+                    step_id=f"replan_{attempt}_step_1",
+                    worker_id=str(worker.id),
+                    task=task_text,
+                    dependencies=[],
+                    execution_mode="sync",
+                    required_approval=False,
+                )
+            ],
+            final_response_policy={"mode": "summarize_worker_results"},
         )
 
     def execute_manager_run_steps(
@@ -1423,6 +2076,8 @@ class RouterAgentManagerService(BaseService):
         *,
         run: RouterManagerRunResult,
         account: Account,
+        _step_outputs: list[dict[str, Any]] | None = None,
+        _accumulated_artifacts: list[dict[str, Any]] | None = None,
     ) -> RouterManagerRunResult:
         if run.task.status in {TaskStatus.SUCCEEDED.value, TaskStatus.FAILED.value, TaskStatus.CANCELLED.value}:
             return run
@@ -1446,8 +2101,8 @@ class RouterAgentManagerService(BaseService):
             )
             return run
 
-        step_outputs = []
-        accumulated_artifacts: list[dict[str, Any]] = []
+        step_outputs = list(_step_outputs or [])
+        accumulated_artifacts: list[dict[str, Any]] = list(_accumulated_artifacts or [])
         for step in run.steps:
             self.task_engine.start_step(session, step)
             if self._step_preflight_failed(step):
@@ -1469,6 +2124,40 @@ class RouterAgentManagerService(BaseService):
                     step=step,
                     payload=step.input_json.get("preflight") or {},
                 )
+                router_agent = self.get_router_agent(session, run.task.tenant_id, run.task.router_agent_id)
+                workers = self.list_bound_workers(
+                    session,
+                    tenant_id=run.task.tenant_id,
+                    router_agent_id=run.task.router_agent_id,
+                )
+                replan = self._maybe_replan(
+                    session,
+                    run=run,
+                    router_agent=router_agent,
+                    workers=workers,
+                    account=account,
+                    trigger="capability_preflight_failed",
+                    failed_step=step,
+                    error_code=error_code,
+                    user_message=user_message,
+                    failure_payload={"preflight": step.input_json.get("preflight") or {}},
+                    completed_steps=step_outputs,
+                )
+                if replan.applied and replan.run is not None:
+                    return self.execute_manager_run_steps(
+                        session,
+                        run=replan.run,
+                        account=account,
+                        _step_outputs=step_outputs,
+                        _accumulated_artifacts=accumulated_artifacts,
+                    )
+                self.task_engine.fail_task(
+                    session,
+                    run.task,
+                    error_code=replan.error_code or error_code,
+                    error_message=replan.user_message or user_message,
+                    final_result={"step_key": step.step_key, "preflight": step.input_json.get("preflight")},
+                )
                 return run
             worker = self.get_worker_agent(session, run.task.tenant_id, step.worker_agent_id)
             invocation = self._build_worker_invocation(
@@ -1486,7 +2175,7 @@ class RouterAgentManagerService(BaseService):
                 task=run.task,
                 plan=run.plan,
                 step=step,
-                payload={"step_key": step.step_key, "worker_agent_id": str(worker.id)},
+                payload=self._worker_trace_payload(worker, step),
             )
             worker_call = self.task_engine.record_worker_call(
                 session,
@@ -1502,12 +2191,12 @@ class RouterAgentManagerService(BaseService):
                 plan=run.plan,
                 step=step,
                 worker_call=worker_call,
-                payload={
-                    "worker_agent_id": str(worker.id),
-                    "target_ref_type": worker.target_ref_type,
-                    "target_ref_id": worker.target_ref_id,
-                    "execution_agent_type": invocation.execution_policy.get("execution_agent_type"),
-                },
+                payload=self._worker_trace_payload(
+                    worker,
+                    step,
+                    execution_agent_type=invocation.execution_policy.get("execution_agent_type"),
+                    executor_type=invocation.execution_policy.get("executor_type"),
+                ),
             )
             try:
                 worker_result = self._invoke_worker(session, worker, invocation, account)
@@ -1520,24 +2209,18 @@ class RouterAgentManagerService(BaseService):
                     worker_result=worker_result,
                 )
             except Exception as exc:
+                error_message = str(exc)
                 self.task_engine.complete_worker_call(
                     session,
                     worker_call,
                     status=TaskStatus.FAILED,
-                    result_json={"error": str(exc)},
+                    result_json={"error": error_message},
                 )
                 self.task_engine.fail_step(
                     session,
                     step,
                     error_code="worker_execution_failed",
-                    error_message=str(exc),
-                )
-                self.task_engine.fail_task(
-                    session,
-                    run.task,
-                    error_code="worker_execution_failed",
-                    error_message=str(exc),
-                    final_result={"step_key": step.step_key},
+                    error_message=error_message,
                 )
                 self.trace_service.record(
                     session,
@@ -1547,21 +2230,52 @@ class RouterAgentManagerService(BaseService):
                     plan=run.plan,
                     step=step,
                     worker_call=worker_call,
-                    payload={
-                        "step_key": step.step_key,
-                        "worker_agent_id": str(worker.id),
-                        "error": str(exc),
-                    },
+                    payload=self._worker_trace_payload(worker, step, error=error_message),
+                )
+                router_agent = self.get_router_agent(session, run.task.tenant_id, run.task.router_agent_id)
+                workers = self.list_bound_workers(
+                    session,
+                    tenant_id=run.task.tenant_id,
+                    router_agent_id=run.task.router_agent_id,
+                )
+                replan = self._maybe_replan(
+                    session,
+                    run=run,
+                    router_agent=router_agent,
+                    workers=workers,
+                    account=account,
+                    trigger="worker_failed",
+                    failed_step=step,
+                    error_code="worker_execution_failed",
+                    user_message=error_message,
+                    failure_payload={"exception": error_message},
+                    completed_steps=step_outputs,
+                )
+                if replan.applied and replan.run is not None:
+                    return self.execute_manager_run_steps(
+                        session,
+                        run=replan.run,
+                        account=account,
+                        _step_outputs=step_outputs,
+                        _accumulated_artifacts=accumulated_artifacts,
+                    )
+                self.task_engine.fail_task(
+                    session,
+                    run.task,
+                    error_code=replan.error_code or "worker_execution_failed",
+                    error_message=replan.user_message or error_message,
+                    final_result={"step_key": step.step_key},
                 )
                 return run
 
             output = self._worker_result_to_output(worker_result)
             self._record_agent_events(session, run=run, step=step, worker_call=worker_call, worker_result=worker_result)
             if worker_result.status != TaskStatus.SUCCEEDED.value:
+                terminal_status = self._worker_terminal_status(worker_result)
                 self.task_engine.complete_worker_call(
                     session,
                     worker_call,
-                    status=self._worker_terminal_status(worker_result),
+                    status=terminal_status,
                     result_json=output,
                 )
                 self.task_engine.fail_step(
@@ -1570,13 +2284,6 @@ class RouterAgentManagerService(BaseService):
                     error_code=worker_result.error_code or "worker_execution_failed",
                     error_message=worker_result.summary or "Worker execution failed",
                 )
-                self.task_engine.fail_task(
-                    session,
-                    run.task,
-                    error_code=worker_result.error_code or "worker_execution_failed",
-                    error_message=worker_result.summary or "Worker execution failed",
-                    final_result={"step_key": step.step_key, "worker_result": output},
-                )
                 self.trace_service.record(
                     session,
                     tenant_id=run.task.tenant_id,
@@ -1585,13 +2292,53 @@ class RouterAgentManagerService(BaseService):
                     plan=run.plan,
                     step=step,
                     worker_call=worker_call,
-                    payload={
-                        "step_key": step.step_key,
-                        "worker_agent_id": str(worker.id),
-                        "status": worker_result.status,
-                        "error_code": worker_result.error_code,
-                        "summary": worker_result.summary,
-                    },
+                    payload=self._worker_trace_payload(
+                        worker,
+                        step,
+                        status=worker_result.status,
+                        error_code=worker_result.error_code,
+                        summary=worker_result.summary,
+                    ),
+                )
+                if terminal_status != TaskStatus.CANCELLED:
+                    router_agent = self.get_router_agent(session, run.task.tenant_id, run.task.router_agent_id)
+                    workers = self.list_bound_workers(
+                        session,
+                        tenant_id=run.task.tenant_id,
+                        router_agent_id=run.task.router_agent_id,
+                    )
+                    replan = self._maybe_replan(
+                        session,
+                        run=run,
+                        router_agent=router_agent,
+                        workers=workers,
+                        account=account,
+                        trigger="worker_failed",
+                        failed_step=step,
+                        error_code=worker_result.error_code or "worker_execution_failed",
+                        user_message=worker_result.summary or "Worker execution failed",
+                        failure_payload={"worker_result": output},
+                        completed_steps=step_outputs,
+                    )
+                    if replan.applied and replan.run is not None:
+                        return self.execute_manager_run_steps(
+                            session,
+                            run=replan.run,
+                            account=account,
+                            _step_outputs=step_outputs,
+                            _accumulated_artifacts=accumulated_artifacts,
+                        )
+                    error_code = replan.error_code or worker_result.error_code or "worker_execution_failed"
+                    error_message = replan.user_message or worker_result.summary or "Worker execution failed"
+                else:
+                    error_code = worker_result.error_code or "worker_execution_failed"
+                    error_message = worker_result.summary or "Worker execution failed"
+                self.task_engine.fail_task(
+                    session,
+                    run.task,
+                    error_code=error_code,
+                    error_message=error_message,
+                    final_result={"step_key": step.step_key, "worker_result": output},
                 )
                 return run
 
@@ -1608,13 +2355,13 @@ class RouterAgentManagerService(BaseService):
                 plan=run.plan,
                 step=step,
                 worker_call=worker_call,
-                payload={
-                    "step_key": step.step_key,
-                    "worker_agent_id": str(worker.id),
-                    "answer_length": len(str(output.get("answer") or "")),
-                    "worker_result_status": worker_result.status,
-                    "artifact_count": len(step_artifacts),
-                },
+                payload=self._worker_trace_payload(
+                    worker,
+                    step,
+                    answer_length=len(str(output.get("answer") or "")),
+                    worker_result_status=worker_result.status,
+                    artifact_count=len(step_artifacts),
+                ),
             )
             self.trace_service.record(
                 session,
@@ -1623,7 +2370,7 @@ class RouterAgentManagerService(BaseService):
                 task=run.task,
                 plan=run.plan,
                 step=step,
-                payload={"step_key": step.step_key},
+                payload=self._worker_trace_payload(worker, step),
             )
 
         self.task_engine.succeed_task(
@@ -1678,6 +2425,7 @@ class RouterAgentManagerService(BaseService):
             payload={
                 "router_agent_id": str(router_agent_id),
                 "worker_count": len(selected_workers),
+                "workers": self._worker_summary_payload(selected_workers),
                 "max_steps": 5,
                 "has_input_files": any(self._iter_input_file_ids(user_input)),
             },
@@ -1709,7 +2457,26 @@ class RouterAgentManagerService(BaseService):
         self._record_manager_run_created(session, result)
         if preflight_result.get("status") == "failed":
             error_code, user_message = self._first_preflight_error(preflight_result)
-            self._fail_run_for_preflight(session, run=result, error_code=error_code, user_message=user_message)
+            replan = self._maybe_replan(
+                session,
+                run=result,
+                router_agent=router,
+                workers=selected_workers,
+                account=account,
+                trigger="capability_preflight_failed",
+                failed_step=self._first_failed_preflight_step(result),
+                error_code=error_code,
+                user_message=user_message,
+                failure_payload={"preflight": preflight_result},
+            )
+            if replan.applied:
+                return replan.run
+            self._fail_run_for_preflight(
+                session,
+                run=result,
+                error_code=replan.error_code or error_code,
+                user_message=replan.user_message or user_message,
+            )
         return result
 
     def get_router_agent(self, session: Session, tenant_id: uuid.UUID, agent_id: uuid.UUID) -> Agent:
@@ -1940,10 +2707,12 @@ class RouterAgentManagerService(BaseService):
         planner_agent_id: uuid.UUID,
         account: Account,
         requested_worker_app_ids: list[uuid.UUID],
+        requested_worker_ids: list[uuid.UUID] | None = None,
     ) -> list[uuid.UUID] | None:
-        if not requested_worker_app_ids:
+        if not requested_worker_app_ids and not requested_worker_ids:
             return None
         requested_app_ids = {str(app_id) for app_id in requested_worker_app_ids}
+        requested_agent_ids = {str(agent_id) for agent_id in requested_worker_ids or []}
         rows = (
             session.query(AgentBinding, Agent)
             .join(Agent, AgentBinding.worker_agent_id == Agent.id)
@@ -1953,18 +2722,162 @@ class RouterAgentManagerService(BaseService):
                 AgentBinding.enabled.is_(True),
                 Agent.tenant_id == account.id,
                 Agent.runtime_type == "worker",
-                Agent.target_ref_type == "app",
             )
             .all()
         )
-        worker_agent_ids = [
-            worker.id
-            for _, worker in rows
-            if str(worker.target_ref_id) in requested_app_ids
-        ]
-        if len(worker_agent_ids) != len(requested_app_ids):
+        worker_agent_ids = []
+        matched_app_ids: set[str] = set()
+        matched_agent_ids: set[str] = set()
+        for _, worker in rows:
+            worker_id = str(worker.id)
+            app_id = str(worker.target_ref_id) if worker.target_ref_type == "app" else ""
+            if worker_id in requested_agent_ids:
+                worker_agent_ids.append(worker.id)
+                matched_agent_ids.add(worker_id)
+            if app_id in requested_app_ids:
+                worker_agent_ids.append(worker.id)
+                matched_app_ids.add(app_id)
+        if len(matched_app_ids) != len(requested_app_ids):
             raise FailException("Requested worker apps must be enabled planner bindings")
+        if len(matched_agent_ids) != len(requested_agent_ids):
+            raise FailException("Requested worker agents must be enabled planner bindings")
+        worker_agent_ids = list(dict.fromkeys(worker_agent_ids))
         return worker_agent_ids
+
+    @staticmethod
+    def _user_query(user_input: dict[str, Any]) -> str:
+        return str(user_input.get("query") or user_input.get("input") or user_input.get("message") or "")
+
+    @staticmethod
+    def _replan_policy_allows(routing_policy: dict[str, Any], trigger: str) -> bool:
+        fallback_policy = (
+            routing_policy.get("fallback_policy") if isinstance(routing_policy.get("fallback_policy"), dict) else {}
+        )
+        if trigger == "worker_failed":
+            return fallback_policy.get("on_worker_failed") == "replan_once"
+        if trigger == "capability_preflight_failed":
+            return fallback_policy.get("on_preflight_failed") == "replan_once"
+        return False
+
+    @staticmethod
+    def _replan_error_retryable(error_code: str) -> bool:
+        non_retryable = {
+            "external_agent_auth_required",
+            "replan_limit_exceeded",
+        }
+        return error_code not in non_retryable
+
+    @staticmethod
+    def _max_replan_attempts(routing_policy: dict[str, Any]) -> int:
+        fallback_policy = (
+            routing_policy.get("fallback_policy") if isinstance(routing_policy.get("fallback_policy"), dict) else {}
+        )
+        raw_value = fallback_policy.get("max_replan_attempts", fallback_policy.get("max_replans", 1))
+        try:
+            return max(0, int(raw_value))
+        except (TypeError, ValueError):
+            return 1
+
+    @staticmethod
+    def _next_replan_attempt(plan: AgentPlan) -> int:
+        plan_json = plan.plan_json if isinstance(plan.plan_json, dict) else {}
+        replan = plan_json.get("replan") if isinstance(plan_json.get("replan"), dict) else {}
+        try:
+            return int(replan.get("attempt") or 0) + 1
+        except (TypeError, ValueError):
+            return 1
+
+    @staticmethod
+    def _plan_attempt(plan: AgentPlan) -> int:
+        plan_json = plan.plan_json if isinstance(plan.plan_json, dict) else {}
+        replan = plan_json.get("replan") if isinstance(plan_json.get("replan"), dict) else {}
+        try:
+            return int(replan.get("attempt") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _select_replan_workers(
+        workers: list[Agent],
+        *,
+        trigger: str,
+        failed_step: AgentStep | None,
+        failure_payload: dict[str, Any],
+    ) -> list[Agent]:
+        preflight = failure_payload.get("preflight") if isinstance(failure_payload.get("preflight"), dict) else {}
+        suggested_worker_ids = preflight.get("suggested_worker_ids") or failure_payload.get("suggested_worker_ids")
+        if isinstance(suggested_worker_ids, list) and suggested_worker_ids:
+            suggested = {str(worker_id) for worker_id in suggested_worker_ids}
+            return [worker for worker in workers if str(worker.id) in suggested]
+        if trigger == "worker_failed" and failed_step is not None:
+            return [worker for worker in workers if str(worker.id) != str(failed_step.worker_agent_id)]
+        return workers
+
+    @staticmethod
+    def _completed_step_payloads(steps: list[AgentStep]) -> list[dict[str, Any]]:
+        payloads = []
+        for step in steps:
+            if step.status != TaskStatus.SUCCEEDED.value:
+                continue
+            payloads.append(
+                {
+                    "step_id": str(step.id),
+                    "step_key": step.step_key,
+                    "worker_agent_id": str(step.worker_agent_id),
+                    "output": step.output_json or {},
+                }
+            )
+        return payloads
+
+    @staticmethod
+    def _step_failure_descriptor(step: AgentStep | None) -> dict[str, Any]:
+        if step is None:
+            return {}
+        input_json = step.input_json if isinstance(step.input_json, dict) else {}
+        return {
+            "step_id": str(step.id),
+            "step_key": step.step_key,
+            "worker_agent_id": str(step.worker_agent_id),
+            "status": step.status,
+            "task": input_json.get("task") or "",
+            "preflight": input_json.get("preflight") if isinstance(input_json.get("preflight"), dict) else {},
+        }
+
+    def _mark_replanned_step_failed(
+        self,
+        session: Session,
+        *,
+        step: AgentStep | None,
+        error_code: str,
+        user_message: str,
+    ) -> None:
+        if step is None or step.status in {
+            TaskStatus.SUCCEEDED.value,
+            TaskStatus.FAILED.value,
+            TaskStatus.CANCELLED.value,
+        }:
+            return
+        self.task_engine.fail_step(session, step, error_code=error_code, error_message=user_message)
+
+    def _mark_plan_superseded(
+        self,
+        session: Session,
+        plan: AgentPlan,
+        *,
+        superseded_by_plan_id: uuid.UUID,
+    ) -> None:
+        plan_json = dict(plan.plan_json or {})
+        existing_replan = plan_json.get("replan")
+        replan = dict(existing_replan) if isinstance(existing_replan, dict) else {}
+        replan["superseded_by_plan_id"] = str(superseded_by_plan_id)
+        plan_json["replan"] = replan
+        self.update(session, plan, status="superseded", plan_json=plan_json)
+
+    def _first_failed_preflight_step(self, run: RouterManagerRunResult) -> AgentStep | None:
+        for step in run.steps:
+            if self._step_preflight_failed(step):
+                return step
+        return None
 
     @staticmethod
     def _task_answer(task: AgentTask) -> str:
@@ -1996,6 +2909,54 @@ class RouterAgentManagerService(BaseService):
             worker_name = worker_names.get(str(step.worker_id), step.worker_id)
             lines.append(f"{index}. {worker_name}: {step.task}")
         return f"计划来源: {source}\n" + "\n".join(lines)
+
+    @staticmethod
+    def _plan_step_payload(plan: RouterPlan, workers: list[Agent]) -> list[dict[str, Any]]:
+        worker_map = {str(worker.id): worker for worker in workers}
+        return [
+            {
+                "step_id": step.step_id,
+                "worker_id": str(step.worker_id),
+                "worker_name": worker_map.get(str(step.worker_id)).name if worker_map.get(str(step.worker_id)) else "",
+                "task": step.task,
+                "dependencies": list(step.dependencies or []),
+                "execution_mode": step.execution_mode,
+                "required_approval": bool(step.required_approval),
+            }
+            for step in plan.steps
+        ]
+
+    @staticmethod
+    def _worker_summary_payload(workers: list[Agent]) -> list[dict[str, Any]]:
+        return [
+            {
+                "id": str(worker.id),
+                "name": worker.name,
+                "runtime_type": worker.runtime_type,
+                "target_ref_type": worker.target_ref_type,
+                "target_ref_id": worker.target_ref_id,
+            }
+            for worker in workers
+        ]
+
+    @classmethod
+    def _worker_trace_payload(cls, worker: Agent, step: AgentStep, **extra: Any) -> dict[str, Any]:
+        payload = {
+            "step_key": step.step_key,
+            "task": cls._step_task_text(step),
+            "worker_agent_id": str(worker.id),
+            "worker_name": worker.name,
+            "target_ref_type": worker.target_ref_type,
+            "target_ref_id": worker.target_ref_id,
+        }
+        payload.update(extra)
+        return payload
+
+    @staticmethod
+    def _step_task_text(step: AgentStep | None) -> str:
+        if step is None or not isinstance(step.input_json, dict):
+            return ""
+        return str(step.input_json.get("task") or "")
 
     @staticmethod
     def _worker_app_map(session: Session, workers: list[Agent], account_id: uuid.UUID) -> dict[str, App]:
@@ -2065,15 +3026,18 @@ class RouterAgentManagerService(BaseService):
         plan: RouterPlan,
         user_input: dict[str, Any],
         account: Account | None,
+        event_type_prefix: str = "router.capability_preflight",
     ) -> dict[str, Any]:
         self.trace_service.record(
             session,
             tenant_id=task.tenant_id,
-            event_type="router.capability_preflight.started",
+            event_type=f"{event_type_prefix}.started",
             task=task,
             payload={
                 "router_agent_id": str(router_agent.id),
                 "worker_ids": [str(worker.id) for worker in workers],
+                "workers": self._worker_summary_payload(workers),
+                "planned_steps": self._plan_step_payload(plan, workers),
                 "step_count": len(plan.steps),
             },
         )
@@ -2086,9 +3050,13 @@ class RouterAgentManagerService(BaseService):
         self.trace_service.record(
             session,
             tenant_id=task.tenant_id,
-            event_type=f"router.capability_preflight.{result.get('status')}",
+            event_type=f"{event_type_prefix}.{result.get('status')}",
             task=task,
-            payload=result,
+            payload={
+                **result,
+                "workers": self._worker_summary_payload(workers),
+                "planned_steps": self._plan_step_payload(plan, workers),
+            },
         )
         return result
 
@@ -2252,6 +3220,8 @@ class RouterAgentManagerService(BaseService):
             },
             execution_policy={
                 "execution_agent_type": self._worker_execution_agent_type(worker),
+                "executor_type": self._worker_executor_type(worker),
+                "plan_attempt": self._plan_attempt(run.plan),
                 "target_ref_type": worker.target_ref_type,
                 "target_ref_id": worker.target_ref_id,
                 "capability_snapshot": preflight.get("capability_snapshot", {}) if isinstance(preflight, dict) else {},
@@ -2462,9 +3432,19 @@ class RouterAgentManagerService(BaseService):
 
     @staticmethod
     def _worker_execution_agent_type(worker: Agent) -> str:
+        if worker.target_ref_type == "a2a_agent":
+            return "a2a_worker"
         if worker.target_ref_type == "app":
             return "react_worker"
-        return "react_worker"
+        return "unsupported_worker"
+
+    @staticmethod
+    def _worker_executor_type(worker: Agent) -> str:
+        if worker.target_ref_type == "a2a_agent":
+            return "a2a"
+        if worker.target_ref_type == "app":
+            return "app"
+        return str(worker.target_ref_type or "unknown")
 
     @staticmethod
     def _worker_result_to_output(worker_result: WorkerResult) -> dict[str, Any]:

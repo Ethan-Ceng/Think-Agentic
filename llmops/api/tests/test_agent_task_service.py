@@ -371,5 +371,12 @@ def test_agent_task_service_attaches_task_execution_to_conversation_message() ->
     assert message_task["steps"][0]["id"] == step.id
     assert message_task["worker_calls"][0]["id"] == worker_call.id
     assert any(event["event_type"] == "worker.call.succeeded" for event in message_detail["trace_events"])
+    task_trace = next(
+        event for event in message_detail["trace_events"] if event["event_type"] == "worker.call.succeeded"
+    )
+    assert task_trace["agent"]["name"] == "Router"
+    assert task_trace["step"]["step_key"] == "worker_1"
+    assert task_trace["step"]["task"] == "hello"
+    assert task_trace["worker_call"]["id"] == worker_call.id
     assert detail["input_files"][0]["name"] == "input.txt"
     assert detail["artifacts"][0]["name"] == "result.txt"

@@ -1,4 +1,5 @@
 import uuid
+from types import SimpleNamespace
 
 from app.core.agent import AgentThought, QueueEvent
 from app.domain.agent_runtime.protocols import WorkerInvocation
@@ -81,3 +82,43 @@ def test_worker_runtime_invokes_app_backed_react_worker_agent() -> None:
     assert result.evidence[0]["observation"] == "now"
     assert result.used_capabilities == ["current_time"]
     assert [event.event_type for event in result.events] == ["agent_action", "agent_message", "agent_end"]
+
+
+def test_worker_runtime_maps_executor_type_to_execution_agent_type() -> None:
+    worker = Agent(
+        id=uuid.uuid4(),
+        tenant_id=uuid.uuid4(),
+        name="Worker",
+        runtime_type="worker",
+        product_category="custom",
+        status="published",
+        target_ref_type="app",
+        target_ref_id=str(uuid.uuid4()),
+    )
+
+    assert (
+        WorkerRuntime._execution_agent_type(
+            worker,
+            SimpleNamespace(worker_config={"executor_type": "app"}),
+        )
+        == "react_worker"
+    )
+    assert (
+        WorkerRuntime._execution_agent_type(
+            worker,
+            SimpleNamespace(worker_config={"executor_type": "a2a"}),
+        )
+        == "a2a_worker"
+    )
+
+    a2a_worker = Agent(
+        id=uuid.uuid4(),
+        tenant_id=uuid.uuid4(),
+        name="External Worker",
+        runtime_type="worker",
+        product_category="a2a",
+        status="published",
+        target_ref_type="a2a_agent",
+        target_ref_id=str(uuid.uuid4()),
+    )
+    assert WorkerRuntime._execution_agent_type(a2a_worker, None) == "a2a_worker"

@@ -181,7 +181,16 @@ class AgentTaskService(BaseService):
             "steps": [self._step_response(step, agent_map) for step in steps],
             "worker_calls": [self._worker_call_response(call, agent_map) for call in worker_calls],
             "capability_calls": [self._capability_call_response(call) for call in capability_calls],
-            "trace_events": [self._trace_event_response(event) for event in trace_events],
+            "trace_events": [
+                self._trace_event_response(
+                    event,
+                    agent_map=agent_map,
+                    task_map={task.id: task},
+                    step_map={step.id: step for step in steps},
+                    worker_call_map={call.id: call for call in worker_calls},
+                )
+                for event in trace_events
+            ],
             "input_files": input_files,
             "artifacts": artifacts,
         }
@@ -557,7 +566,16 @@ class AgentTaskService(BaseService):
                     "steps": [self._step_response(step, agent_map) for step in task_steps],
                     "worker_calls": [self._worker_call_response(call, agent_map) for call in task_calls],
                     "capability_calls": [self._capability_call_response(call) for call in task_capability_calls],
-                    "trace_events": [self._trace_event_response(event) for event in task_trace_events],
+                    "trace_events": [
+                        self._trace_event_response(
+                            event,
+                            agent_map=agent_map,
+                            task_map={task.id: task},
+                            step_map={step.id: step for step in task_steps},
+                            worker_call_map={call.id: call for call in task_calls},
+                        )
+                        for event in task_trace_events
+                    ],
                     "input_files": self._collect_input_files(task, task_calls),
                     "artifacts": artifacts,
                 }
@@ -711,6 +729,9 @@ class AgentTaskService(BaseService):
                 "answer": thought.answer,
                 "position": thought.position,
             },
+            "agent": None,
+            "step": None,
+            "worker_call": None,
             "token_count": thought.total_token_count,
             "cost": float(thought.total_price or 0),
             "latency": float(thought.latency or 0),
@@ -846,7 +867,26 @@ class AgentTaskService(BaseService):
             "updated_at": self._ts(call.updated_at),
         }
 
-    def _trace_event_response(self, event: TraceEvent) -> dict[str, Any]:
+    def _trace_event_response(
+        self,
+        event: TraceEvent,
+        *,
+        agent_map: dict[UUID, Agent] | None = None,
+        task_map: dict[UUID, AgentTask] | None = None,
+        step_map: dict[UUID, AgentStep] | None = None,
+        worker_call_map: dict[UUID, WorkerCall] | None = None,
+    ) -> dict[str, Any]:
+        payload = event.payload or {}
+        step = step_map.get(event.step_id) if event.step_id and step_map else None
+        worker_call = worker_call_map.get(event.worker_call_id) if event.worker_call_id and worker_call_map else None
+        agent = self._trace_agent(
+            event,
+            payload=payload,
+            agent_map=agent_map or {},
+            task_map=task_map or {},
+            step=step,
+            worker_call=worker_call,
+        )
         return {
             "id": event.id,
             "trace_id": event.trace_id,
@@ -857,12 +897,74 @@ class AgentTaskService(BaseService):
             "capability_call_id": event.capability_call_id,
             "approval_id": event.approval_id,
             "event_type": event.event_type,
-            "payload": event.payload or {},
+            "payload": payload,
+            "agent": self._agent_response(agent),
+            "step": self._trace_step_response(step, agent_map or {}),
+            "worker_call": self._trace_worker_call_response(worker_call, agent_map or {}),
             "token_count": event.token_count,
             "cost": float(event.cost or 0),
             "latency": float(event.latency or 0),
             "created_at": self._ts(event.created_at),
             "updated_at": self._ts(event.updated_at),
+        }
+
+    @classmethod
+    def _trace_agent(
+        cls,
+        event: TraceEvent,
+        *,
+        payload: dict[str, Any],
+        agent_map: dict[UUID, Agent],
+        task_map: dict[UUID, AgentTask],
+        step: AgentStep | None,
+        worker_call: WorkerCall | None,
+    ) -> Agent | None:
+        if worker_call is not None:
+            return agent_map.get(worker_call.worker_agent_id)
+        if step is not None:
+            return agent_map.get(step.worker_agent_id)
+        for key in ("worker_agent_id", "worker_id", "router_agent_id", "router_id"):
+            agent = cls._agent_from_map(agent_map, payload.get(key))
+            if agent is not None:
+                return agent
+        task = task_map.get(event.task_id) if event.task_id else None
+        return agent_map.get(task.router_agent_id) if task is not None else None
+
+    @staticmethod
+    def _agent_from_map(agent_map: dict[UUID, Agent], raw_id: Any) -> Agent | None:
+        if not raw_id:
+            return None
+        try:
+            return agent_map.get(UUID(str(raw_id)))
+        except (TypeError, ValueError):
+            return None
+
+    def _trace_step_response(self, step: AgentStep | None, agent_map: dict[UUID, Agent]) -> dict[str, Any] | None:
+        if step is None:
+            return None
+        input_json = step.input_json if isinstance(step.input_json, dict) else {}
+        return {
+            "id": step.id,
+            "plan_id": step.plan_id,
+            "step_key": step.step_key,
+            "task": str(input_json.get("task") or ""),
+            "status": step.status,
+            "worker_agent": self._agent_response(agent_map.get(step.worker_agent_id)),
+        }
+
+    def _trace_worker_call_response(
+        self,
+        worker_call: WorkerCall | None,
+        agent_map: dict[UUID, Agent],
+    ) -> dict[str, Any] | None:
+        if worker_call is None:
+            return None
+        return {
+            "id": worker_call.id,
+            "status": worker_call.status,
+            "worker_agent": self._agent_response(agent_map.get(worker_call.worker_agent_id)),
+            "token_count": worker_call.token_count,
+            "latency": float(worker_call.latency or 0),
         }
 
     @staticmethod

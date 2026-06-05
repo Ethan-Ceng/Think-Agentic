@@ -6,12 +6,17 @@ import pytest
 from app.core.agent import AgentThought, QueueEvent
 from app.core.exceptions import FailException
 from app.core.language_model.entities import BaseLanguageModel
-from app.domain.agent_runtime.planner import PlannerResult
+from app.domain.agent_runtime.planner import (
+    PlannerReplanInput,
+    PlannerResult,
+    PlannerWorkerDescriptor,
+    RouterPlannerAgent,
+)
 from app.domain.agent_runtime.protocols import ArtifactRef, RouterPlan, RouterPlanStep, WorkerResult
 from app.domain.agent_runtime.router_runtime import RouterRuntime
 from app.models.account import Account
 from app.models.agent import Agent
-from app.models.task import WorkerCall
+from app.models.task import AgentPlan, WorkerCall
 from app.models.trace import TraceEvent
 from app.services.router_agent_manager_service import RouterAgentManagerService
 from app.services.task_engine_service import TaskStatus
@@ -99,6 +104,119 @@ def test_manager_plan_selects_bound_workers_and_validates_worker_scope() -> None
     assert len(plan.steps) == 1
     assert plan.steps[0].worker_id == str(second_worker.id)
     assert plan.steps[0].task == "prepare a launch brief"
+
+
+def test_router_planner_update_plan_normalizes_replan_output() -> None:
+    router_agent_id = uuid.uuid4()
+    replacement_worker_id = uuid.uuid4()
+
+    class FakeChatRuntime:
+        def create_response(self, **kwargs):  # noqa: ANN001, ANN003
+            assert kwargs["response_format"] == {"type": "json_object"}
+            assert "Create a replacement RouterPlan" in kwargs["query"]
+            return SimpleNamespace(
+                content=(
+                    '{"schema_version":"router_plan_v1",'
+                    f'"router_id":"{router_agent_id}",'
+                    '"user_intent":"recover",'
+                    '"risk_assessment":{"risk_level":"low","source":"llm_planner_v1"},'
+                    f'"steps":[{{"step_id":"repair","worker_id":"{replacement_worker_id}",'
+                    '"task":"recover with replacement","dependencies":["old_step"]}],'
+                    '"final_response_policy":{"mode":"summarize_worker_results"}}'
+                ),
+                usage={"total_tokens": 10},
+            )
+
+    planner = RouterPlannerAgent(chat_runtime=FakeChatRuntime())
+    result = planner.update_plan(
+        model=BaseLanguageModel(provider="fake", model="planner", parameters={}),
+        replan_input=PlannerReplanInput(
+            router_id=str(router_agent_id),
+            original_query="recover",
+            current_plan={"steps": []},
+            failed_step={"step_key": "old_step"},
+            failure={"error_code": "worker_execution_failed"},
+            completed_steps=[],
+            workers=[
+                PlannerWorkerDescriptor(
+                    worker_id=str(replacement_worker_id),
+                    name="Replacement",
+                    description="",
+                    runtime_type="worker",
+                    product_category="custom",
+                    target_ref_type="app",
+                    target_ref_id=str(uuid.uuid4()),
+                )
+            ],
+            attempt=2,
+        ),
+    )
+
+    assert result.succeeded
+    assert result.plan is not None
+    assert result.plan.risk_assessment["source"] == "llm_replan_v1"
+    assert result.plan.steps[0].step_id == "replan_2_step_1"
+    assert result.plan.steps[0].dependencies == []
+
+
+def test_bind_worker_agent_to_planner_binds_existing_worker_agent() -> None:
+    planner_app_id = uuid.uuid4()
+    worker_agent_id = uuid.uuid4()
+    account = Account(id=uuid.uuid4(), name="tester", email="tester@example.test")
+    router_agent = Agent(
+        id=uuid.uuid4(),
+        tenant_id=account.id,
+        name="Planner",
+        runtime_type="router",
+        product_category="planner",
+        status="published",
+    )
+    worker_agent = Agent(
+        id=worker_agent_id,
+        tenant_id=account.id,
+        name="Worker",
+        runtime_type="worker",
+        product_category="custom",
+        status="published",
+    )
+
+    class FakeRouterService(RouterAgentManagerService):
+        def __init__(self) -> None:
+            super().__init__()
+            self.bound_args = None
+
+        def create_planner_agent_from_app(self, session, *, tenant_id, app_id, account, status=None):  # noqa: ANN001
+            assert tenant_id == account.id
+            assert app_id == planner_app_id
+            return router_agent, None
+
+        def get_worker_agent(self, session, tenant_id, agent_id):  # noqa: ANN001
+            assert tenant_id == account.id
+            assert agent_id == worker_agent_id
+            return worker_agent
+
+        def bind_worker(self, session, **kwargs):  # noqa: ANN001, ANN003
+            self.bound_args = kwargs
+            return SimpleNamespace(id=uuid.uuid4())
+
+    service = FakeRouterService()
+
+    binding = service.bind_worker_agent_to_planner(
+        None,
+        planner_app_id=planner_app_id,
+        worker_agent_id=worker_agent_id,
+        account=account,
+        priority=20,
+        conditions={"mode": "test"},
+        enabled=True,
+    )
+
+    assert binding.id
+    assert service.bound_args["tenant_id"] == account.id
+    assert service.bound_args["router_agent_id"] == router_agent.id
+    assert service.bound_args["worker_agent_id"] == worker_agent_id
+    assert service.bound_args["priority"] == 20
+    assert service.bound_args["conditions"] == {"mode": "test"}
 
 
 def test_create_manager_task_from_plan_persists_task_plan_and_steps() -> None:
@@ -327,6 +445,11 @@ def test_create_manager_run_uses_llm_planner_plan() -> None:
         "router.capability_preflight.succeeded",
         "router.manager_run.created",
     ]
+    started = next(event for event in trace_events if event.event_type == "planner.started")
+    assert started.payload["workers"][0]["name"] == "Research"
+    validated = next(event for event in trace_events if event.event_type == "planner.validated")
+    assert validated.payload["planned_steps"][0]["worker_name"] == "Research"
+    assert validated.payload["planned_steps"][0]["task"] == "research launch plan"
 
 
 def test_create_manager_run_falls_back_when_planner_fails() -> None:
@@ -551,6 +674,7 @@ def test_execute_manager_run_steps_invokes_legacy_app_worker() -> None:
     worker_calls = [item for item in session.added if isinstance(item, WorkerCall)]
     assert worker_calls[0].invocation_json["schema_version"] == "worker_invocation_v1"
     assert worker_calls[0].invocation_json["execution_policy"]["execution_agent_type"] == "react_worker"
+    assert worker_calls[0].invocation_json["execution_policy"]["executor_type"] == "app"
     assert worker_calls[0].result_json["schema_version"] == "worker_result_v1"
     trace_events = [item for item in session.added if isinstance(item, TraceEvent)]
     assert [event.event_type for event in trace_events] == [
@@ -564,6 +688,9 @@ def test_execute_manager_run_steps_invokes_legacy_app_worker() -> None:
         "router.manager_run.succeeded",
     ]
     assert all(event.trace_id == run.trace_id for event in trace_events)
+    worker_started = next(event for event in trace_events if event.event_type == "worker.call.started")
+    assert worker_started.payload["worker_name"] == "Legacy App Worker"
+    assert worker_started.payload["task"] == "summarize sales notes"
 
 
 def test_execute_manager_run_steps_passes_input_files_to_worker_context() -> None:
@@ -768,3 +895,170 @@ def test_execute_manager_run_steps_registers_and_propagates_artifacts() -> None:
     assert "content" not in first_artifact["metadata"]
     assert worker_runtime.invocations[1].context["artifacts"][0]["file_id"] == str(created_file_id)
     assert run.task.final_result["artifacts"][0]["file_id"] == str(created_file_id)
+
+
+def test_execute_manager_run_steps_replans_once_after_worker_failure() -> None:
+    tenant_id = uuid.uuid4()
+    router_agent_id = uuid.uuid4()
+    failed_worker_id = uuid.uuid4()
+    replacement_worker_id = uuid.uuid4()
+    account = Account(id=uuid.uuid4(), name="tester", email="tester@example.test")
+    router_agent = Agent(
+        id=router_agent_id,
+        tenant_id=tenant_id,
+        name="Planner",
+        runtime_type="router",
+        product_category="planner",
+        status="published",
+    )
+    failed_worker = Agent(
+        id=failed_worker_id,
+        tenant_id=tenant_id,
+        name="Failing Worker",
+        runtime_type="worker",
+        product_category="custom",
+        status="published",
+        target_ref_type="app",
+        target_ref_id=str(uuid.uuid4()),
+    )
+    replacement_worker = Agent(
+        id=replacement_worker_id,
+        tenant_id=tenant_id,
+        name="Replacement Worker",
+        runtime_type="worker",
+        product_category="custom",
+        status="published",
+        target_ref_type="app",
+        target_ref_id=str(uuid.uuid4()),
+    )
+
+    class FakeLanguageModelService:
+        def load_language_model(self, model_config, *, session, account):  # noqa: ANN001
+            return BaseLanguageModel(provider="fake", model="planner", parameters={})
+
+    class FakePlannerAgent:
+        def update_plan(self, *, model, replan_input):  # noqa: ANN001
+            assert replan_input.attempt == 1
+            assert [worker.worker_id for worker in replan_input.workers] == [str(replacement_worker_id)]
+            assert replan_input.failure["error_code"] == "worker_failed"
+            return PlannerResult(
+                plan=RouterPlan(
+                    router_id=str(router_agent_id),
+                    user_intent=replan_input.original_query,
+                    risk_assessment={"risk_level": "low", "source": "llm_replan_v1"},
+                    steps=[
+                        RouterPlanStep(
+                            step_id="replan_1_step_1",
+                            worker_id=str(replacement_worker_id),
+                            task="recover with replacement",
+                        )
+                    ],
+                ),
+                raw_output='{"schema_version":"router_plan_v1"}',
+                usage={"total_tokens": 7},
+                latency_ms=25,
+            )
+
+    class FakeWorkerRuntime:
+        def __init__(self) -> None:
+            self.invocations = []
+
+        def invoke(self, invocation, *, session, worker, account):  # noqa: ANN001
+            self.invocations.append(invocation)
+            if worker.id == failed_worker_id:
+                return WorkerResult(
+                    trace_id=invocation.trace_id,
+                    task_id=invocation.task_id,
+                    step_id=invocation.step_id,
+                    worker_id=invocation.worker_id,
+                    status=TaskStatus.FAILED.value,
+                    summary="worker failed",
+                    error_code="worker_failed",
+                    retryable=True,
+                )
+            return WorkerResult(
+                trace_id=invocation.trace_id,
+                task_id=invocation.task_id,
+                step_id=invocation.step_id,
+                worker_id=invocation.worker_id,
+                status=TaskStatus.SUCCEEDED.value,
+                summary="recovered",
+                data={"answer": "recovered"},
+            )
+
+    class FakeCapabilityService:
+        def ensure_worker_capability_summary(self, session, worker, account=None):  # noqa: ANN001
+            return {
+                "schema_version": "worker_capability_v2",
+                "input_modalities": ["text/plain"],
+                "model_features": ["tool_call"],
+                "semantic_tags": ["general"],
+                "executor_type": "app",
+            }
+
+    class FakeRouterService(RouterAgentManagerService):
+        def get_router_agent(self, session, tenant_id, agent_id):  # noqa: ANN001
+            assert agent_id == router_agent_id
+            return router_agent
+
+        def list_bound_workers(self, session, *, tenant_id, router_agent_id):  # noqa: ANN001
+            return [failed_worker, replacement_worker]
+
+        def get_worker_agent(self, session, tenant_id, agent_id):  # noqa: ANN001
+            return {
+                failed_worker_id: failed_worker,
+                replacement_worker_id: replacement_worker,
+            }[agent_id]
+
+        def _routing_policy_for_agent(self, session, agent):  # noqa: ANN001
+            return {
+                "schema_version": "routing_policy_v1",
+                "rules": [],
+                "fallback_policy": {
+                    "on_preflight_failed": "structured_error",
+                    "on_worker_failed": "replan_once",
+                    "max_replan_attempts": 1,
+                },
+            }
+
+    session = FakeSession()
+    worker_runtime = FakeWorkerRuntime()
+    service = FakeRouterService(
+        planner_agent=FakePlannerAgent(),
+        worker_runtime=worker_runtime,
+        language_model_service=FakeLanguageModelService(),
+        capability_service=FakeCapabilityService(),
+    )
+    plan = RouterPlan(
+        router_id=str(router_agent_id),
+        user_intent="recover",
+        steps=[RouterPlanStep(step_id="step_1", worker_id=str(failed_worker_id), task="recover")],
+    )
+    run = service.create_manager_task_from_plan(
+        session,
+        tenant_id=tenant_id,
+        router_agent_id=router_agent_id,
+        plan=plan,
+        user_input={"query": "recover"},
+    )
+
+    result = service.execute_manager_run_steps(session, run=run, account=account)
+
+    assert result.task.status == TaskStatus.SUCCEEDED
+    assert run.plan.status == "superseded"
+    assert len(worker_runtime.invocations) == 2
+    assert worker_runtime.invocations[0].execution_policy["plan_attempt"] == 0
+    assert worker_runtime.invocations[1].worker_id == str(replacement_worker_id)
+    assert worker_runtime.invocations[1].execution_policy["plan_attempt"] == 1
+    plans = [item for item in session.added if isinstance(item, AgentPlan)]
+    assert len(plans) == 2
+    assert plans[1].plan_json["replan"]["attempt"] == 1
+    assert plans[1].plan_json["replan"]["parent_plan_id"] == str(run.plan.id)
+    worker_calls = [item for item in session.added if isinstance(item, WorkerCall)]
+    assert [call.status for call in worker_calls] == [TaskStatus.FAILED, TaskStatus.SUCCEEDED]
+    trace_event_types = [item.event_type for item in session.added if isinstance(item, TraceEvent)]
+    assert "planner.replan.requested" in trace_event_types
+    assert "planner.replan.generated" in trace_event_types
+    assert "planner.replan.validated" in trace_event_types
+    assert "planner.replan.preflight.succeeded" in trace_event_types
+    assert "planner.replan.applied" in trace_event_types

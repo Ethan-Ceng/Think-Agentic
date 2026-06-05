@@ -7,6 +7,7 @@ import type {
   AgentConversationUserOption,
   AgentFileRef,
   AgentMessageTask,
+  AgentPlanItem,
   AgentStepItem,
   AgentTaskDetail,
   AgentTaskSummary,
@@ -139,10 +140,55 @@ const traceMessage = (event: TraceEventItem) => {
   )
 }
 
+const uniqueTexts = (values: unknown[]) => {
+  return Array.from(
+    new Set(
+      values
+        .map((value) => String(value || '').trim())
+        .filter(Boolean),
+    ),
+  )
+}
+
+const traceAgentName = (event: TraceEventItem) => {
+  const payload = event.payload || {}
+  const directName = event.agent?.name || event.step?.worker_agent?.name || event.worker_call?.worker_agent?.name
+  if (directName) return directName
+
+  const plannedSteps = Array.isArray(payload.planned_steps) ? payload.planned_steps : []
+  const workerLists = [payload.workers, payload.selected_workers, payload.candidate_workers].filter(Array.isArray)
+  const names = uniqueTexts([
+    ...plannedSteps.map((step: Record<string, any>) => step.worker_name),
+    ...workerLists.flat().map((worker: Record<string, any>) => worker.name),
+    payload.worker_name,
+  ])
+  return names.join(' / ')
+}
+
+const traceStepName = (event: TraceEventItem) => {
+  const payload = event.payload || {}
+  if (event.step?.step_key) return event.step.step_key
+  return String(payload.step_key || payload.failed_step_key || '')
+}
+
+const traceTaskText = (event: TraceEventItem) => {
+  const payload = event.payload || {}
+  if (event.step?.task) return event.step.task
+  if (payload.task || payload.failed_step_task) return String(payload.task || payload.failed_step_task)
+
+  const plannedSteps = Array.isArray(payload.planned_steps) ? payload.planned_steps : []
+  const tasks = uniqueTexts(plannedSteps.map((step: Record<string, any>) => step.task))
+  if (!tasks.length) return ''
+  if (tasks.length <= 2) return tasks.join(' / ')
+  return `${tasks.slice(0, 2).join(' / ')} 等 ${tasks.length} 个任务`
+}
+
 const planSourceLabel = (source?: string) => {
   const map: Record<string, string> = {
     llm_planner_v1: 'LLM Planner',
+    llm_replan_v1: 'LLM Replan',
     manager_rule_v1: '规则计划',
+    manager_replan_rule_v1: 'Rule Replan',
   }
   return map[String(source || '')] || source || ''
 }
@@ -150,6 +196,26 @@ const planSourceLabel = (source?: string) => {
 const taskPlanSource = (task: AgentMessageTask | AgentTaskDetail | AgentTaskSummary) => {
   const plan = (task as AgentMessageTask | AgentTaskDetail).plan
   return planSourceLabel(String(plan?.plan_json?.risk_assessment?.source || ''))
+}
+
+const planAttempt = (plan?: AgentPlanItem | null) => {
+  return Number(plan?.plan_json?.replan?.attempt || 0)
+}
+
+const taskPlanCount = (task: AgentMessageTask | AgentTaskDetail) => {
+  return Array.isArray(task.plans) ? task.plans.length : 0
+}
+
+const planForStep = (task: AgentMessageTask, step: AgentStepItem) => {
+  return task.plans.find((plan) => plan.id === step.plan_id) || null
+}
+
+const stepPlanAttempt = (task: AgentMessageTask, step: AgentStepItem) => {
+  return planAttempt(planForStep(task, step))
+}
+
+const workerCallPlanAttempt = (call: WorkerCallItem) => {
+  return Number(call.invocation_json?.execution_policy?.plan_attempt || 0)
 }
 
 const messageAgentTasks = (message: AgentConversationMessage) => {
@@ -485,6 +551,9 @@ onMounted(async () => {
                                 <el-tag v-if="taskPlanSource(task)" size="small" type="info">
                                   {{ taskPlanSource(task) }}
                                 </el-tag>
+                                <el-tag v-if="taskPlanCount(task) > 1" size="small" type="warning">
+                                  Replan {{ taskPlanCount(task) - 1 }}
+                                </el-tag>
                               </div>
                             </template>
 
@@ -562,9 +631,24 @@ onMounted(async () => {
                                           <span class="font-medium text-slate-900">{{ step.step_key }}</span>
                                           <task-status-tag :status="step.status" />
                                           <el-tag size="small" type="info">{{ step.execution_mode }}</el-tag>
+                                          <el-tag v-if="stepPlanAttempt(task, step) > 0" size="small" type="warning">
+                                            Attempt {{ stepPlanAttempt(task, step) }}
+                                          </el-tag>
                                         </div>
                                         <div class="mt-1 text-xs text-slate-500">
                                           {{ step.worker_agent?.name || '未知 Worker' }}
+                                        </div>
+                                        <div class="mt-1 flex flex-wrap gap-1">
+                                          <el-tag v-if="step.worker_agent?.target_ref_type" size="small" type="info">
+                                            {{ step.worker_agent.target_ref_type }}
+                                          </el-tag>
+                                          <el-tag
+                                            v-if="step.input_json?.preflight?.capability_snapshot?.executor_type"
+                                            size="small"
+                                            type="info"
+                                          >
+                                            {{ step.input_json.preflight.capability_snapshot.executor_type }}
+                                          </el-tag>
                                         </div>
                                       </div>
                                       <div class="flex shrink-0 flex-wrap items-center gap-2">
@@ -620,6 +704,23 @@ onMounted(async () => {
                                               {{ call.worker_agent?.name || 'Worker' }}
                                             </span>
                                             <task-status-tag :status="call.status" />
+                                            <el-tag v-if="call.worker_agent?.target_ref_type" size="small" type="info">
+                                              {{ call.worker_agent.target_ref_type }}
+                                            </el-tag>
+                                            <el-tag
+                                              v-if="call.invocation_json?.execution_policy?.executor_type"
+                                              size="small"
+                                              type="info"
+                                            >
+                                              {{ call.invocation_json.execution_policy.executor_type }}
+                                            </el-tag>
+                                            <el-tag
+                                              v-if="workerCallPlanAttempt(call) > 0"
+                                              size="small"
+                                              type="warning"
+                                            >
+                                              Attempt {{ workerCallPlanAttempt(call) }}
+                                            </el-tag>
                                             <span class="text-xs text-slate-400">
                                               {{ formatSeconds(call.latency) }} · {{ call.token_count }} Token
                                             </span>
@@ -701,6 +802,19 @@ onMounted(async () => {
                       <template #default="{ row }">
                         <div class="font-medium text-slate-900">{{ row.event_type }}</div>
                         <div v-if="traceMessage(row)" class="truncate text-xs text-slate-500">{{ traceMessage(row) }}</div>
+                      </template>
+                    </el-table-column>
+                    <el-table-column label="Agent" min-width="160">
+                      <template #default="{ row }">
+                        <div class="truncate text-sm text-slate-700">{{ traceAgentName(row) || '-' }}</div>
+                      </template>
+                    </el-table-column>
+                    <el-table-column label="Step / 任务" min-width="260">
+                      <template #default="{ row }">
+                        <div class="font-medium text-slate-800">{{ traceStepName(row) || '-' }}</div>
+                        <div v-if="traceTaskText(row)" class="line-clamp-2 break-words text-xs text-slate-500">
+                          {{ traceTaskText(row) }}
+                        </div>
                       </template>
                     </el-table-column>
                     <el-table-column label="Token" width="90">

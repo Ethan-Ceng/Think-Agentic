@@ -63,12 +63,23 @@ class WorkerRuntime:
     @staticmethod
     def _execution_agent_type(worker: Agent, agent_version: AgentVersion | None) -> str:
         worker_config = agent_version.worker_config if agent_version is not None else {}
-        configured_type = str(worker_config.get("execution_agent_type") or worker_config.get("worker_runtime") or "")
+        configured_type = str(
+            worker_config.get("executor_type")
+            or worker_config.get("execution_agent_type")
+            or worker_config.get("worker_runtime")
+            or ""
+        )
         if configured_type:
+            if configured_type == "app":
+                return "react_worker"
+            if configured_type == "a2a":
+                return "a2a_worker"
             return configured_type
         if worker.target_ref_type == "app":
             return "react_worker"
-        return "react_worker"
+        if worker.target_ref_type == "a2a_agent":
+            return "a2a_worker"
+        return "unsupported_worker"
 
     @staticmethod
     def _failed_result(
