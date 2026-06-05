@@ -7,6 +7,7 @@ from app.core.agent import AgentThought, QueueEvent
 from app.core.exceptions import FailException
 from app.core.language_model.entities import BaseLanguageModel
 from app.domain.agent_runtime.planner import (
+    PlannerPlanFeedbackInput,
     PlannerReplanInput,
     PlannerResult,
     PlannerWorkerDescriptor,
@@ -159,6 +160,66 @@ def test_router_planner_update_plan_normalizes_replan_output() -> None:
     assert result.plan.steps[0].dependencies == []
 
 
+def test_router_planner_update_plan_from_feedback_normalizes_output() -> None:
+    router_agent_id = uuid.uuid4()
+    update_worker_id = uuid.uuid4()
+
+    class FakeChatRuntime:
+        def create_response(self, **kwargs):  # noqa: ANN001, ANN003
+            assert kwargs["response_format"] == {"type": "json_object"}
+            assert "Update the remaining RouterPlan after a successful worker result" in kwargs["query"]
+            return SimpleNamespace(
+                content=(
+                    '{"schema_version":"router_plan_v1",'
+                    f'"router_id":"{router_agent_id}",'
+                    '"user_intent":"write updated",'
+                    '"risk_assessment":{"risk_level":"low","source":"llm_planner_v1"},'
+                    f'"steps":[{{"step_id":"write","worker_id":"{update_worker_id}",'
+                    '"task":"write with updated evidence","dependencies":["old_step"],'
+                    '"expected_output":"final brief",'
+                    '"success_criteria":["uses evidence"],'
+                    '"required_artifacts":["brief.md"],'
+                    '"handoff_context":"deliver final"}],'
+                    '"final_response_policy":{"mode":"summarize_worker_results"}}'
+                ),
+                usage={"total_tokens": 11},
+            )
+
+    planner = RouterPlannerAgent(chat_runtime=FakeChatRuntime())
+    result = planner.update_plan_from_feedback(
+        model=BaseLanguageModel(provider="fake", model="planner", parameters={}),
+        feedback_input=PlannerPlanFeedbackInput(
+            router_id=str(router_agent_id),
+            original_query="write updated",
+            current_plan={"steps": []},
+            completed_steps=[],
+            latest_step={"step_key": "old_step"},
+            worker_result={"answer": "new evidence"},
+            plan_feedback={"needs_plan_update": True, "reason_code": "new_constraint_found"},
+            workers=[
+                PlannerWorkerDescriptor(
+                    worker_id=str(update_worker_id),
+                    name="Writer",
+                    description="",
+                    runtime_type="worker",
+                    product_category="custom",
+                    target_ref_type="app",
+                    target_ref_id=str(uuid.uuid4()),
+                )
+            ],
+            attempt=3,
+        ),
+    )
+
+    assert result.succeeded
+    assert result.plan is not None
+    assert result.plan.risk_assessment["source"] == "llm_plan_feedback_v1"
+    assert result.plan.steps[0].step_id == "update_3_step_1"
+    assert result.plan.steps[0].dependencies == []
+    assert result.plan.steps[0].expected_output == "final brief"
+    assert result.plan.steps[0].success_criteria == ["uses evidence"]
+
+
 def test_bind_worker_agent_to_planner_binds_existing_worker_agent() -> None:
     planner_app_id = uuid.uuid4()
     worker_agent_id = uuid.uuid4()
@@ -285,7 +346,8 @@ def test_create_manager_task_waits_when_plan_requires_approval() -> None:
         user_input={"query": "export customer data"},
     )
 
-    assert result.task.status == TaskStatus.WAITING_APPROVAL
+    assert result.task.status == TaskStatus.WAITING
+    assert result.task.error_code == "waiting_approval"
     assert result.task.version == 2
 
 
@@ -908,6 +970,272 @@ def test_execute_manager_run_steps_registers_and_propagates_artifacts() -> None:
     assert "content" not in first_artifact["metadata"]
     assert worker_runtime.invocations[1].context["artifacts"][0]["file_id"] == str(created_file_id)
     assert run.task.final_result["artifacts"][0]["file_id"] == str(created_file_id)
+
+
+def test_execute_manager_run_steps_updates_remaining_plan_from_worker_feedback() -> None:
+    tenant_id = uuid.uuid4()
+    router_agent_id = uuid.uuid4()
+    research_worker_id = uuid.uuid4()
+    writer_worker_id = uuid.uuid4()
+    account = Account(id=uuid.uuid4(), name="tester", email="tester@example.test")
+    router_agent = Agent(
+        id=router_agent_id,
+        tenant_id=tenant_id,
+        name="Planner",
+        runtime_type="router",
+        product_category="planner",
+        status="published",
+    )
+    research_worker = Agent(
+        id=research_worker_id,
+        tenant_id=tenant_id,
+        name="Research Worker",
+        runtime_type="worker",
+        product_category="custom",
+        status="published",
+        target_ref_type="app",
+        target_ref_id=str(uuid.uuid4()),
+    )
+    writer_worker = Agent(
+        id=writer_worker_id,
+        tenant_id=tenant_id,
+        name="Writer Worker",
+        runtime_type="worker",
+        product_category="custom",
+        status="published",
+        target_ref_type="app",
+        target_ref_id=str(uuid.uuid4()),
+    )
+
+    class FakeLanguageModelService:
+        def load_language_model(self, model_config, *, session, account):  # noqa: ANN001
+            return BaseLanguageModel(provider="fake", model="planner", parameters={})
+
+    class FakePlannerAgent:
+        def update_plan_from_feedback(self, *, model, feedback_input):  # noqa: ANN001
+            assert feedback_input.attempt == 1
+            assert feedback_input.plan_feedback["reason_code"] == "new_constraint_found"
+            assert feedback_input.completed_steps[0]["step_key"] == "research"
+            return PlannerResult(
+                plan=RouterPlan(
+                    router_id=str(router_agent_id),
+                    user_intent=feedback_input.original_query,
+                    risk_assessment={"risk_level": "low", "source": "llm_plan_feedback_v1"},
+                    steps=[
+                        RouterPlanStep(
+                            step_id="update_1_step_1",
+                            worker_id=str(writer_worker_id),
+                            task="write final using new evidence",
+                            expected_output="final brief",
+                            success_criteria=["uses research evidence"],
+                            handoff_context="research already completed",
+                        )
+                    ],
+                ),
+                raw_output='{"schema_version":"router_plan_v1"}',
+                usage={"total_tokens": 8},
+                latency_ms=18,
+            )
+
+    class FakeWorkerRuntime:
+        def __init__(self) -> None:
+            self.invocations = []
+
+        def invoke(self, invocation, *, session, worker, account):  # noqa: ANN001
+            self.invocations.append(invocation)
+            if worker.id == research_worker_id:
+                return WorkerResult(
+                    trace_id=invocation.trace_id,
+                    task_id=invocation.task_id,
+                    step_id=invocation.step_id,
+                    worker_id=invocation.worker_id,
+                    status=TaskStatus.SUCCEEDED.value,
+                    summary="research complete",
+                    data={
+                        "answer": "research complete",
+                        "plan_feedback": {
+                            "schema_version": "worker_plan_feedback_v1",
+                            "needs_plan_update": True,
+                            "completed_enough": False,
+                            "reason_code": "new_constraint_found",
+                            "summary": "new evidence changes writing step",
+                        },
+                    },
+                )
+            assert invocation.task["expected_output"] == "final brief"
+            assert invocation.task["success_criteria"] == ["uses research evidence"]
+            return WorkerResult(
+                trace_id=invocation.trace_id,
+                task_id=invocation.task_id,
+                step_id=invocation.step_id,
+                worker_id=invocation.worker_id,
+                status=TaskStatus.SUCCEEDED.value,
+                summary="final brief",
+                data={"answer": "final brief"},
+            )
+
+    class FakeCapabilityService:
+        def ensure_worker_capability_summary(self, session, worker, account=None):  # noqa: ANN001
+            return {
+                "schema_version": "worker_capability_v2",
+                "input_modalities": ["text/plain"],
+                "model_features": ["tool_call"],
+                "semantic_tags": ["general"],
+                "executor_type": "app",
+            }
+
+        def validate_routing_policy(self, routing_policy):  # noqa: ANN001
+            return {
+                "routing_policy": {
+                    "schema_version": "routing_policy_v1",
+                    "rules": [],
+                    "fallback_policy": {
+                        "on_preflight_failed": "structured_error",
+                        "on_worker_failed": "replan_once",
+                        "on_plan_feedback": "update_once",
+                        "max_plan_update_attempts": 1,
+                    },
+                }
+            }
+
+    class FakeRouterService(RouterAgentManagerService):
+        def get_router_agent(self, session, tenant_id, agent_id):  # noqa: ANN001
+            assert agent_id == router_agent_id
+            return router_agent
+
+        def list_bound_workers(self, session, *, tenant_id, router_agent_id):  # noqa: ANN001
+            return [research_worker, writer_worker]
+
+        def get_worker_agent(self, session, tenant_id, agent_id):  # noqa: ANN001
+            return {
+                research_worker_id: research_worker,
+                writer_worker_id: writer_worker,
+            }[agent_id]
+
+    session = FakeSession()
+    worker_runtime = FakeWorkerRuntime()
+    service = FakeRouterService(
+        planner_agent=FakePlannerAgent(),
+        worker_runtime=worker_runtime,
+        language_model_service=FakeLanguageModelService(),
+        capability_service=FakeCapabilityService(),
+    )
+    plan = RouterPlan(
+        router_id=str(router_agent_id),
+        user_intent="research and write",
+        steps=[
+            RouterPlanStep(step_id="research", worker_id=str(research_worker_id), task="research"),
+            RouterPlanStep(step_id="write", worker_id=str(writer_worker_id), task="write"),
+        ],
+    )
+    run = service.create_manager_task_from_plan(
+        session,
+        tenant_id=tenant_id,
+        router_agent_id=router_agent_id,
+        plan=plan,
+        user_input={"query": "research and write"},
+    )
+
+    result = service.execute_manager_run_steps(session, run=run, account=account)
+
+    assert result.task.status == TaskStatus.SUCCEEDED
+    assert run.plan.status == "superseded"
+    assert len(worker_runtime.invocations) == 2
+    assert worker_runtime.invocations[0].execution_policy["plan_attempt"] == 0
+    assert worker_runtime.invocations[1].execution_policy["plan_attempt"] == 1
+    assert worker_runtime.invocations[1].task["task"] == "write final using new evidence"
+    plans = [item for item in session.added if isinstance(item, AgentPlan)]
+    assert len(plans) == 2
+    assert plans[1].plan_json["plan_update"]["attempt"] == 1
+    assert plans[1].plan_json["plan_update"]["parent_plan_id"] == str(run.plan.id)
+    assert plans[1].plan_json["steps"][0]["expected_output"] == "final brief"
+    assert result.task.final_result["steps"][0]["output"]["answer"] == "research complete"
+    assert result.task.final_result["steps"][1]["output"]["answer"] == "final brief"
+    trace_event_types = [item.event_type for item in session.added if isinstance(item, TraceEvent)]
+    assert "planner.plan_update.requested" in trace_event_types
+    assert "planner.plan_update.generated" in trace_event_types
+    assert "planner.plan_update.validated" in trace_event_types
+    assert "planner.plan_update.preflight.succeeded" in trace_event_types
+    assert "planner.plan_update.applied" in trace_event_types
+    plan_update_applied = next(
+        item
+        for item in session.added
+        if isinstance(item, TraceEvent) and item.event_type == "planner.plan_update.applied"
+    )
+    assert plan_update_applied.payload["plan_diff"]["summary"]["added"] == 1
+    assert plan_update_applied.payload["feedback"]["reason_code"] == "new_constraint_found"
+
+
+def test_execute_manager_run_steps_waits_when_worker_requests_user_input() -> None:
+    tenant_id = uuid.uuid4()
+    router_agent_id = uuid.uuid4()
+    worker_agent_id = uuid.uuid4()
+    account = Account(id=uuid.uuid4(), name="tester", email="tester@example.test")
+
+    class FakeWorkerRuntime:
+        def invoke(self, invocation, *, session, worker, account):  # noqa: ANN001
+            return WorkerResult(
+                trace_id=invocation.trace_id,
+                task_id=invocation.task_id,
+                step_id=invocation.step_id,
+                worker_id=invocation.worker_id,
+                status=TaskStatus.WAITING_USER.value,
+                summary="需要用户提供城市",
+                data={
+                    "answer": "需要用户提供城市",
+                    "plan_feedback": {
+                        "schema_version": "worker_plan_feedback_v1",
+                        "needs_plan_update": False,
+                        "completed_enough": False,
+                        "reason_code": "waiting_user",
+                        "missing_info": ["city"],
+                    },
+                },
+            )
+
+    class FakeRouterService(RouterAgentManagerService):
+        def get_worker_agent(self, session, tenant_id, agent_id):  # noqa: ANN001
+            return Agent(
+                id=agent_id,
+                tenant_id=tenant_id,
+                name="Weather Worker",
+                runtime_type="worker",
+                product_category="custom",
+                status="published",
+                target_ref_type="app",
+                target_ref_id=str(uuid.uuid4()),
+            )
+
+    session = FakeSession()
+    service = FakeRouterService(worker_runtime=FakeWorkerRuntime())
+    plan = RouterPlan(
+        router_id=str(router_agent_id),
+        user_intent="weather",
+        steps=[RouterPlanStep(step_id="weather", worker_id=str(worker_agent_id), task="query weather")],
+    )
+    run = service.create_manager_task_from_plan(
+        session,
+        tenant_id=tenant_id,
+        router_agent_id=router_agent_id,
+        plan=plan,
+        user_input={"query": "天气怎么样"},
+    )
+
+    service.execute_manager_run_steps(session, run=run, account=account)
+
+    assert run.task.status == TaskStatus.WAITING
+    assert run.task.error_code == "waiting_user"
+    assert run.steps[0].status == TaskStatus.RUNNING
+    worker_calls = [item for item in session.added if isinstance(item, WorkerCall)]
+    assert worker_calls[0].status == TaskStatus.SUCCEEDED
+    wait_event = next(
+        item for item in session.added if isinstance(item, TraceEvent) and item.event_type == "wait.user.requested"
+    )
+    assert wait_event.payload["status"] == TaskStatus.WAITING.value
+    assert wait_event.payload["worker_result_status"] == TaskStatus.WAITING_USER.value
+    assert wait_event.payload["wait_type"] == "user_input"
+    assert wait_event.payload["resume_policy"] == "resume_same_step"
+    assert wait_event.payload["missing_info"] == ["city"]
 
 
 def test_execute_manager_run_steps_replans_once_after_worker_failure() -> None:

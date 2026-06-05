@@ -12,6 +12,7 @@ from app.core.exceptions import FailException, NotFoundException
 from app.core.memory.token_buffer_memory import TokenBufferMemory
 from app.domain.agent_runtime.planner import (
     PlannerInput,
+    PlannerPlanFeedbackInput,
     PlannerReplanInput,
     PlannerWorkerDescriptor,
     RouterPlannerAgent,
@@ -29,7 +30,7 @@ from app.services.app_service import AppService
 from app.services.base_service import BaseService
 from app.services.file_service import FileService
 from app.services.language_model_service import LanguageModelService
-from app.services.task_engine_service import TaskEngineService, TaskStatus
+from app.services.task_engine_service import TASK_WAITING_STATUSES, TaskEngineService, TaskStatus
 from app.services.trace_service import TraceService
 
 
@@ -54,6 +55,18 @@ class PlannerDebugStreamEvent:
 @dataclass(frozen=True)
 class ReplanAttemptResult:
     run: RouterManagerRunResult | None
+    error_code: str = ""
+    user_message: str = ""
+
+    @property
+    def applied(self) -> bool:
+        return self.run is not None
+
+
+@dataclass(frozen=True)
+class PlanUpdateAttemptResult:
+    run: RouterManagerRunResult | None
+    completed_enough: bool = False
     error_code: str = ""
     user_message: str = ""
 
@@ -923,6 +936,14 @@ class RouterAgentManagerService(BaseService):
         if stopped():
             yield cancel_task()
             return
+        if self._is_waiting_task_status(run.task.status):
+            yield emit(
+                QueueEvent.AGENT_ACTION,
+                observation=run.task.error_message or "任务已暂停，等待处理",
+                tool="planner.wait",
+                tool_input={"status": run.task.status, "error_code": run.task.error_code},
+            )
+            return
 
         try:
             input_files = self._input_file_refs(session, account, run.task.user_input)
@@ -962,7 +983,17 @@ class RouterAgentManagerService(BaseService):
                 yield cancel_task()
                 return
 
-            self.task_engine.start_step(session, step)
+            if step.status == TaskStatus.SUCCEEDED.value:
+                self._append_step_output(step_outputs, step, worker_agent_id=str(step.worker_agent_id))
+                accumulated_artifacts.extend(list((step.output_json or {}).get("artifacts") or []))
+                continue
+            if step.status == TaskStatus.WAITING_USER.value:
+                if self._is_waiting_task_status(run.task.status):
+                    yield emit(QueueEvent.AGENT_ACTION, observation="等待用户补充信息", tool="planner.wait_user")
+                    return
+                self.task_engine.resume_step(session, step)
+            if step.status == TaskStatus.CREATED.value:
+                self.task_engine.start_step(session, step)
             if self._step_preflight_failed(step):
                 error_code, user_message = self._step_preflight_error(step)
                 self.task_engine.fail_step(session, step, error_code=error_code, error_message=user_message)
@@ -1148,6 +1179,49 @@ class RouterAgentManagerService(BaseService):
 
             output = self._worker_result_to_output(worker_result)
             self._record_agent_events(session, run=run, step=step, worker_call=worker_call, worker_result=worker_result)
+            if worker_result.status == TaskStatus.WAITING_USER.value:
+                plan_feedback = self._worker_plan_feedback(worker_result)
+                self.task_engine.wait_worker_call_for_user(session, worker_call, result_json=output)
+                self.task_engine.wait_step_for_user(session, step, output_json=output)
+                self.task_engine.wait_for_user(
+                    session,
+                    run.task,
+                    final_result={
+                        "step_key": step.step_key,
+                        "worker_result": output,
+                        "completed_steps": step_outputs,
+                        "artifacts": accumulated_artifacts,
+                    },
+                    error_message=worker_result.summary or "Worker is waiting for user input",
+                )
+                self.trace_service.record(
+                    session,
+                    tenant_id=run.task.tenant_id,
+                    event_type="wait.user.requested",
+                    task=run.task,
+                    plan=run.plan,
+                    step=step,
+                    worker_call=worker_call,
+                    payload=self._worker_trace_payload(
+                        worker,
+                        step,
+                        status=TaskStatus.WAITING.value,
+                        worker_result_status=worker_result.status,
+                        wait_type="user_input",
+                        reason_code=plan_feedback.get("reason_code") or "missing_info",
+                        resume_policy="resume_same_step",
+                        summary=worker_result.summary,
+                        missing_info=plan_feedback.get("missing_info", []),
+                        plan_feedback=plan_feedback,
+                    ),
+                )
+                yield emit(
+                    QueueEvent.AGENT_ACTION,
+                    observation=worker_result.summary or "等待用户补充信息",
+                    tool=worker.name,
+                    tool_input={"step_key": step.step_key, "status": worker_result.status},
+                )
+                return
             terminal_status = self._worker_terminal_status(worker_result)
             if worker_result.status != TaskStatus.SUCCEEDED.value:
                 self.task_engine.complete_worker_call(
@@ -1271,6 +1345,58 @@ class RouterAgentManagerService(BaseService):
                 tool=worker.name,
                 tool_input={"step_key": step.step_key, "status": worker_result.status},
             )
+            plan_update = self._maybe_update_plan_from_feedback(
+                session,
+                run=run,
+                step=step,
+                worker_result=worker_result,
+                completed_steps=step_outputs,
+                accumulated_artifacts=accumulated_artifacts,
+                account=account,
+            )
+            if plan_update.completed_enough:
+                self.task_engine.succeed_task(
+                    session,
+                    run.task,
+                    final_result={"steps": step_outputs, "artifacts": accumulated_artifacts},
+                )
+                self.trace_service.record(
+                    session,
+                    tenant_id=run.task.tenant_id,
+                    event_type="router.manager_run.succeeded",
+                    task=run.task,
+                    plan=run.plan,
+                    payload={"step_count": len(step_outputs), "completed_enough": True},
+                )
+                answer = self._task_answer(run.task)
+                yield emit(
+                    QueueEvent.AGENT_MESSAGE,
+                    thought=answer,
+                    answer=answer,
+                    total_token_count=max(1, len(answer) // 4) if answer else 0,
+                )
+                yield emit(QueueEvent.AGENT_END)
+                return
+            if plan_update.applied and plan_update.run is not None:
+                yield emit(
+                    QueueEvent.AGENT_ACTION,
+                    observation="PlannerAgent updated the remaining plan from worker feedback.",
+                    tool="planner.plan_update",
+                    tool_input=(plan_update.run.plan.plan_json or {}).get("plan_update", {}),
+                )
+                run = execute_replanned_run(plan_update.run)
+                answer = self._task_answer(run.task)
+                if run.task.status == TaskStatus.SUCCEEDED.value:
+                    yield emit(
+                        QueueEvent.AGENT_MESSAGE,
+                        thought=answer,
+                        answer=answer,
+                        total_token_count=max(1, len(answer) // 4) if answer else 0,
+                    )
+                    yield emit(QueueEvent.AGENT_END)
+                else:
+                    yield emit(QueueEvent.ERROR, observation=run.task.error_message, tool="planner.plan_update")
+                return
 
         self.task_engine.succeed_task(
             session,
@@ -1607,6 +1733,7 @@ class RouterAgentManagerService(BaseService):
         user_input: dict[str, Any],
         preflight_result: dict[str, Any] | None = None,
         replan_metadata: dict[str, Any] | None = None,
+        plan_update_metadata: dict[str, Any] | None = None,
         workers: list[Agent] | None = None,
     ) -> RouterManagerRunResult:
         plan_json = plan.model_dump(mode="json")
@@ -1614,6 +1741,8 @@ class RouterAgentManagerService(BaseService):
             plan_json["preflight"] = preflight_result
         if replan_metadata is not None:
             plan_json["replan"] = self._json_ready(replan_metadata)
+        if plan_update_metadata is not None:
+            plan_json["plan_update"] = self._json_ready(plan_update_metadata)
         preflight_by_step = self._preflight_by_step(preflight_result)
         persisted_plan = self.task_engine.create_plan(
             session,
@@ -1631,6 +1760,10 @@ class RouterAgentManagerService(BaseService):
                 dependencies=step.dependencies,
                 input_json={
                     "task": step.task,
+                    "expected_output": step.expected_output,
+                    "success_criteria": list(step.success_criteria or []),
+                    "required_artifacts": list(step.required_artifacts or []),
+                    "handoff_context": step.handoff_context,
                     "user_input": user_input,
                     "planner_selection": self._step_selection_payload(step, plan, workers or []),
                     "preflight": preflight_by_step.get(step.step_id),
@@ -1916,6 +2049,356 @@ class RouterAgentManagerService(BaseService):
         )
         return ReplanAttemptResult(run=new_run)
 
+    def _maybe_update_plan_from_feedback(
+        self,
+        session: Session,
+        *,
+        run: RouterManagerRunResult,
+        step: AgentStep,
+        worker_result: WorkerResult,
+        completed_steps: list[dict[str, Any]],
+        accumulated_artifacts: list[dict[str, Any]],
+        account: Account | None,
+    ) -> PlanUpdateAttemptResult:
+        feedback = self._worker_plan_feedback(worker_result)
+        if not feedback:
+            return PlanUpdateAttemptResult(run=None)
+
+        completed_enough = bool(feedback.get("completed_enough"))
+        needs_plan_update = bool(feedback.get("needs_plan_update"))
+        if not completed_enough and not needs_plan_update:
+            return PlanUpdateAttemptResult(run=None)
+
+        router_agent = self.get_router_agent(session, run.task.tenant_id, run.task.router_agent_id)
+        workers = self.list_bound_workers(
+            session,
+            tenant_id=run.task.tenant_id,
+            router_agent_id=run.task.router_agent_id,
+        )
+        routing_policy = self._routing_policy_for_agent(session, router_agent)
+        if not self._plan_update_policy_allows(routing_policy):
+            self.trace_service.record(
+                session,
+                tenant_id=run.task.tenant_id,
+                event_type="planner.plan_update.fallback",
+                task=run.task,
+                plan=run.plan,
+                step=step,
+                payload={
+                    "reason": "plan_update_disabled_by_policy",
+                    "feedback": self._json_ready(feedback),
+                },
+            )
+            return PlanUpdateAttemptResult(run=None)
+
+        remaining_step_count = self._remaining_step_count(run.steps)
+        if completed_enough:
+            self.trace_service.record(
+                session,
+                tenant_id=run.task.tenant_id,
+                event_type="planner.plan_update.completed_enough",
+                task=run.task,
+                plan=run.plan,
+                step=step,
+                payload={
+                    "feedback": self._json_ready(feedback),
+                    "remaining_step_count": remaining_step_count,
+                },
+            )
+            return PlanUpdateAttemptResult(run=None, completed_enough=True)
+
+        if remaining_step_count <= 0:
+            return PlanUpdateAttemptResult(run=None)
+
+        attempt = self._next_plan_update_attempt(run.plan)
+        max_attempts = self._max_plan_update_attempts(routing_policy)
+        if attempt > max_attempts:
+            self.trace_service.record(
+                session,
+                tenant_id=run.task.tenant_id,
+                event_type="planner.plan_update.limit_exceeded",
+                task=run.task,
+                plan=run.plan,
+                step=step,
+                payload={
+                    "attempt": attempt,
+                    "max_attempts": max_attempts,
+                    "feedback": self._json_ready(feedback),
+                },
+            )
+            return PlanUpdateAttemptResult(
+                run=None,
+                error_code="plan_update_limit_exceeded",
+                user_message="Plan update limit exceeded",
+            )
+
+        candidate_workers = self._select_plan_update_workers(workers, feedback=feedback)
+        if not candidate_workers:
+            self.trace_service.record(
+                session,
+                tenant_id=run.task.tenant_id,
+                event_type="planner.plan_update.fallback",
+                task=run.task,
+                plan=run.plan,
+                step=step,
+                payload={
+                    "reason": "plan_update_candidate_workers_missing",
+                    "attempt": attempt,
+                    "feedback": self._json_ready(feedback),
+                },
+            )
+            return PlanUpdateAttemptResult(run=None)
+
+        self.trace_service.record(
+            session,
+            tenant_id=run.task.tenant_id,
+            event_type="planner.plan_update.requested",
+            task=run.task,
+            plan=run.plan,
+            step=step,
+            payload={
+                "attempt": attempt,
+                "current_plan_id": str(run.plan.id),
+                "current_plan_snapshot": self._plan_json_snapshot_payload(run.plan.plan_json or {}, workers),
+                "latest_step_id": str(step.id),
+                "latest_step_key": step.step_key,
+                "latest_step_task": self._step_task_text(step),
+                "candidate_worker_ids": [str(worker.id) for worker in candidate_workers],
+                "candidate_workers": self._worker_summary_payload(candidate_workers),
+                "feedback": self._json_ready(feedback),
+            },
+        )
+
+        try:
+            updated_plan = self._build_plan_update_from_feedback(
+                session,
+                task=run.task,
+                router_agent=router_agent,
+                current_plan=run.plan,
+                latest_step=step,
+                worker_result=worker_result,
+                plan_feedback=feedback,
+                completed_steps=completed_steps,
+                workers=candidate_workers,
+                account=account,
+                attempt=attempt,
+            )
+            preflight_result = self._preflight_plan(
+                session,
+                task=run.task,
+                router_agent=router_agent,
+                workers=candidate_workers,
+                plan=updated_plan,
+                user_input=run.task.user_input or {},
+                account=account,
+                event_type_prefix="planner.plan_update.preflight",
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.trace_service.record(
+                session,
+                tenant_id=run.task.tenant_id,
+                event_type="planner.plan_update.fallback",
+                task=run.task,
+                plan=run.plan,
+                step=step,
+                payload={
+                    "reason": "plan_update_generation_failed",
+                    "attempt": attempt,
+                    "error": self._truncate(str(exc), 1000),
+                },
+            )
+            return PlanUpdateAttemptResult(run=None)
+
+        if preflight_result.get("status") == "failed":
+            error_code, user_message = self._first_preflight_error(preflight_result)
+            self.trace_service.record(
+                session,
+                tenant_id=run.task.tenant_id,
+                event_type="planner.plan_update.fallback",
+                task=run.task,
+                plan=run.plan,
+                step=step,
+                payload={
+                    "reason": "plan_update_preflight_failed",
+                    "attempt": attempt,
+                    "error_code": error_code,
+                    "user_message": user_message,
+                },
+            )
+            return PlanUpdateAttemptResult(run=None, error_code=error_code, user_message=user_message)
+
+        previous_plan_snapshot = self._plan_json_snapshot_payload(run.plan.plan_json or {}, workers)
+        new_plan_snapshot = self._plan_snapshot_payload(updated_plan, candidate_workers)
+        plan_diff = self._plan_diff_payload(previous_plan_snapshot, new_plan_snapshot)
+        new_run = self._persist_manager_plan_for_task(
+            session,
+            task=run.task,
+            plan=updated_plan,
+            user_input=run.task.user_input or {},
+            preflight_result=preflight_result,
+            workers=candidate_workers,
+            plan_update_metadata={
+                "schema_version": "router_plan_update_v1",
+                "attempt": attempt,
+                "trigger": "worker_plan_feedback",
+                "parent_plan_id": str(run.plan.id),
+                "latest_step_id": str(step.id),
+                "latest_step_key": step.step_key,
+                "latest_worker_agent_id": str(step.worker_agent_id),
+                "plan_feedback": self._json_ready(feedback),
+                "completed_steps": self._json_ready(completed_steps),
+                "candidate_worker_ids": [str(worker.id) for worker in candidate_workers],
+                "preflight": preflight_result,
+                "previous_plan": previous_plan_snapshot,
+                "new_plan": new_plan_snapshot,
+                "plan_diff": plan_diff,
+                "artifacts": self._json_ready(accumulated_artifacts),
+            },
+        )
+        self._mark_plan_superseded(session, run.plan, superseded_by_plan_id=new_run.plan.id)
+        self._record_manager_run_created(session, new_run, workers=candidate_workers)
+        self.trace_service.record(
+            session,
+            tenant_id=run.task.tenant_id,
+            event_type="planner.plan_update.applied",
+            task=run.task,
+            plan=new_run.plan,
+            step=step,
+            payload={
+                "attempt": attempt,
+                "trigger": "worker_plan_feedback",
+                "parent_plan_id": str(run.plan.id),
+                "new_plan_id": str(new_run.plan.id),
+                "new_step_ids": [str(step.id) for step in new_run.steps],
+                "planned_steps": self._plan_step_payload(updated_plan, candidate_workers),
+                "previous_plan": previous_plan_snapshot,
+                "new_plan": new_plan_snapshot,
+                "plan_diff": plan_diff,
+                "feedback": self._json_ready(feedback),
+            },
+        )
+        return PlanUpdateAttemptResult(run=new_run)
+
+    def _build_plan_update_from_feedback(
+        self,
+        session: Session,
+        *,
+        task: AgentTask,
+        router_agent: Agent,
+        current_plan: AgentPlan,
+        latest_step: AgentStep,
+        worker_result: WorkerResult,
+        plan_feedback: dict[str, Any],
+        completed_steps: list[dict[str, Any]],
+        workers: list[Agent],
+        account: Account | None,
+        attempt: int,
+    ) -> RouterPlan:
+        if account is None:
+            raise FailException("planner_account_context_missing")
+        model = self.language_model_service.load_language_model(
+            self._router_model_config(session, router_agent),
+            session=session,
+            account=account,
+        )
+        update_result = self.planner_agent.update_plan_from_feedback(
+            model=model,
+            feedback_input=self._build_plan_feedback_input(
+                session=session,
+                task=task,
+                router_agent=router_agent,
+                current_plan=current_plan,
+                latest_step=latest_step,
+                worker_result=worker_result,
+                plan_feedback=plan_feedback,
+                completed_steps=completed_steps,
+                workers=workers,
+                attempt=attempt,
+            ),
+        )
+        if update_result.raw_output:
+            self.trace_service.record(
+                session,
+                tenant_id=task.tenant_id,
+                event_type="planner.plan_update.generated",
+                task=task,
+                plan=current_plan,
+                step=latest_step,
+                payload={
+                    "model": f"{model.provider}/{model.model}",
+                    "usage": update_result.usage,
+                    "latency_ms": update_result.latency_ms,
+                    "raw_output": self._truncate(update_result.raw_output, 4000),
+                },
+                token_count=int(update_result.usage.get("total_tokens") or 0),
+                latency=float((update_result.latency_ms or 0) / 1000),
+            )
+        if update_result.plan is None:
+            raise FailException(update_result.error or "planner_plan_feedback_returned_empty_plan")
+        plan = self.router_runtime.validate_plan(
+            update_result.plan,
+            allowed_worker_ids={str(worker.id) for worker in workers},
+            router_id=str(router_agent.id),
+            max_steps=5,
+            allow_async=False,
+            allow_required_approval=False,
+        )
+        self.trace_service.record(
+            session,
+            tenant_id=task.tenant_id,
+            event_type="planner.plan_update.validated",
+            task=task,
+            plan=current_plan,
+            step=latest_step,
+            payload={
+                "attempt": attempt,
+                "step_count": len(plan.steps),
+                "worker_ids": [step.worker_id for step in plan.steps],
+                "planned_steps": self._plan_step_payload(plan, workers),
+                "plan_snapshot": self._plan_snapshot_payload(plan, workers),
+                "planning_reason": str(plan.risk_assessment.get("planning_reason") or ""),
+                "risk_level": plan.risk_assessment.get("risk_level") or "low",
+                "source": plan.risk_assessment.get("source") or "llm_plan_feedback_v1",
+            },
+        )
+        return plan
+
+    def _build_plan_feedback_input(
+        self,
+        *,
+        session: Session,
+        task: AgentTask,
+        router_agent: Agent,
+        current_plan: AgentPlan,
+        latest_step: AgentStep,
+        worker_result: WorkerResult,
+        plan_feedback: dict[str, Any],
+        completed_steps: list[dict[str, Any]],
+        workers: list[Agent],
+        attempt: int,
+    ) -> PlannerPlanFeedbackInput:
+        user_input = task.user_input or {}
+        return PlannerPlanFeedbackInput(
+            router_id=str(router_agent.id),
+            original_query=self._user_query(user_input),
+            current_plan=current_plan.plan_json or {},
+            completed_steps=self._json_ready(completed_steps),
+            latest_step=self._step_output_descriptor(latest_step),
+            worker_result=self._json_ready(self._worker_result_to_output(worker_result)),
+            plan_feedback=self._json_ready(plan_feedback),
+            workers=[self._planner_worker_descriptor(session=session, worker=worker) for worker in workers],
+            input_files=[],
+            recent_history=self._recent_history_from_user_input(user_input),
+            constraints={
+                "allow_parallel": False,
+                "allow_plan_update": True,
+                "allow_required_approval": False,
+                "execution_mode": "sync",
+                "max_steps": 5,
+            },
+            attempt=attempt,
+        )
+
     def _build_replan_or_fallback_plan(
         self,
         session: Session,
@@ -2119,6 +2602,8 @@ class RouterAgentManagerService(BaseService):
     ) -> RouterManagerRunResult:
         if run.task.status in {TaskStatus.SUCCEEDED.value, TaskStatus.FAILED.value, TaskStatus.CANCELLED.value}:
             return run
+        if self._is_waiting_task_status(run.task.status):
+            return run
         try:
             input_files = self._input_file_refs(session, account, run.task.user_input)
         except Exception as exc:
@@ -2142,7 +2627,16 @@ class RouterAgentManagerService(BaseService):
         step_outputs = list(_step_outputs or [])
         accumulated_artifacts: list[dict[str, Any]] = list(_accumulated_artifacts or [])
         for step in run.steps:
-            self.task_engine.start_step(session, step)
+            if step.status == TaskStatus.SUCCEEDED.value:
+                self._append_step_output(step_outputs, step, worker_agent_id=str(step.worker_agent_id))
+                accumulated_artifacts.extend(list((step.output_json or {}).get("artifacts") or []))
+                continue
+            if step.status == TaskStatus.WAITING_USER.value:
+                if self._is_waiting_task_status(run.task.status):
+                    return run
+                self.task_engine.resume_step(session, step)
+            if step.status == TaskStatus.CREATED.value:
+                self.task_engine.start_step(session, step)
             if self._step_preflight_failed(step):
                 error_code, user_message = self._step_preflight_error(step)
                 self.task_engine.fail_step(session, step, error_code=error_code, error_message=user_message)
@@ -2308,6 +2802,43 @@ class RouterAgentManagerService(BaseService):
 
             output = self._worker_result_to_output(worker_result)
             self._record_agent_events(session, run=run, step=step, worker_call=worker_call, worker_result=worker_result)
+            if worker_result.status == TaskStatus.WAITING_USER.value:
+                plan_feedback = self._worker_plan_feedback(worker_result)
+                self.task_engine.wait_worker_call_for_user(session, worker_call, result_json=output)
+                self.task_engine.wait_step_for_user(session, step, output_json=output)
+                self.task_engine.wait_for_user(
+                    session,
+                    run.task,
+                    final_result={
+                        "step_key": step.step_key,
+                        "worker_result": output,
+                        "completed_steps": step_outputs,
+                        "artifacts": accumulated_artifacts,
+                    },
+                    error_message=worker_result.summary or "Worker is waiting for user input",
+                )
+                self.trace_service.record(
+                    session,
+                    tenant_id=run.task.tenant_id,
+                    event_type="wait.user.requested",
+                    task=run.task,
+                    plan=run.plan,
+                    step=step,
+                    worker_call=worker_call,
+                    payload=self._worker_trace_payload(
+                        worker,
+                        step,
+                        status=TaskStatus.WAITING.value,
+                        worker_result_status=worker_result.status,
+                        wait_type="user_input",
+                        reason_code=plan_feedback.get("reason_code") or "missing_info",
+                        resume_policy="resume_same_step",
+                        summary=worker_result.summary,
+                        missing_info=plan_feedback.get("missing_info", []),
+                        plan_feedback=plan_feedback,
+                    ),
+                )
+                return run
             if worker_result.status != TaskStatus.SUCCEEDED.value:
                 terminal_status = self._worker_terminal_status(worker_result)
                 self.task_engine.complete_worker_call(
@@ -2411,6 +2942,38 @@ class RouterAgentManagerService(BaseService):
                 step=step,
                 payload=self._worker_trace_payload(worker, step),
             )
+            plan_update = self._maybe_update_plan_from_feedback(
+                session,
+                run=run,
+                step=step,
+                worker_result=worker_result,
+                completed_steps=step_outputs,
+                accumulated_artifacts=accumulated_artifacts,
+                account=account,
+            )
+            if plan_update.completed_enough:
+                self.task_engine.succeed_task(
+                    session,
+                    run.task,
+                    final_result={"steps": step_outputs, "artifacts": accumulated_artifacts},
+                )
+                self.trace_service.record(
+                    session,
+                    tenant_id=run.task.tenant_id,
+                    event_type="router.manager_run.succeeded",
+                    task=run.task,
+                    plan=run.plan,
+                    payload={"step_count": len(step_outputs), "completed_enough": True},
+                )
+                return run
+            if plan_update.applied and plan_update.run is not None:
+                return self.execute_manager_run_steps(
+                    session,
+                    run=plan_update.run,
+                    account=account,
+                    _step_outputs=step_outputs,
+                    _accumulated_artifacts=accumulated_artifacts,
+                )
 
         self.task_engine.succeed_task(
             session,
@@ -2924,6 +3487,13 @@ class RouterAgentManagerService(BaseService):
         return False
 
     @staticmethod
+    def _plan_update_policy_allows(routing_policy: dict[str, Any]) -> bool:
+        fallback_policy = (
+            routing_policy.get("fallback_policy") if isinstance(routing_policy.get("fallback_policy"), dict) else {}
+        )
+        return fallback_policy.get("on_plan_feedback") == "update_once"
+
+    @staticmethod
     def _replan_error_retryable(error_code: str) -> bool:
         non_retryable = {
             "external_agent_auth_required",
@@ -2943,6 +3513,17 @@ class RouterAgentManagerService(BaseService):
             return 1
 
     @staticmethod
+    def _max_plan_update_attempts(routing_policy: dict[str, Any]) -> int:
+        fallback_policy = (
+            routing_policy.get("fallback_policy") if isinstance(routing_policy.get("fallback_policy"), dict) else {}
+        )
+        raw_value = fallback_policy.get("max_plan_update_attempts", fallback_policy.get("max_plan_updates", 1))
+        try:
+            return max(0, int(raw_value))
+        except (TypeError, ValueError):
+            return 1
+
+    @staticmethod
     def _next_replan_attempt(plan: AgentPlan) -> int:
         plan_json = plan.plan_json if isinstance(plan.plan_json, dict) else {}
         replan = plan_json.get("replan") if isinstance(plan_json.get("replan"), dict) else {}
@@ -2955,10 +3536,20 @@ class RouterAgentManagerService(BaseService):
     def _plan_attempt(plan: AgentPlan) -> int:
         plan_json = plan.plan_json if isinstance(plan.plan_json, dict) else {}
         replan = plan_json.get("replan") if isinstance(plan_json.get("replan"), dict) else {}
+        plan_update = plan_json.get("plan_update") if isinstance(plan_json.get("plan_update"), dict) else {}
         try:
-            return int(replan.get("attempt") or 0)
+            return int(replan.get("attempt") or plan_update.get("attempt") or 0)
         except (TypeError, ValueError):
             return 0
+
+    @staticmethod
+    def _next_plan_update_attempt(plan: AgentPlan) -> int:
+        plan_json = plan.plan_json if isinstance(plan.plan_json, dict) else {}
+        plan_update = plan_json.get("plan_update") if isinstance(plan_json.get("plan_update"), dict) else {}
+        try:
+            return int(plan_update.get("attempt") or 0) + 1
+        except (TypeError, ValueError):
+            return 1
 
     @staticmethod
     def _select_replan_workers(
@@ -2978,6 +3569,22 @@ class RouterAgentManagerService(BaseService):
         return workers
 
     @staticmethod
+    def _select_plan_update_workers(
+        workers: list[Agent],
+        *,
+        feedback: dict[str, Any],
+    ) -> list[Agent]:
+        suggested_worker_ids = feedback.get("suggested_worker_ids")
+        if isinstance(suggested_worker_ids, list) and suggested_worker_ids:
+            suggested = {str(worker_id) for worker_id in suggested_worker_ids}
+            return [worker for worker in workers if str(worker.id) in suggested]
+        return workers
+
+    @staticmethod
+    def _remaining_step_count(steps: list[AgentStep]) -> int:
+        return sum(1 for step in steps if step.status == TaskStatus.CREATED.value)
+
+    @staticmethod
     def _completed_step_payloads(steps: list[AgentStep]) -> list[dict[str, Any]]:
         payloads = []
         for step in steps:
@@ -2994,6 +3601,23 @@ class RouterAgentManagerService(BaseService):
         return payloads
 
     @staticmethod
+    def _append_step_output(
+        step_outputs: list[dict[str, Any]],
+        step: AgentStep,
+        *,
+        worker_agent_id: str,
+    ) -> None:
+        if any(str(item.get("step_key") or "") == step.step_key for item in step_outputs):
+            return
+        step_outputs.append(
+            {
+                "step_key": step.step_key,
+                "worker_agent_id": worker_agent_id,
+                "output": step.output_json or {},
+            }
+        )
+
+    @staticmethod
     def _step_failure_descriptor(step: AgentStep | None) -> dict[str, Any]:
         if step is None:
             return {}
@@ -3005,6 +3629,26 @@ class RouterAgentManagerService(BaseService):
             "status": step.status,
             "task": input_json.get("task") or "",
             "preflight": input_json.get("preflight") if isinstance(input_json.get("preflight"), dict) else {},
+        }
+
+    @staticmethod
+    def _step_output_descriptor(step: AgentStep | None) -> dict[str, Any]:
+        if step is None:
+            return {}
+        input_json = step.input_json if isinstance(step.input_json, dict) else {}
+        success_criteria = input_json.get("success_criteria")
+        required_artifacts = input_json.get("required_artifacts")
+        return {
+            "step_id": str(step.id),
+            "step_key": step.step_key,
+            "worker_agent_id": str(step.worker_agent_id),
+            "status": step.status,
+            "task": input_json.get("task") or "",
+            "expected_output": input_json.get("expected_output") or "",
+            "success_criteria": success_criteria if isinstance(success_criteria, list) else [],
+            "required_artifacts": required_artifacts if isinstance(required_artifacts, list) else [],
+            "handoff_context": input_json.get("handoff_context") or "",
+            "output": step.output_json or {},
         }
 
     def _mark_replanned_step_failed(
@@ -3112,6 +3756,22 @@ class RouterAgentManagerService(BaseService):
                     "dependencies": list(raw_step.get("dependencies") or []),
                     "execution_mode": str(raw_step.get("execution_mode") or "sync"),
                     "required_approval": bool(raw_step.get("required_approval")),
+                    "expected_output": str(raw_step.get("expected_output") or ""),
+                    "success_criteria": [
+                        str(item)
+                        for item in raw_step.get("success_criteria", [])
+                        if str(item).strip()
+                    ]
+                    if isinstance(raw_step.get("success_criteria"), list)
+                    else [],
+                    "required_artifacts": [
+                        str(item)
+                        for item in raw_step.get("required_artifacts", [])
+                        if str(item).strip()
+                    ]
+                    if isinstance(raw_step.get("required_artifacts"), list)
+                    else [],
+                    "handoff_context": str(raw_step.get("handoff_context") or ""),
                     "selection_reason": str(
                         raw_step.get("selection_reason")
                         or cls._default_selection_reason(source=source, worker=worker)
@@ -3159,6 +3819,17 @@ class RouterAgentManagerService(BaseService):
                     "from": str(previous.get("task") or ""),
                     "to": str(current.get("task") or ""),
                 }
+            for field in ("expected_output", "handoff_context"):
+                if str(previous.get(field) or "") != str(current.get(field) or ""):
+                    changes[field] = {
+                        "from": str(previous.get(field) or ""),
+                        "to": str(current.get(field) or ""),
+                    }
+            for field in ("success_criteria", "required_artifacts"):
+                previous_values = list(previous.get(field) or [])
+                current_values = list(current.get(field) or [])
+                if previous_values != current_values:
+                    changes[field] = {"from": previous_values, "to": current_values}
             if changes:
                 changed.append({"step_id": key, "changes": changes})
         return {
@@ -3191,6 +3862,10 @@ class RouterAgentManagerService(BaseService):
                     "dependencies": list(step.dependencies or []),
                     "execution_mode": step.execution_mode,
                     "required_approval": bool(step.required_approval),
+                    "expected_output": step.expected_output,
+                    "success_criteria": list(step.success_criteria or []),
+                    "required_artifacts": list(step.required_artifacts or []),
+                    "handoff_context": step.handoff_context,
                     "selection_reason": selection["reason"],
                     "selection_signals": selection["signals"],
                 }
@@ -3216,6 +3891,9 @@ class RouterAgentManagerService(BaseService):
     @classmethod
     def _worker_trace_payload(cls, worker: Agent, step: AgentStep, **extra: Any) -> dict[str, Any]:
         selection = cls._planner_selection_from_step(step)
+        input_json = step.input_json if isinstance(step.input_json, dict) else {}
+        success_criteria = input_json.get("success_criteria")
+        required_artifacts = input_json.get("required_artifacts")
         payload = {
             "step_key": step.step_key,
             "task": cls._step_task_text(step),
@@ -3225,6 +3903,10 @@ class RouterAgentManagerService(BaseService):
             "target_ref_id": worker.target_ref_id,
             "selection_reason": selection.get("reason", ""),
             "selection_signals": selection.get("signals", []),
+            "expected_output": str(input_json.get("expected_output") or ""),
+            "success_criteria": list(success_criteria or []) if isinstance(success_criteria, list) else [],
+            "required_artifacts": list(required_artifacts or []) if isinstance(required_artifacts, list) else [],
+            "handoff_context": str(input_json.get("handoff_context") or ""),
         }
         payload.update(extra)
         return payload
@@ -3812,6 +4494,11 @@ class RouterAgentManagerService(BaseService):
         return signal if isinstance(signal, dict) else {}
 
     @staticmethod
+    def _worker_plan_feedback(worker_result: WorkerResult) -> dict[str, Any]:
+        feedback = worker_result.data.get("plan_feedback") if isinstance(worker_result.data, dict) else {}
+        return feedback if isinstance(feedback, dict) else {}
+
+    @staticmethod
     def _worker_terminal_status(worker_result: WorkerResult) -> TaskStatus:
         try:
             status = TaskStatus(worker_result.status)
@@ -3819,6 +4506,10 @@ class RouterAgentManagerService(BaseService):
             return TaskStatus.FAILED
         terminal_statuses = {TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELLED}
         return status if status in terminal_statuses else TaskStatus.FAILED
+
+    @staticmethod
+    def _is_waiting_task_status(status: str) -> bool:
+        return str(status or "") in {item.value for item in TASK_WAITING_STATUSES}
 
     @staticmethod
     def _next_agent_version(session: Session, agent_id: uuid.UUID) -> int:

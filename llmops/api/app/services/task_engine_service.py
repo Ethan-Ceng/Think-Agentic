@@ -13,6 +13,9 @@ from app.services.base_service import BaseService
 class TaskStatus(StrEnum):
     CREATED = "created"
     RUNNING = "running"
+    WAITING = "waiting"
+    # Legacy concrete waiting statuses are still accepted for old persisted rows.
+    WAITING_USER = "waiting_user"
     WAITING_APPROVAL = "waiting_approval"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
@@ -23,6 +26,12 @@ TERMINAL_STATUSES = {
     TaskStatus.SUCCEEDED,
     TaskStatus.FAILED,
     TaskStatus.CANCELLED,
+}
+
+TASK_WAITING_STATUSES = {
+    TaskStatus.WAITING,
+    TaskStatus.WAITING_USER,
+    TaskStatus.WAITING_APPROVAL,
 }
 
 
@@ -71,7 +80,27 @@ class TaskEngineService(BaseService):
             session,
             task,
             allowed={TaskStatus.RUNNING},
-            target=TaskStatus.WAITING_APPROVAL,
+            target=TaskStatus.WAITING,
+            error_code="waiting_approval",
+            version=self._next_version(task),
+        )
+
+    def wait_for_user(
+        self,
+        session: Session,
+        task: AgentTask,
+        *,
+        final_result: dict[str, Any] | None = None,
+        error_message: str = "",
+    ) -> AgentTask:
+        return self._transition(
+            session,
+            task,
+            allowed={TaskStatus.RUNNING},
+            target=TaskStatus.WAITING,
+            final_result=final_result or task.final_result or {},
+            error_code="waiting_user",
+            error_message=error_message,
             version=self._next_version(task),
         )
 
@@ -79,8 +108,10 @@ class TaskEngineService(BaseService):
         return self._transition(
             session,
             task,
-            allowed={TaskStatus.WAITING_APPROVAL},
+            allowed=TASK_WAITING_STATUSES,
             target=TaskStatus.RUNNING,
+            error_code="" if str(task.error_code or "").startswith("waiting_") else task.error_code,
+            error_message="" if str(task.error_code or "").startswith("waiting_") else task.error_message,
             version=self._next_version(task),
         )
 
@@ -94,7 +125,7 @@ class TaskEngineService(BaseService):
         return self._transition(
             session,
             task,
-            allowed={TaskStatus.CREATED, TaskStatus.RUNNING, TaskStatus.WAITING_APPROVAL},
+            allowed={TaskStatus.CREATED, TaskStatus.RUNNING, *TASK_WAITING_STATUSES},
             target=TaskStatus.SUCCEEDED,
             final_result=final_result or {},
             finished_at=self._now(),
@@ -113,7 +144,7 @@ class TaskEngineService(BaseService):
         return self._transition(
             session,
             task,
-            allowed={TaskStatus.CREATED, TaskStatus.RUNNING, TaskStatus.WAITING_APPROVAL},
+            allowed={TaskStatus.CREATED, TaskStatus.RUNNING, *TASK_WAITING_STATUSES},
             target=TaskStatus.FAILED,
             error_code=error_code,
             error_message=error_message,
@@ -132,7 +163,7 @@ class TaskEngineService(BaseService):
         return self._transition(
             session,
             task,
-            allowed={TaskStatus.CREATED, TaskStatus.RUNNING, TaskStatus.WAITING_APPROVAL},
+            allowed={TaskStatus.CREATED, TaskStatus.RUNNING, *TASK_WAITING_STATUSES},
             target=TaskStatus.CANCELLED,
             error_code="cancelled",
             error_message=error_message,
@@ -207,11 +238,21 @@ class TaskEngineService(BaseService):
             target=TaskStatus.WAITING_APPROVAL,
         )
 
+    def wait_step_for_user(
+        self,
+        session: Session,
+        step: AgentStep,
+        *,
+        output_json: dict[str, Any] | None = None,
+    ) -> AgentStep:
+        self._ensure_status(step, {TaskStatus.RUNNING})
+        return self.update(session, step, output_json=output_json or step.output_json or {})
+
     def resume_step(self, session: Session, step: AgentStep) -> AgentStep:
         return self._transition(
             session,
             step,
-            allowed={TaskStatus.WAITING_APPROVAL},
+            allowed={TaskStatus.WAITING, TaskStatus.WAITING_APPROVAL, TaskStatus.WAITING_USER},
             target=TaskStatus.RUNNING,
         )
 
@@ -225,7 +266,13 @@ class TaskEngineService(BaseService):
         return self._transition(
             session,
             step,
-            allowed={TaskStatus.CREATED, TaskStatus.RUNNING, TaskStatus.WAITING_APPROVAL},
+            allowed={
+                TaskStatus.CREATED,
+                TaskStatus.RUNNING,
+                TaskStatus.WAITING,
+                TaskStatus.WAITING_USER,
+                TaskStatus.WAITING_APPROVAL,
+            },
             target=TaskStatus.SUCCEEDED,
             output_json=output_json or {},
             finished_at=self._now(),
@@ -242,7 +289,13 @@ class TaskEngineService(BaseService):
         return self._transition(
             session,
             step,
-            allowed={TaskStatus.CREATED, TaskStatus.RUNNING, TaskStatus.WAITING_APPROVAL},
+            allowed={
+                TaskStatus.CREATED,
+                TaskStatus.RUNNING,
+                TaskStatus.WAITING,
+                TaskStatus.WAITING_USER,
+                TaskStatus.WAITING_APPROVAL,
+            },
             target=TaskStatus.FAILED,
             output_json={"error_code": error_code, "error_message": error_message},
             finished_at=self._now(),
@@ -276,6 +329,21 @@ class TaskEngineService(BaseService):
             worker_call,
             allowed={TaskStatus.CREATED},
             target=TaskStatus.RUNNING,
+        )
+
+    def wait_worker_call_for_user(
+        self,
+        session: Session,
+        worker_call: WorkerCall,
+        *,
+        result_json: dict[str, Any] | None = None,
+    ) -> WorkerCall:
+        return self._transition(
+            session,
+            worker_call,
+            allowed={TaskStatus.RUNNING},
+            target=TaskStatus.SUCCEEDED,
+            result_json=result_json or worker_call.result_json or {},
         )
 
     def complete_worker_call(
@@ -407,6 +475,16 @@ class TaskEngineService(BaseService):
                 f"{current.value} -> {target.value}; allowed from {allowed_values}",
             )
         return self.update(session, model_instance, status=target.value, **kwargs)
+
+    def _ensure_status(self, model_instance: Any, allowed: set[TaskStatus]) -> TaskStatus:
+        current = self._status(model_instance.status)
+        if current not in allowed:
+            allowed_values = ", ".join(sorted(status.value for status in allowed))
+            raise FailException(
+                f"Invalid transition for {model_instance.__class__.__name__}: "
+                f"{current.value}; allowed from {allowed_values}",
+            )
+        return current
 
     @staticmethod
     def _status(status: TaskStatus | str) -> TaskStatus:

@@ -1549,6 +1549,11 @@ v2.3 手工验收：
 14. v2.3-5：Agent 选择排查增强。TraceEvent 展示 Agent 名称、step task、选择理由、选择信号；任务页支持日志筛选、Step 输入输出摘要、调度回放、replan diff 和 Planner dry-run。已完成。
 15. v2.4-1：A2A 专项启动条件确认：主流程回归通过，WorkerAgent id 口径稳定，executor 派发边界已落库和展示。已满足启动条件，但当前暂缓实施。
 16. v2.4-2：A2A Agent Card、外部 WorkerAgent 映射、A2A executor、安全和 trace 按专项实施。待后续专项。
+17. v2.5-1：吸收 `agentic` 的 Planner/ReAct 执行反馈循环经验，保留本系统 PlannerAgent/WorkerAgent 双层分工。已完成。
+18. v2.5-2：新增 `worker_plan_feedback_v1` 和 `RouterPlannerAgent.update_plan_from_feedback()`，Worker 成功反馈可触发受控 plan update。已完成。
+19. v2.5-3：`RouterPlanStep` 增强执行契约：`expected_output`、`success_criteria`、`required_artifacts`、`handoff_context`。已完成。
+20. v2.5-4：新增轻量等待能力并收敛为 Task `waiting` + `wait.user.requested` trace；`waiting_user` 仅作为 WorkerResult 信号和历史兼容值。已完成。
+21. v2.5-5：plan update 任务页回放数据落库：previous/new plan、plan diff、feedback、preflight、trace。已完成。
 
 每个批次完成标准：
 
@@ -1557,7 +1562,40 @@ v2.3 手工验收：
 - 前端批次至少跑 type-check 和 build。
 - 涉及 Planner/Worker 行为的批次必须用真实调试任务验证，并记录 session/task id。
 
-## 8. v3：等待用户输入与人工审批
+## 8. v2.5：执行反馈驱动计划更新
+
+目标：吸收 `agentic` 中“执行一步、观察结果、更新剩余计划”的精华，但不照搬其内存状态机和工具直连模式。`llmops` 保持平台治理边界：Planner 只规划和更新计划，Worker 只执行和反馈，Router 负责校验、preflight、落库和回放。
+
+已落地能力：
+
+- Planner/ReAct 双层分工在本系统中表达为 PlannerAgent + WorkerAgent，不新增第三类 ReActAgent。
+- `RouterPlanStep` 已具备执行契约字段：`expected_output`、`success_criteria`、`required_artifacts`、`handoff_context`。
+- Worker 成功后可在 `WorkerResult.data.plan_feedback` 返回 `worker_plan_feedback_v1`。
+- `plan_feedback.completed_enough = true` 可让 Router 提前结束任务并记录 `planner.plan_update.completed_enough`。
+- `plan_feedback.needs_plan_update = true` 会触发 `RouterPlannerAgent.update_plan_from_feedback()`，只生成剩余或替换步骤。
+- 新计划仍经过 `RouterRuntime.validate_plan()`、绑定校验、依赖校验和 capability preflight。
+- 动态计划更新不覆盖原计划，而是追加新的 `AgentPlan` 和 `AgentStep`，旧 plan 标记 `superseded`。
+- Trace 记录 `planner.plan_update.requested/generated/validated/applied/fallback/limit_exceeded` 和 `planner.plan_update.preflight.*`。
+- 等待状态已收敛为 Task `waiting`；Worker 可通过 `WorkerResult.status = waiting_user` 发出暂停信号，等待类型、缺失信息和恢复策略进入 `wait.user.requested`，Step 保持运行上下文，WorkerCall 保存本次等待结果。
+- Worker 侧继续保留 `worker_memory_compaction_v1`，并把 `plan_feedback` 写入最终 runtime event payload。
+- 任务页已展示 Plan Update、Step 执行契约、Worker plan feedback 和 WaitEvent 摘要；v6-lite 运行分析已新增 `/apps/{app_id}/agent-tasks/metrics` 只读接口和任务页“运行分析”tab。
+
+关键约束：
+
+- WorkerAgent 不能调用其他 WorkerAgent。
+- WorkerAgent 不能修改 `RouterPlan`、`AgentPlan` 或新增 Planner step。
+- WorkerAgent 只能返回结构化反馈；是否采纳由 Router/Planner 决定。
+- 已完成 step 不可改写；计划更新只处理剩余或替换工作。
+- 每个任务默认最多执行一次成功反馈计划更新，可通过 routing policy 的 `max_plan_update_attempts` 调整。
+- A2A/MCP 仍不能作为 Planner 直接可见工具；A2A 仍按外部 WorkerAgent 专项处理。
+
+自动化验证：
+
+- 目标测试覆盖 Planner feedback prompt 归一化、Worker `plan_feedback`、成功反馈 plan update、Step 契约透传、`waiting_user` 状态和 TaskEngine resume。
+- 本轮目标验证：`uv run --project llmops\api pytest -q llmops\api\tests\test_router_agent_manager_service.py llmops\api\tests\test_worker_runtime.py llmops\api\tests\test_task_engine_service.py`，结果 `29 passed`。
+- 目标 lint：`uv run --project llmops\api ruff check ...` 通过。
+
+## 9. v3：等待用户输入与人工审批
 
 目标：任务信息不足或高风险时不直接失败，而是暂停并等待用户或审批人继续。
 
@@ -1573,12 +1611,12 @@ v2.3 手工验收：
 
 协议方向：
 
-- `WorkerResult.status = waiting_user` 表示信息不足。
-- `WorkerResult.status = waiting_approval` 表示需要审批。
-- `TraceEvent` 记录等待原因、恢复输入和审批结果。
-- `AgentTask.status` 支持 paused/waiting/running/done/failed。
+- `WorkerResult.status = waiting_user` 表示信息不足，但只作为 WorkerResult 信号。
+- `WorkerResult.status = waiting_approval` 表示需要审批，后续同样建议只作为等待信号。
+- `TraceEvent` 记录等待原因、等待类型、恢复输入和审批结果。
+- `AgentTask.status` 当前定稿为 `created / running / waiting / succeeded / failed / cancelled`；等待类型放入 `WaitEvent.wait_type`。
 
-## 9. v4：并行 DAG 与依赖执行
+## 10. v4：并行 DAG 与依赖执行
 
 目标：让 `RouterPlan` 支持非线性执行和依赖编排，而不只做顺序 step。
 
@@ -1597,11 +1635,11 @@ v2.3 手工验收：
 - 汇总 step 必须能看到前置 WorkerResult。
 - 失败策略需要可配置：fail-fast、continue、fallback worker。
 
-## 10. v5：WorkerAgent Runtime 能力增强
+## 11. v5：WorkerAgent Runtime 能力增强
 
 目标：增强执行 Agent 的真实完成能力，而不是继续增加 Planner 复杂度。PlannerAgent 仍做全局计划、Worker 选择和重规划；WorkerAgent 在自己的任务边界内做局部 ReAct，选择并调用自己的 RAG、工具、Workflow、API、MCP 或 sandbox executor，最终统一返回 `WorkerResult`。
 
-### 10.1 核心边界
+### 11.1 核心边界
 
 - PlannerAgent 负责全局计划：拆任务、选 Worker、顺序调度、失败后重规划、最终汇总。
 - WorkerAgent 负责局部执行：理解单个 `WorkerInvocation`，在本 Worker 的能力边界内选择工具和步骤。
@@ -1623,7 +1661,7 @@ User Goal
       -> Planner synthesize / replan
 ```
 
-### 10.2 从 agentic 吸收的 5 点
+### 11.2 从 agentic 吸收的 5 点
 
 1. Worker 内部 ReAct 循环。
    Worker 可以多轮思考、选择工具、执行工具、读取 observation，再决定是否继续或结束。首期建议保留最大迭代次数，默认 5 轮，避免无界循环。
@@ -1640,7 +1678,7 @@ User Goal
 5. 短期记忆压缩与回滚。
    Worker 内部多轮工具调用后可压缩短期上下文，保留 goal、已用工具、关键 observation、产物和失败原因。遇到需要用户补充时，V5 先返回 `missing_info` / `needs_replan`，不启用完整 V3 等待用户流程。
 
-### 10.3 WorkerResult 扩展口径
+### 11.3 WorkerResult 扩展口径
 
 不优先新增业务表，先复用 `WorkerCall.result_json` 和 `TraceEvent.payload`。`WorkerResult` 当前已有 `events`、`actions`、`evidence`、`artifacts`、`confidence`、`retryable`、`error_code` 和 `used_capabilities`，V5 在这些字段内标准化 Worker 内部执行记录。
 
@@ -1692,7 +1730,7 @@ User Goal
 - V5 `WorkerResult.data.thoughts`、`events[].payload.raw_event` 和任务页 `Runtime JSON` 属于登录后平台后台排障面，不暴露给发布后的 Web App 普通终端用户。
 - 发布后的 Web App Chat / OpenAPI Chat 仍会流式返回普通 App 的 `agent_thoughts`，用于展示“运行流程”。这些事件不是 V5 Worker Runtime JSON，但可能包含工具输入、工具输出和知识库检索 observation。若面向外部终端用户，应通过发布配置控制是否展示 `agent_thoughts`，默认建议隐藏，只保留最终 answer。
 
-### 10.4 executor 演进
+### 11.4 executor 演进
 
 执行类型演进：
 
@@ -1713,7 +1751,7 @@ User Goal
 - MCP、sandbox、api 不作为 Planner 内部协议，而是 Worker 内部能力或 Worker executor。
 - workflow/api 首期优先复用现有 `AppService.run_app_worker()` 的 capability 体系，不急于拆独立 executor。
 
-### 10.5 分阶段落地计划
+### 11.5 分阶段落地计划
 
 v5.0：设计与协议准备。已完成。
 
@@ -1749,7 +1787,7 @@ v5.4：executor 扩展。已完成。
 - sandbox executor 单独做安全设计，包含资源限制、文件边界、网络边界、超时和审计。
 - 当前实现为 capability 执行增加内部 `RuntimeCapabilityResult`：API、workflow、dataset、builtin tool 均会产出 `executor_type/status/error_code/error_message` metadata；workflow 额外提取节点级 `workflow_nodes` 摘要。旧的 `_invoke_runtime_capability()` 仍保持返回字符串 observation，兼容旧调用。MCP/sandbox 未接入，仅预留 policy 和事件协议。
 
-### 10.6 验收标准
+### 11.6 验收标准
 
 - Planner 仍只生成 `RouterPlan`，不直接看到工具、MCP、workflow 或 sandbox 协议。
 - Worker 内部调用工具时，任务页能看到工具名、参数摘要、结果摘要、状态、耗时和错误码。
@@ -1758,18 +1796,22 @@ v5.4：executor 扩展。已完成。
 - 历史任务回放使用当次 `WorkerResult` 和 trace，不读取最新 Worker 配置覆盖历史记录。
 - A2A 不被放进普通 Worker 工具列表，仍按外部 WorkerAgent 专项处理。
 
-## 11. v6：评估、治理和生产化
+## 12. v6：评估、治理和生产化
 
 目标：让 PlannerAgent 可用于真实业务运行和持续优化。
 
-核心待办：
+已落地 v6-lite：
 
-- Planner 计划质量评估。
-- Worker 选择命中率统计。
-- fallback 率。
-- 失败率。
-- 平均 step 数。
-- 平均耗时。
+- 基于现有 `AgentTask / AgentPlan / AgentStep / WorkerCall / TraceEvent` 做只读运行分析，不新增采集链路或统计表。
+- 新增 `GET /apps/{app_id}/agent-tasks/metrics`。
+- 已覆盖任务数、成功率、等待数、平均耗时、token/cost、plan 数、replan rate、plan update rate、首计划成功率、自动修复成功率、计划膨胀率、Worker 成功率、等待排行、错误码和 `missing_info` 统计。
+- 任务页新增“运行分析”tab，展示 KPI、Planner 指标、Worker 排行、等待字段和错误排行。
+
+后续待办：
+
+- Planner 计划质量评估集。
+- Worker 选择命中率评测。
+- fallback 率长期趋势。
 - Planner prompt/version 管理。
 - Planner 策略配置：最大 step、是否允许并行、是否允许审批、失败策略。
 - 历史任务回放。
@@ -1783,7 +1825,7 @@ v5.4：executor 扩展。已完成。
 - 成本统计。
 - 用户、账号、应用维度的运行报表。
 
-## 12. agentic 调研结论
+## 13. agentic 调研结论
 
 可以吸收的能力：
 
@@ -1812,14 +1854,14 @@ v5.4：executor 扩展。已完成。
 - `llmops` 的定稿方向是把外部 A2A Agent 表达为外部 WorkerAgent，通过 `AgentBinding` 绑定给 Planner，而不是放入插件广场，也不是作为 Planner prompt 里的普通工具。
 - agentic 中的工具、MCP、ReAct 执行经验后续可继续沉淀为 Worker executor 或 Worker capability。
 
-## 13. 推荐推进顺序
+## 14. 推荐推进顺序
 
 1. v1 收尾：验收清单、任务页验证、Worker 模板、能力不足提示。
 2. v2.1 能力感知地基：`capability_summary`、routing policy、preflight、错误 taxonomy、任务页展示。
 3. v2.2 主流程硬化：WorkerAgent id 口径、Planner 绑定兼容、任务页和 trace 主链路。
 4. v2.3 动态重规划：`update_plan()`、失败后改派、原计划/新计划展示。
 5. v2.4 A2A 外部 Worker：Agent Card 同步、外部 WorkerAgent 映射、Planner 绑定、text `message/send` executor、调用 trace。当前暂缓，不作为近期主线。
-6. v6-lite 评估、治理和运行分析：优先利用现有 AgentTask、AgentPlan、AgentStep、WorkerCall 和 TraceEvent 做只读统计。
+6. v6-lite 评估、治理和运行分析：已利用现有 AgentTask、AgentPlan、AgentStep、WorkerCall 和 TraceEvent 做只读统计，后续继续扩展评测集和长期报表。
 7. v5 WorkerAgent Runtime 能力增强：Worker 内部 ReAct、工具事件、状态机、短期记忆和 executor 接入。
 8. v4-lite 并行 DAG：先做受控 fan-out/fan-in，不做任意 LLM 自由 DAG。
 9. v3 等待用户输入和人工审批：暂缓，后续只在企业治理或高风险动作场景启用。

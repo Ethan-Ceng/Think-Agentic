@@ -15,6 +15,7 @@ CAPABILITY_ERROR_MESSAGES: dict[str, str] = {
     "routing_policy_invalid": "Worker 编排规则格式不正确。",
     "capability_summary_invalid": "Worker 能力摘要格式不正确。",
     "replan_limit_exceeded": "本次任务已达到自动重规划次数上限。",
+    "plan_update_limit_exceeded": "本次任务已达到动态计划更新次数上限。",
 }
 
 
@@ -57,6 +58,8 @@ def default_routing_policy() -> dict[str, Any]:
                 "on_planner_invalid": "manager_rule_v1",
                 "on_preflight_failed": "structured_error",
                 "on_worker_failed": "replan_once",
+                "on_plan_feedback": "update_once",
+                "max_plan_update_attempts": 1,
             },
         }
     )

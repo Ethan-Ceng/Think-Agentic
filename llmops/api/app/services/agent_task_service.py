@@ -1,6 +1,7 @@
 import json
 import math
-from collections import defaultdict
+from collections import Counter, defaultdict
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
@@ -17,6 +18,9 @@ from app.models.task import AgentPlan, AgentStep, AgentTask, CapabilityCall, Wor
 from app.models.trace import TraceEvent
 from app.services.app_service import AppService
 from app.services.base_service import BaseService
+
+TASK_WAITING_STATUS_VALUES = {"waiting", "waiting_user", "waiting_approval"}
+MAX_METRIC_TASKS = 2000
 
 
 class AgentTaskService(BaseService):
@@ -85,6 +89,113 @@ class AgentTaskService(BaseService):
         total_record = len(summaries)
         total_page = math.ceil(total_record / page_size) if total_record else 0
         return summaries[(page - 1) * page_size : page * page_size], total_record, total_page, users
+
+    def get_app_task_runtime_metrics(
+        self,
+        session: Session,
+        *,
+        app_id: UUID,
+        account: Account,
+        from_ts: int | None = None,
+        to_ts: int | None = None,
+        status: str = "all",
+        user_id: str = "all",
+        router_agent_id: str = "all",
+        worker_agent_id: str = "all",
+        group_by: str = "day",
+    ) -> dict[str, Any]:
+        self.app_service.get_app(session, app_id, account)
+        app_agent_ids = self._app_agent_ids(session, app_id, account, validate_app=False)
+        query = self._app_task_query(session, app_agent_ids)
+        from_dt = self._datetime_from_ts(from_ts)
+        to_dt = self._datetime_from_ts(to_ts)
+        if from_dt is not None:
+            query = query.filter(AgentTask.created_at >= from_dt)
+        if to_dt is not None:
+            query = query.filter(AgentTask.created_at <= to_dt)
+
+        cleaned_status = (status or "all").strip().lower()
+        if cleaned_status and cleaned_status != "all":
+            if cleaned_status == "waiting":
+                query = query.filter(AgentTask.status.in_(list(TASK_WAITING_STATUS_VALUES)))
+            else:
+                query = query.filter(AgentTask.status == cleaned_status)
+        user_uuid = self._uuid_or_none(user_id)
+        if user_uuid is not None:
+            query = query.filter(AgentTask.user_id == user_uuid)
+        router_uuid = self._uuid_or_none(router_agent_id)
+        if router_uuid is not None:
+            query = query.filter(AgentTask.router_agent_id == router_uuid)
+
+        raw_tasks = query.order_by(AgentTask.created_at.asc()).limit(MAX_METRIC_TASKS + 1).all()
+        truncated = len(raw_tasks) > MAX_METRIC_TASKS
+        tasks = list(raw_tasks[:MAX_METRIC_TASKS])
+        if not tasks:
+            return self._empty_runtime_metrics(
+                from_ts=from_ts,
+                to_ts=to_ts,
+                status=cleaned_status or "all",
+                group_by=group_by,
+                truncated=truncated,
+            )
+
+        task_ids = [task.id for task in tasks]
+        plans = (
+            session.query(AgentPlan)
+            .filter(AgentPlan.task_id.in_(task_ids))
+            .order_by(AgentPlan.created_at.asc())
+            .all()
+        )
+        steps = (
+            session.query(AgentStep)
+            .filter(AgentStep.task_id.in_(task_ids))
+            .order_by(AgentStep.created_at.asc())
+            .all()
+        )
+        worker_calls = (
+            session.query(WorkerCall).filter(WorkerCall.task_id.in_(task_ids)).order_by(WorkerCall.created_at.asc()).all()
+        )
+        trace_events = (
+            session.query(TraceEvent).filter(TraceEvent.task_id.in_(task_ids)).order_by(TraceEvent.created_at.asc()).all()
+        )
+
+        worker_uuid = self._uuid_or_none(worker_agent_id)
+        if worker_uuid is not None:
+            relevant_task_ids = {
+                item.task_id
+                for item in [*steps, *worker_calls]
+                if getattr(item, "worker_agent_id", None) == worker_uuid
+            }
+            tasks = [task for task in tasks if task.id in relevant_task_ids]
+            task_ids = [task.id for task in tasks]
+            plans = [plan for plan in plans if plan.task_id in set(task_ids)]
+            steps = [step for step in steps if step.task_id in set(task_ids) and step.worker_agent_id == worker_uuid]
+            worker_calls = [
+                call for call in worker_calls if call.task_id in set(task_ids) and call.worker_agent_id == worker_uuid
+            ]
+            trace_events = [event for event in trace_events if event.task_id in set(task_ids)]
+            if not tasks:
+                return self._empty_runtime_metrics(
+                    from_ts=from_ts,
+                    to_ts=to_ts,
+                    status=cleaned_status or "all",
+                    group_by=group_by,
+                    truncated=truncated,
+                )
+
+        return self._build_runtime_metrics(
+            session,
+            tasks=tasks,
+            plans=plans,
+            steps=steps,
+            worker_calls=worker_calls,
+            trace_events=trace_events,
+            from_ts=from_ts,
+            to_ts=to_ts,
+            status=cleaned_status or "all",
+            group_by=group_by,
+            truncated=truncated,
+        )
 
     def get_app_conversation_detail(
         self,
@@ -654,7 +765,7 @@ class AgentTaskService(BaseService):
         return sum(int(task_trace_counts.get(task.id) or 0) for task in tasks)
 
     def _conversation_status(self, messages: list[Message], tasks: list[AgentTask]) -> str:
-        if any(task.status in {"created", "running", "waiting_approval"} for task in tasks):
+        if any(task.status in {"created", "running", *TASK_WAITING_STATUS_VALUES} for task in tasks):
             return "running"
         if any(task.status == "failed" for task in tasks):
             return "failed"
@@ -709,6 +820,128 @@ class AgentTaskService(BaseService):
                 }
             )
         return summaries
+
+    def _build_runtime_metrics(
+        self,
+        session: Session,
+        *,
+        tasks: list[AgentTask],
+        plans: list[AgentPlan],
+        steps: list[AgentStep],
+        worker_calls: list[WorkerCall],
+        trace_events: list[TraceEvent],
+        from_ts: int | None,
+        to_ts: int | None,
+        status: str,
+        group_by: str,
+        truncated: bool,
+    ) -> dict[str, Any]:
+        task_count = len(tasks)
+        status_counts = Counter(self._task_status(task.status) for task in tasks)
+        total_latency = sum(self._task_duration(task) for task in tasks)
+        total_token = sum(int(call.token_count or 0) for call in worker_calls)
+        total_cost = sum(float(call.cost or 0) for call in worker_calls)
+        plans_by_task: dict[UUID, list[AgentPlan]] = defaultdict(list)
+        steps_by_task: dict[UUID, list[AgentStep]] = defaultdict(list)
+        for plan in plans:
+            plans_by_task[plan.task_id].append(plan)
+        for step in steps:
+            steps_by_task[step.task_id].append(step)
+
+        replan_task_ids = {
+            plan.task_id for plan in plans if isinstance(plan.plan_json, dict) and plan.plan_json.get("replan")
+        }
+        plan_update_task_ids = {
+            plan.task_id for plan in plans if isinstance(plan.plan_json, dict) and plan.plan_json.get("plan_update")
+        }
+        changed_task_ids = replan_task_ids | plan_update_task_ids
+        succeeded_task_ids = {task.id for task in tasks if self._task_status(task.status) == "succeeded"}
+        first_plan_succeeded = len(succeeded_task_ids - changed_task_ids)
+        auto_fix_succeeded = len(succeeded_task_ids & changed_task_ids)
+        inflation_values = [
+            self._plan_inflation_ratio(plans_by_task.get(task.id, []), steps_by_task.get(task.id, []))
+            for task in tasks
+        ]
+        inflation_values = [value for value in inflation_values if value > 0]
+
+        step_status_counts = Counter(self._task_status(step.status) for step in steps)
+        worker_status_counts = Counter(self._task_status(call.status) for call in worker_calls)
+        worker_rows = self._worker_metric_rows(session, worker_calls)
+        trace_metrics = self._trace_metrics(trace_events, tasks=tasks, worker_calls=worker_calls)
+
+        overview = {
+            "task_count": task_count,
+            "succeeded_count": status_counts.get("succeeded", 0),
+            "failed_count": status_counts.get("failed", 0),
+            "cancelled_count": status_counts.get("cancelled", 0),
+            "waiting_count": status_counts.get("waiting", 0),
+            "running_count": status_counts.get("running", 0),
+            "success_rate": self._rate(status_counts.get("succeeded", 0), task_count),
+            "avg_latency": self._avg(total_latency, task_count),
+            "total_token_count": total_token,
+            "total_cost": round(total_cost, 6),
+        }
+        planner = {
+            "plan_count": len(plans),
+            "avg_plan_count_per_task": self._avg(len(plans), task_count),
+            "replan_task_count": len(replan_task_ids),
+            "plan_update_task_count": len(plan_update_task_ids),
+            "replan_rate": self._rate(len(replan_task_ids), task_count),
+            "plan_update_rate": self._rate(len(plan_update_task_ids), task_count),
+            "first_plan_success_rate": self._rate(first_plan_succeeded, task_count),
+            "auto_fix_success_rate": self._rate(auto_fix_succeeded, len(changed_task_ids)),
+            "avg_plan_inflation_ratio": self._avg(sum(inflation_values), len(inflation_values)),
+            "replan_limit_exceeded_count": trace_metrics["error_codes"].get("replan_limit_exceeded", 0),
+            "plan_update_limit_exceeded_count": trace_metrics["error_codes"].get("plan_update_limit_exceeded", 0),
+        }
+        worker = {
+            "worker_call_count": len(worker_calls),
+            "worker_succeeded_count": worker_status_counts.get("succeeded", 0),
+            "worker_failed_count": worker_status_counts.get("failed", 0),
+            "worker_waiting_count": trace_metrics["worker_waiting_count"],
+            "worker_success_rate": self._rate(worker_status_counts.get("succeeded", 0), len(worker_calls)),
+            "avg_worker_latency": self._avg(sum(float(call.latency or 0) for call in worker_calls), len(worker_calls)),
+            "avg_worker_token": self._avg(total_token, len(worker_calls)),
+            "by_worker": worker_rows,
+        }
+        step = {
+            "step_count": len(steps),
+            "succeeded_step_count": step_status_counts.get("succeeded", 0),
+            "failed_step_count": step_status_counts.get("failed", 0),
+            "running_step_count": step_status_counts.get("running", 0),
+            "step_success_rate": self._rate(step_status_counts.get("succeeded", 0), len(steps)),
+            "avg_step_count_per_task": self._avg(len(steps), task_count),
+        }
+        trace = {
+            "trace_event_count": len(trace_events),
+            "tool_event_count": trace_metrics["tool_event_count"],
+            "preflight_failed_count": trace_metrics["preflight_failed_count"],
+            "wait_event_count": trace_metrics["wait_event_count"],
+            "error_event_count": trace_metrics["error_event_count"],
+        }
+        wait = {
+            "by_type": self._counter_rows(trace_metrics["wait_types"], key_name="wait_type"),
+            "missing_info": self._counter_rows(trace_metrics["missing_info"], key_name="field"),
+        }
+        errors = self._counter_rows(trace_metrics["error_codes"], key_name="error_code")
+        return {
+            "scope": {
+                "from_ts": from_ts,
+                "to_ts": to_ts,
+                "status": status,
+                "group_by": group_by,
+                "max_task_count": MAX_METRIC_TASKS,
+                "truncated": truncated,
+            },
+            "overview": overview,
+            "planner": planner,
+            "worker": worker,
+            "step": step,
+            "trace": trace,
+            "wait": wait,
+            "errors": errors,
+            "series": self._metric_series(group_by, tasks=tasks, worker_rows=worker_rows),
+        }
 
     def _message_trace_event_response(self, thought: MessageAgentThought) -> dict[str, Any]:
         return {
@@ -778,7 +1011,7 @@ class AgentTaskService(BaseService):
             "id": task.id,
             "run_type": entry_agent.runtime_type if entry_agent else "router",
             "entry_agent": self._agent_response(entry_agent),
-            "status": task.status,
+            "status": self._task_status(task.status),
             "user_input": task.user_input or {},
             "final_result": task.final_result or {},
             "error_code": task.error_code,
@@ -789,6 +1022,312 @@ class AgentTaskService(BaseService):
             "created_at": self._ts(task.created_at),
             "updated_at": self._ts(task.updated_at),
         }
+
+    @staticmethod
+    def _task_status(status: str) -> str:
+        return "waiting" if str(status or "") in TASK_WAITING_STATUS_VALUES else str(status or "")
+
+    @staticmethod
+    def _datetime_from_ts(value: int | None) -> datetime | None:
+        return datetime.fromtimestamp(value) if value else None
+
+    @staticmethod
+    def _uuid_or_none(value: str | UUID | None) -> UUID | None:
+        cleaned = str(value or "").strip()
+        if not cleaned or cleaned == "all":
+            return None
+        try:
+            return UUID(cleaned)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _rate(part: int | float, total: int | float) -> float:
+        return round(float(part) / float(total), 4) if total else 0.0
+
+    @staticmethod
+    def _avg(total: int | float, count: int | float) -> float:
+        return round(float(total) / float(count), 4) if count else 0.0
+
+    @staticmethod
+    def _task_duration(task: AgentTask) -> float:
+        start = task.started_at or task.created_at
+        end = task.finished_at or task.updated_at
+        if start is None or end is None:
+            return 0.0
+        return max(0.0, (end - start).total_seconds())
+
+    @classmethod
+    def _empty_runtime_metrics(
+        cls,
+        *,
+        from_ts: int | None,
+        to_ts: int | None,
+        status: str,
+        group_by: str,
+        truncated: bool,
+    ) -> dict[str, Any]:
+        return {
+            "scope": {
+                "from_ts": from_ts,
+                "to_ts": to_ts,
+                "status": status,
+                "group_by": group_by,
+                "max_task_count": MAX_METRIC_TASKS,
+                "truncated": truncated,
+            },
+            "overview": {
+                "task_count": 0,
+                "succeeded_count": 0,
+                "failed_count": 0,
+                "cancelled_count": 0,
+                "waiting_count": 0,
+                "running_count": 0,
+                "success_rate": 0,
+                "avg_latency": 0,
+                "total_token_count": 0,
+                "total_cost": 0,
+            },
+            "planner": {
+                "plan_count": 0,
+                "avg_plan_count_per_task": 0,
+                "replan_task_count": 0,
+                "plan_update_task_count": 0,
+                "replan_rate": 0,
+                "plan_update_rate": 0,
+                "first_plan_success_rate": 0,
+                "auto_fix_success_rate": 0,
+                "avg_plan_inflation_ratio": 0,
+                "replan_limit_exceeded_count": 0,
+                "plan_update_limit_exceeded_count": 0,
+            },
+            "worker": {
+                "worker_call_count": 0,
+                "worker_succeeded_count": 0,
+                "worker_failed_count": 0,
+                "worker_waiting_count": 0,
+                "worker_success_rate": 0,
+                "avg_worker_latency": 0,
+                "avg_worker_token": 0,
+                "by_worker": [],
+            },
+            "step": {
+                "step_count": 0,
+                "succeeded_step_count": 0,
+                "failed_step_count": 0,
+                "running_step_count": 0,
+                "step_success_rate": 0,
+                "avg_step_count_per_task": 0,
+            },
+            "trace": {
+                "trace_event_count": 0,
+                "tool_event_count": 0,
+                "preflight_failed_count": 0,
+                "wait_event_count": 0,
+                "error_event_count": 0,
+            },
+            "wait": {"by_type": [], "missing_info": []},
+            "errors": [],
+            "series": [],
+        }
+
+    def _worker_metric_rows(self, session: Session, worker_calls: list[WorkerCall]) -> list[dict[str, Any]]:
+        agent_ids = {call.worker_agent_id for call in worker_calls}
+        agent_map = self._agent_map(session, agent_ids)
+        stats: dict[UUID, dict[str, Any]] = {}
+        for call in worker_calls:
+            item = stats.setdefault(
+                call.worker_agent_id,
+                {
+                    "worker_agent_id": str(call.worker_agent_id),
+                    "worker_name": agent_map.get(call.worker_agent_id).name
+                    if agent_map.get(call.worker_agent_id)
+                    else "",
+                    "call_count": 0,
+                    "succeeded_count": 0,
+                    "failed_count": 0,
+                    "waiting_count": 0,
+                    "plan_update_count": 0,
+                    "latency_total": 0.0,
+                    "token_total": 0,
+                    "cost_total": 0.0,
+                },
+            )
+            status = self._task_status(call.status)
+            feedback = self._worker_plan_feedback(call)
+            item["call_count"] += 1
+            item["latency_total"] += float(call.latency or 0)
+            item["token_total"] += int(call.token_count or 0)
+            item["cost_total"] += float(call.cost or 0)
+            if status == "succeeded":
+                item["succeeded_count"] += 1
+            if status == "failed":
+                item["failed_count"] += 1
+            if self._worker_waited(call, feedback):
+                item["waiting_count"] += 1
+            if feedback.get("needs_plan_update"):
+                item["plan_update_count"] += 1
+
+        rows = []
+        for item in stats.values():
+            call_count = int(item["call_count"])
+            rows.append(
+                {
+                    "worker_agent_id": item["worker_agent_id"],
+                    "worker_name": item["worker_name"],
+                    "call_count": call_count,
+                    "succeeded_count": item["succeeded_count"],
+                    "failed_count": item["failed_count"],
+                    "waiting_count": item["waiting_count"],
+                    "plan_update_count": item["plan_update_count"],
+                    "success_rate": self._rate(item["succeeded_count"], call_count),
+                    "avg_latency": self._avg(item["latency_total"], call_count),
+                    "avg_token": self._avg(item["token_total"], call_count),
+                    "total_cost": round(float(item["cost_total"]), 6),
+                }
+            )
+        return sorted(rows, key=lambda row: (-int(row["call_count"]), str(row["worker_name"])))
+
+    def _trace_metrics(
+        self,
+        trace_events: list[TraceEvent],
+        *,
+        tasks: list[AgentTask],
+        worker_calls: list[WorkerCall],
+    ) -> dict[str, Any]:
+        wait_types: Counter[str] = Counter()
+        missing_info: Counter[str] = Counter()
+        error_codes: Counter[str] = Counter()
+        tool_event_count = 0
+        preflight_failed_count = 0
+        wait_event_count = 0
+        error_event_count = 0
+
+        for task in tasks:
+            code = str(task.error_code or "")
+            if code and not code.startswith("waiting_"):
+                error_codes[code] += 1
+
+        for call in worker_calls:
+            feedback = self._worker_plan_feedback(call)
+            if feedback.get("reason_code") and feedback.get("reason_code") != "waiting_user":
+                error_codes[str(feedback["reason_code"])] += 1
+            for item in self._list_strings(feedback.get("missing_info")):
+                missing_info[item] += 1
+
+        for event in trace_events:
+            event_type = str(event.event_type or "")
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            if event_type.startswith(("worker.tool.", "tool.")):
+                tool_event_count += 1
+            if "preflight" in event_type and ("failed" in event_type or payload.get("status") == "failed"):
+                preflight_failed_count += 1
+            if event_type.startswith("wait."):
+                wait_event_count += 1
+                wait_types[str(payload.get("wait_type") or "unknown")] += 1
+                for item in self._list_strings(payload.get("missing_info")):
+                    missing_info[item] += 1
+            if event_type.startswith("error.") or event_type.endswith(".failed"):
+                error_event_count += 1
+            code = str(payload.get("error_code") or "")
+            if code and not code.startswith("waiting_"):
+                error_codes[code] += 1
+
+        return {
+            "tool_event_count": tool_event_count,
+            "preflight_failed_count": preflight_failed_count,
+            "wait_event_count": wait_event_count,
+            "error_event_count": error_event_count,
+            "wait_types": wait_types,
+            "missing_info": missing_info,
+            "error_codes": error_codes,
+            "worker_waiting_count": sum(
+                1 for call in worker_calls if self._worker_waited(call, self._worker_plan_feedback(call))
+            ),
+        }
+
+    @staticmethod
+    def _worker_plan_feedback(call: WorkerCall) -> dict[str, Any]:
+        result = call.result_json if isinstance(call.result_json, dict) else {}
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        feedback = data.get("plan_feedback") or result.get("plan_feedback") or {}
+        return feedback if isinstance(feedback, dict) else {}
+
+    @classmethod
+    def _worker_waited(cls, call: WorkerCall, feedback: dict[str, Any]) -> bool:
+        return (
+            cls._task_status(call.status) == "waiting"
+            or feedback.get("reason_code") == "waiting_user"
+            or bool(feedback.get("missing_info"))
+        )
+
+    @staticmethod
+    def _list_strings(value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [str(item) for item in value if str(item).strip()]
+
+    @staticmethod
+    def _counter_rows(counter: Counter[str], *, key_name: str) -> list[dict[str, Any]]:
+        return [
+            {key_name: key, "count": count}
+            for key, count in sorted(counter.items(), key=lambda item: (-item[1], item[0]))
+        ]
+
+    @staticmethod
+    def _plan_step_count(plan: AgentPlan) -> int:
+        plan_json = plan.plan_json if isinstance(plan.plan_json, dict) else {}
+        steps = plan_json.get("steps")
+        return len(steps) if isinstance(steps, list) else 0
+
+    @classmethod
+    def _plan_inflation_ratio(cls, plans: list[AgentPlan], steps: list[AgentStep]) -> float:
+        if not plans:
+            return 0.0
+        ordered = sorted(plans, key=lambda plan: plan.created_at or datetime.min)
+        initial_count = cls._plan_step_count(ordered[0]) or sum(1 for step in steps if step.plan_id == ordered[0].id)
+        final_count = cls._plan_step_count(ordered[-1]) or sum(1 for step in steps if step.plan_id == ordered[-1].id)
+        return round(final_count / initial_count, 4) if initial_count else 0.0
+
+    def _metric_series(
+        self,
+        group_by: str,
+        *,
+        tasks: list[AgentTask],
+        worker_rows: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        cleaned = (group_by or "day").strip().lower()
+        if cleaned == "status":
+            counts = Counter(self._task_status(task.status) for task in tasks)
+            return self._counter_rows(counts, key_name="status")
+        if cleaned == "worker":
+            return [
+                {
+                    "worker_agent_id": row["worker_agent_id"],
+                    "worker_name": row["worker_name"],
+                    "count": row["call_count"],
+                    "success_rate": row["success_rate"],
+                }
+                for row in worker_rows
+            ]
+        if cleaned == "router":
+            counts = Counter(str(task.router_agent_id) for task in tasks)
+            return self._counter_rows(counts, key_name="router_agent_id")
+        rows: dict[str, Counter[str]] = defaultdict(Counter)
+        for task in tasks:
+            bucket = task.created_at.strftime("%Y-%m-%d") if task.created_at else "unknown"
+            rows[bucket][self._task_status(task.status)] += 1
+            rows[bucket]["total"] += 1
+        return [
+            {
+                "date": date,
+                "task_count": counts.get("total", 0),
+                "succeeded_count": counts.get("succeeded", 0),
+                "failed_count": counts.get("failed", 0),
+                "waiting_count": counts.get("waiting", 0),
+            }
+            for date, counts in sorted(rows.items())
+        ]
 
     @staticmethod
     def _agent_response(agent: Agent | None) -> dict[str, Any] | None:
@@ -830,6 +1369,14 @@ class AgentTaskService(BaseService):
             "execution_mode": step.execution_mode,
             "status": step.status,
             "task": str(input_json.get("task") or ""),
+            "expected_output": str(input_json.get("expected_output") or ""),
+            "success_criteria": list(input_json.get("success_criteria") or [])
+            if isinstance(input_json.get("success_criteria"), list)
+            else [],
+            "required_artifacts": list(input_json.get("required_artifacts") or [])
+            if isinstance(input_json.get("required_artifacts"), list)
+            else [],
+            "handoff_context": str(input_json.get("handoff_context") or ""),
             "selection_reason": selection["reason"],
             "selection_signals": selection["signals"],
             "input_preview": self._preview_json(input_json),
@@ -965,6 +1512,14 @@ class AgentTaskService(BaseService):
             "task": str(input_json.get("task") or ""),
             "status": step.status,
             "worker_agent": self._agent_response(agent_map.get(step.worker_agent_id)),
+            "expected_output": str(input_json.get("expected_output") or ""),
+            "success_criteria": list(input_json.get("success_criteria") or [])
+            if isinstance(input_json.get("success_criteria"), list)
+            else [],
+            "required_artifacts": list(input_json.get("required_artifacts") or [])
+            if isinstance(input_json.get("required_artifacts"), list)
+            else [],
+            "handoff_context": str(input_json.get("handoff_context") or ""),
             "selection_reason": selection["reason"],
             "selection_signals": selection["signals"],
             "input_preview": self._preview_json(input_json),

@@ -51,6 +51,22 @@ class PlannerReplanInput:
 
 
 @dataclass(frozen=True)
+class PlannerPlanFeedbackInput:
+    router_id: str
+    original_query: str
+    current_plan: dict[str, Any]
+    completed_steps: list[dict[str, Any]]
+    latest_step: dict[str, Any]
+    worker_result: dict[str, Any]
+    plan_feedback: dict[str, Any]
+    workers: list[PlannerWorkerDescriptor] = field(default_factory=list)
+    input_files: list[dict[str, Any]] = field(default_factory=list)
+    recent_history: list[dict[str, Any]] = field(default_factory=list)
+    constraints: dict[str, Any] = field(default_factory=dict)
+    attempt: int = 1
+
+
+@dataclass(frozen=True)
 class PlannerResult:
     plan: RouterPlan | None
     raw_output: str = ""
@@ -109,6 +125,10 @@ class PlannerPromptBuilder:
                         "dependencies": [],
                         "execution_mode": "sync",
                         "required_approval": False,
+                        "expected_output": "what the worker should produce",
+                        "success_criteria": ["observable condition for success"],
+                        "required_artifacts": [],
+                        "handoff_context": "context that later steps need from this step",
                         "selection_reason": "why this worker is the best fit for this step",
                         "selection_signals": ["worker capability, description, or routing signal used"],
                     }
@@ -165,6 +185,10 @@ class PlannerPromptBuilder:
                         "dependencies": [],
                         "execution_mode": "sync",
                         "required_approval": False,
+                        "expected_output": "what the replacement worker should produce",
+                        "success_criteria": ["observable condition for success"],
+                        "required_artifacts": [],
+                        "handoff_context": "context that later steps need from this replacement step",
                         "selection_reason": "why this worker should handle this replacement step",
                         "selection_signals": ["failure context, capability, description, or routing signal used"],
                     }
@@ -180,6 +204,70 @@ class PlannerPromptBuilder:
             f"Use unique step_id values beginning with {step_prefix}.\n"
             "Do not depend on step ids from the previous plan; completed step outputs and artifacts "
             "will be provided as execution context.\n"
+            "Return exactly one JSON object and no explanation.\n\n"
+            f"{json.dumps(payload, ensure_ascii=False, default=str)}"
+        )
+
+    def build_plan_feedback_user_prompt(self, feedback_input: PlannerPlanFeedbackInput) -> str:
+        constraints = {
+            "allow_parallel": False,
+            "allow_plan_update": True,
+            "allow_required_approval": False,
+            "execution_mode": "sync",
+            "max_steps": 5,
+            "attempt": feedback_input.attempt,
+            **feedback_input.constraints,
+        }
+        step_prefix = f"update_{feedback_input.attempt}_step_"
+        payload = {
+            "router_id": feedback_input.router_id,
+            "original_query": feedback_input.original_query,
+            "current_plan": feedback_input.current_plan,
+            "completed_steps": feedback_input.completed_steps,
+            "latest_step": feedback_input.latest_step,
+            "worker_result": feedback_input.worker_result,
+            "plan_feedback": feedback_input.plan_feedback,
+            "input_files": feedback_input.input_files,
+            "recent_history": feedback_input.recent_history,
+            "workers": [worker.__dict__ for worker in feedback_input.workers],
+            "constraints": constraints,
+            "required_output_schema": {
+                "schema_version": "router_plan_v1",
+                "router_id": feedback_input.router_id,
+                "user_intent": "string",
+                "risk_assessment": {
+                    "risk_level": "low|medium|high",
+                    "source": "llm_plan_feedback_v1",
+                    "planning_reason": "brief reason for updating the remaining plan",
+                },
+                "steps": [
+                    {
+                        "step_id": f"{step_prefix}1",
+                        "worker_id": "one provided worker_id",
+                        "task": "remaining, replacement, or follow-up subtask for that worker",
+                        "dependencies": [],
+                        "execution_mode": "sync",
+                        "required_approval": False,
+                        "expected_output": "what this worker should produce",
+                        "success_criteria": ["observable condition for success"],
+                        "required_artifacts": [],
+                        "handoff_context": "context that later steps need from this step",
+                        "selection_reason": "why this worker should handle this updated step",
+                        "selection_signals": ["worker feedback, artifact, capability, or description used"],
+                    }
+                ],
+                "final_response_policy": {"mode": "summarize_worker_results"},
+            },
+        }
+        return (
+            "Update the remaining RouterPlan after a successful worker result changed the execution path.\n"
+            "Do not include completed steps. Only produce remaining or replacement work.\n"
+            "Use only worker_id values from the provided workers list.\n"
+            f"Use unique step_id values beginning with {step_prefix}.\n"
+            "If no further work is required, return a valid RouterPlan with an empty steps list only when "
+            "plan_feedback.completed_enough is true; otherwise include at least one remaining step.\n"
+            "For every updated step, include expected_output, success_criteria, required_artifacts, "
+            "handoff_context, selection_reason, and selection_signals.\n"
             "Return exactly one JSON object and no explanation.\n\n"
             f"{json.dumps(payload, ensure_ascii=False, default=str)}"
         )
@@ -283,6 +371,50 @@ class RouterPlannerAgent:
             latency_ms=self._latency_ms(started_at),
         )
 
+    def update_plan_from_feedback(
+        self,
+        *,
+        model: BaseLanguageModel,
+        feedback_input: PlannerPlanFeedbackInput,
+        timeout: float = 60.0,
+    ) -> PlannerResult:
+        started_at = time.monotonic()
+        try:
+            response = self.chat_runtime.create_response(
+                model=model,
+                system_prompt=self.prompt_builder.build_system_prompt(),
+                query=self.prompt_builder.build_plan_feedback_user_prompt(feedback_input),
+                response_format={"type": "json_object"},
+                timeout=timeout,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return PlannerResult(
+                plan=None,
+                latency_ms=self._latency_ms(started_at),
+                error=f"planner_plan_feedback_request_failed: {exc}",
+            )
+
+        raw_output = response.content.strip()
+        try:
+            payload = self._parse_json_object(raw_output)
+            plan = RouterPlan.model_validate(payload)
+            plan = self._normalize_plan_update_plan(plan, feedback_input.router_id, feedback_input.attempt)
+        except (ValueError, ValidationError) as exc:
+            return PlannerResult(
+                plan=None,
+                raw_output=raw_output,
+                usage=response.usage,
+                latency_ms=self._latency_ms(started_at),
+                error=f"planner_plan_feedback_output_invalid: {exc}",
+            )
+
+        return PlannerResult(
+            plan=plan,
+            raw_output=raw_output,
+            usage=response.usage,
+            latency_ms=self._latency_ms(started_at),
+        )
+
     @classmethod
     def _parse_json_object(cls, raw_output: str) -> dict[str, Any]:
         text = cls._strip_json_fence(raw_output)
@@ -325,6 +457,34 @@ class RouterPlannerAgent:
         data["risk_assessment"] = risk_assessment
 
         prefix = f"replan_{attempt}_step_"
+        steps = data.get("steps") if isinstance(data.get("steps"), list) else []
+        step_id_map: dict[str, str] = {}
+        for index, step in enumerate(steps, start=1):
+            if not isinstance(step, dict):
+                continue
+            original_step_id = str(step.get("step_id") or f"step_{index}")
+            next_step_id = original_step_id if original_step_id.startswith(prefix) else f"{prefix}{index}"
+            step_id_map[original_step_id] = next_step_id
+            step["step_id"] = next_step_id
+
+        valid_step_ids = {str(step.get("step_id")) for step in steps if isinstance(step, dict)}
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            dependencies = step.get("dependencies") if isinstance(step.get("dependencies"), list) else []
+            rewritten_dependencies = [step_id_map.get(str(dep), str(dep)) for dep in dependencies]
+            step["dependencies"] = [dep for dep in rewritten_dependencies if dep in valid_step_ids]
+        return RouterPlan.model_validate(data)
+
+    @classmethod
+    def _normalize_plan_update_plan(cls, plan: RouterPlan, router_id: str, attempt: int) -> RouterPlan:
+        normalized = cls._normalize_plan(plan, router_id)
+        data = normalized.model_dump(mode="json")
+        risk_assessment = data.get("risk_assessment") if isinstance(data.get("risk_assessment"), dict) else {}
+        risk_assessment["source"] = "llm_plan_feedback_v1"
+        data["risk_assessment"] = risk_assessment
+
+        prefix = f"update_{attempt}_step_"
         steps = data.get("steps") if isinstance(data.get("steps"), list) else []
         step_id_map: dict[str, str] = {}
         for index, step in enumerate(steps, start=1):

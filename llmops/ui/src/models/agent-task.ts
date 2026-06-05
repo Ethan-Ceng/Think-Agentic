@@ -3,6 +3,8 @@ import type { BaseResponse } from '@/models/base'
 export type AgentTaskStatus =
   | 'created'
   | 'running'
+  | 'waiting'
+  | 'waiting_user'
   | 'waiting_approval'
   | 'succeeded'
   | 'failed'
@@ -71,6 +73,10 @@ export type AgentStepItem = {
   execution_mode: string
   status: AgentTaskStatus | string
   task?: string
+  expected_output?: string
+  success_criteria?: string[]
+  required_artifacts?: string[]
+  handoff_context?: string
   selection_reason?: string
   selection_signals?: string[]
   input_preview?: string
@@ -124,6 +130,10 @@ export type TraceStepRef = {
   task: string
   status: AgentTaskStatus | string
   worker_agent: AgentRef
+  expected_output?: string
+  success_criteria?: string[]
+  required_artifacts?: string[]
+  handoff_context?: string
   selection_reason?: string
   selection_signals?: string[]
   input_preview?: string
@@ -242,6 +252,16 @@ export type GetAgentTasksWithPageRequest = {
   search_word?: string
 }
 
+export type GetAgentTaskMetricsRequest = {
+  from_ts?: number
+  to_ts?: number
+  status?: string
+  user_id?: string
+  router_agent_id?: string
+  worker_agent_id?: string
+  group_by?: 'day' | 'worker' | 'router' | 'status' | string
+}
+
 export type GetAgentTasksWithPageResponse = BaseResponse<{
   list: AgentTaskSummary[]
   users: AgentConversationUserOption[]
@@ -252,3 +272,22 @@ export type GetAgentTasksWithPageResponse = BaseResponse<{
 }>
 
 export type GetAgentTaskDetailResponse = BaseResponse<AgentTaskDetail>
+
+export type AgentTaskRuntimeMetrics = {
+  scope: Record<string, any>
+  overview: Record<string, any>
+  planner: Record<string, any>
+  worker: Record<string, any> & {
+    by_worker?: Record<string, any>[]
+  }
+  step: Record<string, any>
+  trace: Record<string, any>
+  wait: {
+    by_type?: Record<string, any>[]
+    missing_info?: Record<string, any>[]
+  }
+  errors: Record<string, any>[]
+  series: Record<string, any>[]
+}
+
+export type GetAgentTaskMetricsResponse = BaseResponse<AgentTaskRuntimeMetrics>

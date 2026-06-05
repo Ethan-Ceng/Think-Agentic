@@ -70,12 +70,45 @@ def test_task_can_wait_for_approval_and_resume() -> None:
     service.start_task(session, task)
     service.wait_for_approval(session, task)
 
-    assert task.status == TaskStatus.WAITING_APPROVAL
+    assert task.status == TaskStatus.WAITING
+    assert task.error_code == "waiting_approval"
     assert task.version == 2
 
     service.resume_task(session, task)
 
     assert task.status == TaskStatus.RUNNING
+    assert task.error_code == ""
+    assert task.version == 3
+
+
+def test_task_can_wait_for_user_and_resume() -> None:
+    service = TaskEngineService()
+    session = FakeSession()
+    task = service.create_task(
+        session,
+        tenant_id=uuid.uuid4(),
+        router_agent_id=uuid.uuid4(),
+    )
+
+    service.start_task(session, task)
+    service.wait_for_user(
+        session,
+        task,
+        final_result={"missing_info": ["city"]},
+        error_message="需要用户提供城市",
+    )
+
+    assert task.status == TaskStatus.WAITING
+    assert task.error_code == "waiting_user"
+    assert task.error_message == "需要用户提供城市"
+    assert task.final_result == {"missing_info": ["city"]}
+    assert task.version == 2
+
+    service.resume_task(session, task)
+
+    assert task.status == TaskStatus.RUNNING
+    assert task.error_code == ""
+    assert task.error_message == ""
     assert task.version == 3
 
 

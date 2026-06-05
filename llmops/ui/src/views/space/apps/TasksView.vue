@@ -10,12 +10,13 @@ import type {
   AgentPlanItem,
   AgentStepItem,
   AgentTaskDetail,
+  AgentTaskRuntimeMetrics,
   AgentTaskSummary,
   TraceEventItem,
   WorkerCallItem,
 } from '@/models/agent-task'
 import { dryRunPlanner } from '@/services/app'
-import { getAppAgentTaskDetail, getAppAgentTasksWithPage } from '@/services/agent-task'
+import { getAppAgentTaskDetail, getAppAgentTaskMetrics, getAppAgentTasksWithPage } from '@/services/agent-task'
 import JsonDrawer from './tasks/components/JsonDrawer.vue'
 import TaskStatusTag from './tasks/components/TaskStatusTag.vue'
 
@@ -24,8 +25,10 @@ const router = useRouter()
 
 const loading = ref(false)
 const detailLoading = ref(false)
+const metricsLoading = ref(false)
 const records = ref<AgentTaskSummary[]>([])
 const recordDetail = ref<AgentTaskDetail | null>(null)
+const runtimeMetrics = ref<AgentTaskRuntimeMetrics | null>(null)
 const userOptions = ref<AgentConversationUserOption[]>([])
 const selectedUserId = ref('all')
 const searchWord = ref('')
@@ -53,6 +56,16 @@ const selectedRecordId = computed(() => String(route.params?.task_id || ''))
 const messages = computed<AgentConversationMessage[]>(() => recordDetail.value?.messages || [])
 const associatedTasks = computed<AgentTaskSummary[]>(() => recordDetail.value?.agent_tasks || [])
 const traceEvents = computed<TraceEventItem[]>(() => recordDetail.value?.trace_events || [])
+const waitEvents = computed<TraceEventItem[]>(() => traceEvents.value.filter((event) => isWaitEvent(event)))
+const currentWaitEvent = computed<TraceEventItem | null>(() => waitEvents.value[waitEvents.value.length - 1] || null)
+const metricOverview = computed(() => runtimeMetrics.value?.overview || {})
+const metricPlanner = computed(() => runtimeMetrics.value?.planner || {})
+const metricWorker = computed(() => runtimeMetrics.value?.worker || {})
+const metricStep = computed(() => runtimeMetrics.value?.step || {})
+const metricTrace = computed(() => runtimeMetrics.value?.trace || {})
+const metricWait = computed(() => runtimeMetrics.value?.wait || {})
+const metricWorkerRows = computed(() => (runtimeMetrics.value?.worker?.by_worker || []).slice(0, 10))
+const metricErrorRows = computed(() => (runtimeMetrics.value?.errors || []).slice(0, 10))
 
 const loadRecords = async (page = paginator.value.current_page) => {
   if (!appId.value) return
@@ -92,14 +105,33 @@ const loadDetail = async () => {
   }
 }
 
+const loadMetrics = async () => {
+  if (!appId.value) return
+  metricsLoading.value = true
+  try {
+    const now = Math.floor(Date.now() / 1000)
+    const res = await getAppAgentTaskMetrics(appId.value, {
+      from_ts: now - 30 * 24 * 60 * 60,
+      to_ts: now,
+      user_id: selectedUserId.value,
+      group_by: 'day',
+    })
+    runtimeMetrics.value = res.data
+  } finally {
+    metricsLoading.value = false
+  }
+}
+
 const refresh = async () => {
   await loadRecords()
   await loadDetail()
+  await loadMetrics()
 }
 
 const resetAndLoad = async () => {
   paginator.value.current_page = 1
   await loadRecords(1)
+  await loadMetrics()
 }
 
 const openRecord = async (record: AgentTaskSummary) => {
@@ -235,7 +267,9 @@ const matchesLogType = (event: TraceEventItem, type: string) => {
     return eventType.includes('failed') || String(event.payload?.status || '').includes('failed')
   }
   if (type === 'replan') return eventType.includes('replan')
+  if (type === 'plan_update') return eventType.includes('plan_update')
   if (type === 'preflight') return eventType.includes('preflight')
+  if (type === 'wait') return eventType.startsWith('wait.')
   return eventType.startsWith(`${type}.`)
 }
 
@@ -245,7 +279,8 @@ const isPlaybackEvent = (event: TraceEventItem) => {
     eventType.startsWith('planner.') ||
     eventType === 'router.manager_run.created' ||
     eventType.startsWith('router.capability_preflight') ||
-    eventType.startsWith('planner.replan.preflight')
+    eventType.startsWith('planner.replan.preflight') ||
+    eventType.startsWith('planner.plan_update.preflight')
   )
 }
 
@@ -302,6 +337,7 @@ const planSourceLabel = (source?: string) => {
   const map: Record<string, string> = {
     llm_planner_v1: 'LLM Planner',
     llm_replan_v1: 'LLM Replan',
+    llm_plan_feedback_v1: 'Feedback Update',
     manager_rule_v1: '规则计划',
     manager_replan_rule_v1: 'Rule Replan',
   }
@@ -314,11 +350,15 @@ const taskPlanSource = (task: AgentMessageTask | AgentTaskDetail | AgentTaskSumm
 }
 
 const planAttempt = (plan?: AgentPlanItem | null) => {
-  return Number(plan?.plan_json?.replan?.attempt || 0)
+  return Number(plan?.plan_json?.replan?.attempt || plan?.plan_json?.plan_update?.attempt || 0)
 }
 
-const taskPlanCount = (task: AgentMessageTask | AgentTaskDetail) => {
-  return Array.isArray(task.plans) ? task.plans.length : 0
+const taskReplanCount = (task: AgentMessageTask | AgentTaskDetail) => {
+  return Array.isArray(task.plans) ? task.plans.filter((plan) => plan.plan_json?.replan).length : 0
+}
+
+const taskPlanUpdateCount = (task: AgentMessageTask | AgentTaskDetail) => {
+  return Array.isArray(task.plans) ? task.plans.filter((plan) => plan.plan_json?.plan_update).length : 0
 }
 
 const planForStep = (task: AgentMessageTask, step: AgentStepItem) => {
@@ -387,6 +427,33 @@ const stepSelectionSignals = (step: AgentStepItem) => {
 
 const stepInputSummary = (step: AgentStepItem) => {
   return step.input_preview || stepTaskText(step) || toPreview(step.input_json)
+}
+
+const stepExpectedOutput = (step: AgentStepItem) => {
+  return String(step.expected_output || step.input_json?.expected_output || '')
+}
+
+const stepSuccessCriteria = (step: AgentStepItem) => {
+  const value = Array.isArray(step.success_criteria) ? step.success_criteria : step.input_json?.success_criteria
+  return Array.isArray(value) ? uniqueTexts(value) : []
+}
+
+const stepRequiredArtifacts = (step: AgentStepItem) => {
+  const value = Array.isArray(step.required_artifacts) ? step.required_artifacts : step.input_json?.required_artifacts
+  return Array.isArray(value) ? uniqueTexts(value) : []
+}
+
+const stepHandoffContext = (step: AgentStepItem) => {
+  return String(step.handoff_context || step.input_json?.handoff_context || '')
+}
+
+const hasStepContract = (step: AgentStepItem) => {
+  return Boolean(
+    stepExpectedOutput(step) ||
+      stepSuccessCriteria(step).length ||
+      stepRequiredArtifacts(step).length ||
+      stepHandoffContext(step),
+  )
 }
 
 const taskPreflight = (task: AgentMessageTask | AgentTaskDetail) => {
@@ -488,6 +555,62 @@ const workerReplanLabel = (call: WorkerCallItem) => {
   return String(signal.reason || 'needs_replan')
 }
 
+const workerPlanFeedback = (call: WorkerCallItem) => {
+  const feedback = call.result_json?.data?.plan_feedback || call.result_json?.plan_feedback
+  return feedback && typeof feedback === 'object' ? feedback : null
+}
+
+const workerPlanFeedbackMissingInfo = (call: WorkerCallItem) => {
+  const missingInfo = workerPlanFeedback(call)?.missing_info
+  return Array.isArray(missingInfo) ? uniqueTexts(missingInfo).slice(0, 3) : []
+}
+
+const workerPlanFeedbackArtifactCount = (call: WorkerCallItem) => {
+  const artifacts = workerPlanFeedback(call)?.artifact_refs
+  return Array.isArray(artifacts) ? artifacts.length : 0
+}
+
+const workerPlanFeedbackReason = (call: WorkerCallItem) => {
+  return String(workerPlanFeedback(call)?.reason_code || '')
+}
+
+const hasWorkerPlanFeedback = (call: WorkerCallItem) => {
+  const feedback = workerPlanFeedback(call)
+  return Boolean(
+    feedback &&
+      (feedback.completed_enough ||
+        feedback.needs_plan_update ||
+        feedback.reason_code ||
+        workerPlanFeedbackMissingInfo(call).length ||
+        workerPlanFeedbackArtifactCount(call)),
+  )
+}
+
+const isWaitEvent = (event: TraceEventItem) => {
+  return String(event.event_type || '').startsWith('wait.') || Boolean(event.payload?.wait_type)
+}
+
+const waitTypeLabel = (event?: TraceEventItem | null) => {
+  const type = String(event?.payload?.wait_type || '')
+  const map: Record<string, string> = {
+    user_input: '等待用户输入',
+    approval: '等待审批',
+    external_callback: '等待外部回调',
+    schedule: '等待定时恢复',
+    rate_limit: '等待限流恢复',
+  }
+  return map[type] || '等待处理'
+}
+
+const waitMissingInfo = (event?: TraceEventItem | null) => {
+  const missingInfo = event?.payload?.missing_info
+  return Array.isArray(missingInfo) ? uniqueTexts(missingInfo).slice(0, 6) : []
+}
+
+const waitSummary = (event?: TraceEventItem | null) => {
+  return String(event?.payload?.summary || event?.payload?.message || event?.payload?.reason_code || '')
+}
+
 const workerEventStatusType = (status?: string) => {
   if (status === 'failed') return 'danger'
   if (status === 'succeeded' || status === 'completed') return 'success'
@@ -560,6 +683,18 @@ const runPlannerDryRun = async () => {
   }
 }
 
+function formatPercent(value?: number) {
+  return `${Math.round(Number(value || 0) * 100)}%`
+}
+
+function formatNumber(value?: number) {
+  return new Intl.NumberFormat('zh-CN').format(Number(value || 0))
+}
+
+function formatCost(value?: number) {
+  return `$${Number(value || 0).toFixed(4)}`
+}
+
 function formatDate(timestamp: number) {
   if (!timestamp) return '-'
   return new Intl.DateTimeFormat('zh-CN', {
@@ -603,12 +738,14 @@ watch(
   async () => {
     await loadRecords(1)
     await loadDetail()
+    await loadMetrics()
   },
 )
 
 onMounted(async () => {
   await loadRecords(1)
   await loadDetail()
+  await loadMetrics()
 })
 </script>
 
@@ -727,6 +864,30 @@ onMounted(async () => {
                   <p v-if="recordDetail.error_message" class="mt-1 break-words text-sm text-red-600">
                     {{ recordDetail.error_message }}
                   </p>
+                  <div
+                    v-if="recordDetail.status === 'waiting' || currentWaitEvent"
+                    class="mt-3 border border-amber-200 bg-amber-50 p-3"
+                  >
+                    <div class="flex flex-wrap items-center gap-2">
+                      <el-tag size="small" type="warning">{{ waitTypeLabel(currentWaitEvent) }}</el-tag>
+                      <span v-if="currentWaitEvent?.step_id" class="text-xs text-amber-700">
+                        Step {{ traceStepName(currentWaitEvent) || currentWaitEvent.step_id }}
+                      </span>
+                    </div>
+                    <p v-if="waitSummary(currentWaitEvent)" class="mt-2 break-words text-xs text-amber-800">
+                      {{ waitSummary(currentWaitEvent) }}
+                    </p>
+                    <div v-if="waitMissingInfo(currentWaitEvent).length" class="mt-2 flex flex-wrap gap-1">
+                      <el-tag
+                        v-for="item in waitMissingInfo(currentWaitEvent)"
+                        :key="`wait-${item}`"
+                        size="small"
+                        type="warning"
+                      >
+                        {{ item }}
+                      </el-tag>
+                    </div>
+                  </div>
                 </div>
                 <div class="flex shrink-0 flex-wrap items-center gap-2">
                   <el-button @click="backToList">返回列表</el-button>
@@ -831,8 +992,11 @@ onMounted(async () => {
                                 <el-tag v-if="taskPlanSource(task)" size="small" type="info">
                                   {{ taskPlanSource(task) }}
                                 </el-tag>
-                                <el-tag v-if="taskPlanCount(task) > 1" size="small" type="warning">
-                                  Replan {{ taskPlanCount(task) - 1 }}
+                                <el-tag v-if="taskReplanCount(task)" size="small" type="warning">
+                                  Replan {{ taskReplanCount(task) }}
+                                </el-tag>
+                                <el-tag v-if="taskPlanUpdateCount(task)" size="small" type="warning">
+                                  Plan Update {{ taskPlanUpdateCount(task) }}
                                 </el-tag>
                               </div>
                             </template>
@@ -956,6 +1120,50 @@ onMounted(async () => {
                                       </div>
                                     </div>
 
+                                    <div v-if="hasStepContract(step)" class="mt-3 border border-slate-200 bg-slate-50 p-2">
+                                      <div class="mb-2 text-xs font-medium text-slate-700">执行契约</div>
+                                      <div class="grid grid-cols-1 gap-2 md:grid-cols-2">
+                                        <div v-if="stepExpectedOutput(step)">
+                                          <div class="mb-1 text-xs text-slate-500">预期输出</div>
+                                          <p class="line-clamp-3 break-words text-xs text-slate-700">
+                                            {{ stepExpectedOutput(step) }}
+                                          </p>
+                                        </div>
+                                        <div v-if="stepHandoffContext(step)">
+                                          <div class="mb-1 text-xs text-slate-500">交接上下文</div>
+                                          <p class="line-clamp-3 break-words text-xs text-slate-700">
+                                            {{ stepHandoffContext(step) }}
+                                          </p>
+                                        </div>
+                                      </div>
+                                      <div v-if="stepSuccessCriteria(step).length" class="mt-2">
+                                        <div class="mb-1 text-xs text-slate-500">成功标准</div>
+                                        <div class="flex flex-wrap gap-1">
+                                          <el-tag
+                                            v-for="criteria in stepSuccessCriteria(step)"
+                                            :key="`${step.id}-criteria-${criteria}`"
+                                            size="small"
+                                            type="success"
+                                          >
+                                            {{ criteria }}
+                                          </el-tag>
+                                        </div>
+                                      </div>
+                                      <div v-if="stepRequiredArtifacts(step).length" class="mt-2">
+                                        <div class="mb-1 text-xs text-slate-500">必需产物</div>
+                                        <div class="flex flex-wrap gap-1">
+                                          <el-tag
+                                            v-for="artifact in stepRequiredArtifacts(step)"
+                                            :key="`${step.id}-artifact-${artifact}`"
+                                            size="small"
+                                            type="info"
+                                          >
+                                            {{ artifact }}
+                                          </el-tag>
+                                        </div>
+                                      </div>
+                                    </div>
+
                                     <div class="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
                                       <div class="bg-slate-50 p-2">
                                         <div class="mb-1 text-xs font-medium text-slate-700">Step 输入</div>
@@ -1056,7 +1264,12 @@ onMounted(async () => {
                                         </div>
 
                                         <div
-                                          v-if="workerRuntime(call) || workerInternalSteps(call).length || workerToolEvents(call).length"
+                                          v-if="
+                                            workerRuntime(call) ||
+                                            workerInternalSteps(call).length ||
+                                            workerToolEvents(call).length ||
+                                            hasWorkerPlanFeedback(call)
+                                          "
                                           class="mt-3 border-t border-slate-200 pt-2"
                                         >
                                           <div class="flex flex-wrap items-center justify-between gap-2">
@@ -1086,15 +1299,60 @@ onMounted(async () => {
                                               >
                                                 replan: {{ workerReplanLabel(call) }}
                                               </el-tag>
+                                              <el-tag
+                                                v-if="workerPlanFeedback(call)?.completed_enough"
+                                                size="small"
+                                                type="success"
+                                              >
+                                                已足够完成
+                                              </el-tag>
+                                              <el-tag
+                                                v-if="workerPlanFeedback(call)?.needs_plan_update"
+                                                size="small"
+                                                type="warning"
+                                              >
+                                                请求更新计划
+                                              </el-tag>
+                                              <el-tag
+                                                v-if="workerPlanFeedbackReason(call) === 'waiting_user'"
+                                                size="small"
+                                                type="warning"
+                                              >
+                                                等待用户
+                                              </el-tag>
+                                              <el-tag
+                                                v-else-if="workerPlanFeedbackReason(call)"
+                                                size="small"
+                                                type="info"
+                                              >
+                                                {{ workerPlanFeedbackReason(call) }}
+                                              </el-tag>
                                             </div>
                                             <el-button
-                                              v-if="workerRuntime(call)"
+                                              v-if="workerRuntime(call) || workerPlanFeedback(call)"
                                               size="small"
-                                              @click="openJson('Worker Runtime', call.result_json?.data)"
+                                              @click="openJson('Worker Runtime', call.result_json?.data || call.result_json)"
                                             >
                                               Runtime JSON
                                             </el-button>
                                           </div>
+
+                                          <div v-if="workerPlanFeedbackMissingInfo(call).length" class="mt-2 flex flex-wrap gap-1">
+                                            <el-tag
+                                              v-for="item in workerPlanFeedbackMissingInfo(call)"
+                                              :key="`${call.id}-missing-${item}`"
+                                              size="small"
+                                              type="warning"
+                                            >
+                                              缺 {{ item }}
+                                            </el-tag>
+                                          </div>
+                                          <p
+                                            v-if="workerPlanFeedbackArtifactCount(call)"
+                                            class="mt-2 text-xs text-slate-500"
+                                          >
+                                            反馈产物 {{ workerPlanFeedbackArtifactCount(call) }} 个
+                                          </p>
 
                                           <p
                                             v-if="workerMemoryCompaction(call)?.summary"
@@ -1216,6 +1474,178 @@ onMounted(async () => {
                 </div>
               </el-tab-pane>
 
+              <el-tab-pane label="运行分析" name="metrics">
+                <div v-loading="metricsLoading" class="space-y-4 pb-4">
+                  <div class="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+                    <div class="bg-slate-50 p-3">
+                      <div class="text-xs text-slate-500">任务数</div>
+                      <div class="mt-1 text-lg font-semibold text-slate-900">
+                        {{ formatNumber(metricOverview.task_count) }}
+                      </div>
+                    </div>
+                    <div class="bg-slate-50 p-3">
+                      <div class="text-xs text-slate-500">成功率</div>
+                      <div class="mt-1 text-lg font-semibold text-slate-900">
+                        {{ formatPercent(metricOverview.success_rate) }}
+                      </div>
+                    </div>
+                    <div class="bg-slate-50 p-3">
+                      <div class="text-xs text-slate-500">等待数</div>
+                      <div class="mt-1 text-lg font-semibold text-slate-900">
+                        {{ formatNumber(metricOverview.waiting_count) }}
+                      </div>
+                    </div>
+                    <div class="bg-slate-50 p-3">
+                      <div class="text-xs text-slate-500">平均耗时</div>
+                      <div class="mt-1 text-lg font-semibold text-slate-900">
+                        {{ formatSeconds(metricOverview.avg_latency) }}
+                      </div>
+                    </div>
+                    <div class="bg-slate-50 p-3">
+                      <div class="text-xs text-slate-500">Token</div>
+                      <div class="mt-1 text-lg font-semibold text-slate-900">
+                        {{ formatNumber(metricOverview.total_token_count) }}
+                      </div>
+                    </div>
+                    <div class="bg-slate-50 p-3">
+                      <div class="text-xs text-slate-500">成本</div>
+                      <div class="mt-1 text-lg font-semibold text-slate-900">
+                        {{ formatCost(metricOverview.total_cost) }}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="grid grid-cols-1 gap-3 xl:grid-cols-3">
+                    <section class="border border-slate-200 p-3">
+                      <div class="mb-3 text-sm font-medium text-slate-900">Planner</div>
+                      <div class="space-y-2 text-sm text-slate-700">
+                        <div class="flex justify-between gap-3">
+                          <span>首计划成功率</span>
+                          <span class="font-medium">{{ formatPercent(metricPlanner.first_plan_success_rate) }}</span>
+                        </div>
+                        <div class="flex justify-between gap-3">
+                          <span>Replan Rate</span>
+                          <span class="font-medium">{{ formatPercent(metricPlanner.replan_rate) }}</span>
+                        </div>
+                        <div class="flex justify-between gap-3">
+                          <span>Plan Update Rate</span>
+                          <span class="font-medium">{{ formatPercent(metricPlanner.plan_update_rate) }}</span>
+                        </div>
+                        <div class="flex justify-between gap-3">
+                          <span>自动修复成功率</span>
+                          <span class="font-medium">{{ formatPercent(metricPlanner.auto_fix_success_rate) }}</span>
+                        </div>
+                        <div class="flex justify-between gap-3">
+                          <span>计划膨胀率</span>
+                          <span class="font-medium">{{ metricPlanner.avg_plan_inflation_ratio || 0 }}</span>
+                        </div>
+                      </div>
+                    </section>
+
+                    <section class="border border-slate-200 p-3">
+                      <div class="mb-3 text-sm font-medium text-slate-900">Worker</div>
+                      <div class="space-y-2 text-sm text-slate-700">
+                        <div class="flex justify-between gap-3">
+                          <span>调用数</span>
+                          <span class="font-medium">{{ formatNumber(metricWorker.worker_call_count) }}</span>
+                        </div>
+                        <div class="flex justify-between gap-3">
+                          <span>成功率</span>
+                          <span class="font-medium">{{ formatPercent(metricWorker.worker_success_rate) }}</span>
+                        </div>
+                        <div class="flex justify-between gap-3">
+                          <span>等待数</span>
+                          <span class="font-medium">{{ formatNumber(metricWorker.worker_waiting_count) }}</span>
+                        </div>
+                        <div class="flex justify-between gap-3">
+                          <span>平均耗时</span>
+                          <span class="font-medium">{{ formatSeconds(metricWorker.avg_worker_latency) }}</span>
+                        </div>
+                      </div>
+                    </section>
+
+                    <section class="border border-slate-200 p-3">
+                      <div class="mb-3 text-sm font-medium text-slate-900">Trace</div>
+                      <div class="space-y-2 text-sm text-slate-700">
+                        <div class="flex justify-between gap-3">
+                          <span>事件数</span>
+                          <span class="font-medium">{{ formatNumber(metricTrace.trace_event_count) }}</span>
+                        </div>
+                        <div class="flex justify-between gap-3">
+                          <span>工具事件</span>
+                          <span class="font-medium">{{ formatNumber(metricTrace.tool_event_count) }}</span>
+                        </div>
+                        <div class="flex justify-between gap-3">
+                          <span>Preflight 失败</span>
+                          <span class="font-medium">{{ formatNumber(metricTrace.preflight_failed_count) }}</span>
+                        </div>
+                        <div class="flex justify-between gap-3">
+                          <span>Step 成功率</span>
+                          <span class="font-medium">{{ formatPercent(metricStep.step_success_rate) }}</span>
+                        </div>
+                      </div>
+                    </section>
+                  </div>
+
+                  <section class="border border-slate-200 p-3">
+                    <div class="mb-3 text-sm font-medium text-slate-900">Worker 排行</div>
+                    <el-table :data="metricWorkerRows" stripe size="small">
+                      <el-table-column label="Worker" min-width="180">
+                        <template #default="{ row }">{{ row.worker_name || row.worker_agent_id }}</template>
+                      </el-table-column>
+                      <el-table-column label="调用" width="80">
+                        <template #default="{ row }">{{ row.call_count }}</template>
+                      </el-table-column>
+                      <el-table-column label="成功率" width="90">
+                        <template #default="{ row }">{{ formatPercent(row.success_rate) }}</template>
+                      </el-table-column>
+                      <el-table-column label="等待" width="80">
+                        <template #default="{ row }">{{ row.waiting_count }}</template>
+                      </el-table-column>
+                      <el-table-column label="Plan Update" width="120">
+                        <template #default="{ row }">{{ row.plan_update_count }}</template>
+                      </el-table-column>
+                      <el-table-column label="平均耗时" width="100">
+                        <template #default="{ row }">{{ formatSeconds(row.avg_latency) }}</template>
+                      </el-table-column>
+                    </el-table>
+                    <el-empty v-if="!metricWorkerRows.length" description="暂无 Worker 调用数据" />
+                  </section>
+
+                  <div class="grid grid-cols-1 gap-3 xl:grid-cols-2">
+                    <section class="border border-slate-200 p-3">
+                      <div class="mb-3 text-sm font-medium text-slate-900">等待信息</div>
+                      <div v-if="metricWait.missing_info?.length" class="flex flex-wrap gap-1">
+                        <el-tag
+                          v-for="item in metricWait.missing_info"
+                          :key="`metric-missing-${item.field}`"
+                          size="small"
+                          type="warning"
+                        >
+                          {{ item.field }} · {{ item.count }}
+                        </el-tag>
+                      </div>
+                      <el-empty v-else description="暂无等待字段" />
+                    </section>
+
+                    <section class="border border-slate-200 p-3">
+                      <div class="mb-3 text-sm font-medium text-slate-900">错误排行</div>
+                      <div v-if="metricErrorRows.length" class="space-y-2">
+                        <div
+                          v-for="item in metricErrorRows"
+                          :key="`metric-error-${item.error_code}`"
+                          class="flex justify-between gap-3 text-sm text-slate-700"
+                        >
+                          <span class="break-all">{{ item.error_code }}</span>
+                          <span class="font-medium">{{ item.count }}</span>
+                        </div>
+                      </div>
+                      <el-empty v-else description="暂无错误" />
+                    </section>
+                  </div>
+                </div>
+              </el-tab-pane>
+
               <el-tab-pane label="执行日志" name="logs">
                 <div class="pb-4">
                   <div class="mb-3 flex flex-wrap items-center gap-2">
@@ -1232,9 +1662,11 @@ onMounted(async () => {
                       <el-option label="全部事件" value="all" />
                       <el-option label="Planner" value="planner" />
                       <el-option label="Replan" value="replan" />
+                      <el-option label="Plan Update" value="plan_update" />
                       <el-option label="Worker" value="worker" />
                       <el-option label="Router" value="router" />
                       <el-option label="Preflight" value="preflight" />
+                      <el-option label="Wait" value="wait" />
                       <el-option label="失败" value="failed" />
                     </el-select>
                     <el-input
@@ -1397,6 +1829,12 @@ onMounted(async () => {
                             <p v-if="traceSelectionReason(event)" class="mt-1 line-clamp-2 break-words text-xs text-slate-500">
                               {{ traceSelectionReason(event) }}
                             </p>
+                            <p
+                              v-if="event.payload?.feedback?.reason_code"
+                              class="mt-1 line-clamp-2 break-words text-xs text-amber-700"
+                            >
+                              Feedback: {{ event.payload.feedback.reason_code }}
+                            </p>
                           </div>
                           <div class="flex shrink-0 flex-wrap items-center gap-2">
                             <el-button size="small" @click="openJson('调度事件', event)">事件 JSON</el-button>
@@ -1408,11 +1846,32 @@ onMounted(async () => {
                               计划
                             </el-button>
                             <el-button
+                              v-if="event.payload?.previous_plan"
+                              size="small"
+                              @click="openJson('Previous Plan', event.payload.previous_plan)"
+                            >
+                              旧计划
+                            </el-button>
+                            <el-button
+                              v-if="event.payload?.new_plan"
+                              size="small"
+                              @click="openJson('New Plan', event.payload.new_plan)"
+                            >
+                              新计划
+                            </el-button>
+                            <el-button
                               v-if="playbackDiff(event)"
                               size="small"
-                              @click="openJson('Replan Diff', playbackDiff(event))"
+                              @click="openJson('Plan Diff', playbackDiff(event))"
                             >
                               Diff
+                            </el-button>
+                            <el-button
+                              v-if="event.payload?.feedback"
+                              size="small"
+                              @click="openJson('Plan Feedback', event.payload.feedback)"
+                            >
+                              Feedback
                             </el-button>
                           </div>
                         </div>

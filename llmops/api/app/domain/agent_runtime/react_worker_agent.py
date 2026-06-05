@@ -291,6 +291,8 @@ class ReActWorkerAgent:
                 errors.append({"error_code": "worker_timeout", "message": thought.observation})
             elif raw_event_type == QueueEvent.STOP.value:
                 terminal_status = "cancelled"
+            elif self._thought_waits_for_user(thought):
+                terminal_status = "waiting_user"
 
         answer = "".join(answer_parts)
         failed_actions = [action for action in actions if action.get("event_type") == "worker.tool.failed"]
@@ -329,16 +331,25 @@ class ReActWorkerAgent:
             failed_actions=failed_actions,
             summary=summary,
         )
+        plan_feedback = self._plan_feedback(
+            thoughts=thoughts,
+            terminal_status=terminal_status,
+            summary=summary,
+            artifacts=artifacts,
+            replan_signal=replan_signal,
+        )
         if memory_compaction["enabled"]:
             events.append(self._memory_event(invocation, memory_compaction, runtime_policy, iterations))
-        final_state = terminal_status if terminal_status in {"failed", "cancelled"} else "completed"
+        final_state = terminal_status if terminal_status in {"failed", "cancelled", "waiting_user"} else "completed"
         final_event_type = {
             "failed": "worker.runtime.failed",
             "cancelled": "worker.runtime.cancelled",
+            "waiting_user": "worker.runtime.waiting_user",
         }.get(terminal_status, "worker.runtime.completed")
         final_message = {
             "failed": summary or "Worker runtime failed.",
             "cancelled": summary or "Worker runtime cancelled.",
+            "waiting_user": summary or "Worker runtime is waiting for user input.",
         }.get(terminal_status, "Worker runtime completed.")
         events.append(
             self._agent_event(
@@ -354,13 +365,14 @@ class ReActWorkerAgent:
                     ),
                     "state": final_state,
                     "replan_signal": replan_signal,
+                    "plan_feedback": plan_feedback,
                     "raw_event": terminal_raw_event_payload,
                     "inferred": not bool(terminal_raw_event_payload),
                 },
             )
         )
         runtime = self._runtime_payload(
-            final_state=terminal_status if terminal_status in {"failed", "cancelled"} else "completed",
+            final_state=terminal_status if terminal_status in {"failed", "cancelled", "waiting_user"} else "completed",
             iterations=iterations,
             runtime_policy=runtime_policy,
         )
@@ -381,6 +393,7 @@ class ReActWorkerAgent:
                 "internal_steps": internal_steps,
                 "memory_compaction": memory_compaction,
                 "replan_signal": replan_signal,
+                "plan_feedback": plan_feedback,
             },
             evidence=evidence,
             artifacts=artifacts,
@@ -576,6 +589,16 @@ class ReActWorkerAgent:
         )
 
     @staticmethod
+    def _thought_waits_for_user(thought: AgentThought) -> bool:
+        metadata = thought.metadata if isinstance(thought.metadata, dict) else {}
+        if metadata.get("status") == "waiting_user" or metadata.get("requires_user_input"):
+            return True
+        if thought.tool in {"message_ask_user", "ask_user"}:
+            return True
+        tool_input = thought.tool_input if isinstance(thought.tool_input, dict) else {}
+        return bool(tool_input.get("requires_user_input"))
+
+    @staticmethod
     def _max_iterations_exceeded(answer: str) -> bool:
         return MAX_AGENT_ITERATION_RESPONSE.lower() in str(answer or "").lower()
 
@@ -637,6 +660,37 @@ class ReActWorkerAgent:
         }
 
     @staticmethod
+    def _plan_feedback(
+        *,
+        thoughts: list[AgentThought],
+        terminal_status: str,
+        summary: str,
+        artifacts: list[ArtifactRef],
+        replan_signal: dict[str, Any],
+    ) -> dict[str, Any]:
+        for thought in reversed(thoughts):
+            metadata = thought.metadata if isinstance(thought.metadata, dict) else {}
+            raw_feedback = metadata.get("plan_feedback")
+            if isinstance(raw_feedback, dict):
+                feedback = dict(raw_feedback)
+                feedback.setdefault("schema_version", "worker_plan_feedback_v1")
+                feedback.setdefault("summary", summary)
+                return feedback
+        missing_info = replan_signal.get("missing_info") if isinstance(replan_signal, dict) else []
+        return {
+            "schema_version": "worker_plan_feedback_v1",
+            "needs_plan_update": False,
+            "completed_enough": False,
+            "reason_code": "waiting_user" if terminal_status == "waiting_user" else "",
+            "summary": summary,
+            "missing_info": missing_info if isinstance(missing_info, list) else [],
+            "suggested_worker_tags": [],
+            "suggested_next_steps": [],
+            "artifact_refs": [artifact.model_dump(mode="json") for artifact in artifacts],
+            "confidence": None,
+        }
+
+    @staticmethod
     def _action_metadata(action: dict[str, Any]) -> dict[str, Any]:
         metadata = action.get("metadata")
         return metadata if isinstance(metadata, dict) else {}
@@ -673,8 +727,30 @@ class ReActWorkerAgent:
         )
         context_parts = ReActWorkerAgent._input_files_context(invocation.context.get("input_files"))
         artifact_parts = ReActWorkerAgent._artifacts_context(invocation.context.get("artifacts"))
-        suffix = "\n\n".join(part for part in [context_parts, artifact_parts] if part)
+        contract_parts = ReActWorkerAgent._task_contract_context(invocation.task)
+        suffix = "\n\n".join(part for part in [contract_parts, context_parts, artifact_parts] if part)
         return f"{base_text}\n\n{suffix}" if suffix else base_text
+
+    @staticmethod
+    def _task_contract_context(task: dict[str, Any]) -> str:
+        if not isinstance(task, dict):
+            return ""
+        lines = []
+        expected_output = str(task.get("expected_output") or "").strip()
+        if expected_output:
+            lines.append(f"Expected output: {expected_output}")
+        success_criteria = task.get("success_criteria")
+        if isinstance(success_criteria, list) and success_criteria:
+            lines.append("Success criteria:")
+            lines.extend(f"- {item}" for item in success_criteria if str(item).strip())
+        required_artifacts = task.get("required_artifacts")
+        if isinstance(required_artifacts, list) and required_artifacts:
+            lines.append("Required artifacts:")
+            lines.extend(f"- {item}" for item in required_artifacts if str(item).strip())
+        handoff_context = str(task.get("handoff_context") or "").strip()
+        if handoff_context:
+            lines.append(f"Handoff context: {handoff_context}")
+        return "\n".join(lines)
 
     @staticmethod
     def _input_files_context(input_files: Any) -> str:

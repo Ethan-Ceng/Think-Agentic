@@ -106,6 +106,8 @@ def test_worker_runtime_invokes_app_backed_react_worker_agent() -> None:
     assert result.data["internal_steps"][0]["tool_name"] == "current_time"
     assert result.data["memory_compaction"]["schema_version"] == "worker_memory_compaction_v1"
     assert result.data["replan_signal"]["needs_replan"] is False
+    assert result.data["plan_feedback"]["schema_version"] == "worker_plan_feedback_v1"
+    assert result.data["plan_feedback"]["needs_plan_update"] is False
     tool_event = next(event for event in result.events if event.event_type == "worker.tool.succeeded")
     assert tool_event.payload["tool_name"] == "current_time"
     assert tool_event.payload["observation"] == "now"
@@ -278,3 +280,72 @@ def test_react_worker_agent_marks_max_iteration_response_as_replan_signal() -> N
     assert result.data["replan_signal"]["needs_replan"] is True
     assert result.data["replan_signal"]["reason"] == "max_iterations_exceeded"
     assert result.events[-1].event_type == "worker.runtime.failed"
+
+
+def test_react_worker_agent_maps_waiting_user_feedback() -> None:
+    app_id = uuid.uuid4()
+    account = Account(id=uuid.uuid4(), name="tester", email="tester@example.test")
+    worker = Agent(
+        id=uuid.uuid4(),
+        tenant_id=uuid.uuid4(),
+        name="Question Worker",
+        runtime_type="worker",
+        product_category="custom",
+        status="published",
+        target_ref_type="app",
+        target_ref_id=str(app_id),
+    )
+    invocation = WorkerInvocation(
+        trace_id="trace-4",
+        tenant_id=worker.tenant_id,
+        account_id=account.id,
+        task_id=uuid.uuid4(),
+        step_id=uuid.uuid4(),
+        router_id=str(uuid.uuid4()),
+        worker_id=str(worker.id),
+        task={"task": "ask for city"},
+    )
+
+    class FakeAppService:
+        def run_app_worker(  # noqa: ANN001
+            self,
+            session,
+            *,
+            app_id,
+            task_id,
+            query,
+            image_urls,
+            account,
+            conversation_id,
+            runtime_policy,
+        ):
+            yield AgentThought(
+                id=uuid.uuid4(),
+                task_id=task_id,
+                event=QueueEvent.AGENT_ACTION,
+                observation="需要用户提供城市",
+                tool="message_ask_user",
+                tool_input={"text": "请提供城市"},
+                metadata={
+                    "status": "waiting_user",
+                    "plan_feedback": {
+                        "needs_plan_update": False,
+                        "completed_enough": False,
+                        "reason_code": "waiting_user",
+                        "missing_info": ["city"],
+                    },
+                },
+            )
+
+    result = ReActWorkerAgent(app_service=FakeAppService()).invoke(
+        session="db",
+        worker=worker,
+        agent_version=None,
+        invocation=invocation,
+        account=account,
+    )
+
+    assert result.status == "waiting_user"
+    assert result.data["plan_feedback"]["reason_code"] == "waiting_user"
+    assert result.data["plan_feedback"]["missing_info"] == ["city"]
+    assert result.events[-1].event_type == "worker.runtime.waiting_user"

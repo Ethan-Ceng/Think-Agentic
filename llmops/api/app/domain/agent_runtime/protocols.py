@@ -11,6 +11,10 @@ class RouterPlanStep(BaseModel):
     dependencies: list[str] = Field(default_factory=list)
     execution_mode: Literal["sync", "async"] = "sync"
     required_approval: bool = False
+    expected_output: str = ""
+    success_criteria: list[str] = Field(default_factory=list)
+    required_artifacts: list[str] = Field(default_factory=list)
+    handoff_context: str = ""
     selection_reason: str = ""
     selection_signals: list[str] = Field(default_factory=list)
 

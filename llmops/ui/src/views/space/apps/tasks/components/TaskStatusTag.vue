@@ -10,6 +10,8 @@ const statusMeta = computed(() => {
   const map: Record<string, { label: string; type: 'success' | 'warning' | 'danger' | 'info' | 'primary' }> = {
     created: { label: '已创建', type: 'info' },
     running: { label: '运行中', type: 'primary' },
+    waiting: { label: '待处理', type: 'warning' },
+    waiting_user: { label: '待补充', type: 'warning' },
     waiting_approval: { label: '待审批', type: 'warning' },
     succeeded: { label: '成功', type: 'success' },
     failed: { label: '失败', type: 'danger' },

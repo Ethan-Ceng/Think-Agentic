@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_agent_task_service, get_current_account, get_db_session
 from app.models.account import Account
-from app.schemas.agent_task import GetAgentTasksWithPageRequest
+from app.schemas.agent_task import GetAgentTaskMetricsRequest, GetAgentTasksWithPageRequest
 from app.services.agent_task_service import AgentTaskService
 from app.shared.response import success_json
 
@@ -39,6 +39,30 @@ def get_app_agent_tasks(
             "page_size": req.page_size,
             "users": users,
         }
+    )
+
+
+@router.get("/metrics")
+def get_app_agent_task_metrics(
+    app_id: UUID,
+    req: GetAgentTaskMetricsRequest = Depends(),
+    session: Session = Depends(get_db_session),
+    current_user: Account = Depends(get_current_account),
+    svc: AgentTaskService = Depends(get_agent_task_service),
+):
+    return success_json(
+        svc.get_app_task_runtime_metrics(
+            session,
+            app_id=app_id,
+            account=current_user,
+            from_ts=req.from_ts,
+            to_ts=req.to_ts,
+            status=req.status,
+            user_id=req.user_id,
+            router_agent_id=req.router_agent_id,
+            worker_agent_id=req.worker_agent_id,
+            group_by=req.group_by,
+        )
     )
 
 
