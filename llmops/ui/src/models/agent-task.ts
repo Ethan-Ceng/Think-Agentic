@@ -70,6 +70,11 @@ export type AgentStepItem = {
   dependencies: string[]
   execution_mode: string
   status: AgentTaskStatus | string
+  task?: string
+  selection_reason?: string
+  selection_signals?: string[]
+  input_preview?: string
+  output_preview?: string
   input_json: Record<string, any>
   output_json: Record<string, any>
   retry_count: number
@@ -84,6 +89,8 @@ export type WorkerCallItem = {
   id: string
   step_id: string
   worker_agent: AgentRef
+  invocation_preview?: string
+  result_preview?: string
   invocation_json: Record<string, any>
   result_json: Record<string, any>
   status: AgentTaskStatus | string
@@ -117,12 +124,18 @@ export type TraceStepRef = {
   task: string
   status: AgentTaskStatus | string
   worker_agent: AgentRef
+  selection_reason?: string
+  selection_signals?: string[]
+  input_preview?: string
+  output_preview?: string
 } | null
 
 export type TraceWorkerCallRef = {
   id: string
   status: AgentTaskStatus | string
   worker_agent: AgentRef
+  invocation_preview?: string
+  result_preview?: string
   token_count: number
   latency: number
 } | null

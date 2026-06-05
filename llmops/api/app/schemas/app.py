@@ -178,3 +178,10 @@ class PlannerPreflightRequest(BaseModel):
     message: str = Field(..., min_length=1)
     input_modalities: list[str] = Field(default_factory=list)
     candidate_worker_ids: list[UUID] = Field(default_factory=list)
+
+
+class PlannerDryRunRequest(BaseModel):
+    query: str = Field(..., min_length=1)
+    image_urls: list[str] = Field(default_factory=list, max_length=5)
+    input_modalities: list[str] = Field(default_factory=list)
+    candidate_worker_ids: list[UUID] = Field(default_factory=list)

@@ -13,6 +13,8 @@ import type {
   GetPublishedConfigResponse,
   GetPublishHistoriesWithPageResponse,
   PatchCapabilitySummaryRequest,
+  PlannerDryRunRequest,
+  PlannerDryRunResponse,
   PlannerPreflightRequest,
   PlannerPreflightResponse,
   RegenerateWebAppTokenResponse,
@@ -199,4 +201,8 @@ export const validatePlannerRoutingPolicy = (app_id: string, req: RoutingPolicyR
 
 export const preflightPlannerWorkers = (app_id: string, req: PlannerPreflightRequest) => {
   return post<PlannerPreflightResponse>(`/apps/${app_id}/planner/preflight`, { body: req })
+}
+
+export const dryRunPlanner = (app_id: string, req: PlannerDryRunRequest) => {
+  return post<PlannerDryRunResponse>(`/apps/${app_id}/planner/dry-run`, { body: req })
 }

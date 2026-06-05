@@ -450,6 +450,11 @@ def test_create_manager_run_uses_llm_planner_plan() -> None:
     validated = next(event for event in trace_events if event.event_type == "planner.validated")
     assert validated.payload["planned_steps"][0]["worker_name"] == "Research"
     assert validated.payload["planned_steps"][0]["task"] == "research launch plan"
+    assert validated.payload["planned_steps"][0]["selection_reason"]
+    assert validated.payload["plan_snapshot"]["steps"][0]["worker_name"] == "Research"
+    created = next(event for event in trace_events if event.event_type == "router.manager_run.created")
+    assert created.payload["plan_snapshot"]["steps"][0]["selection_reason"]
+    assert run.steps[0].input_json["planner_selection"]["reason"]
 
 
 def test_create_manager_run_falls_back_when_planner_fails() -> None:
@@ -691,6 +696,7 @@ def test_execute_manager_run_steps_invokes_legacy_app_worker() -> None:
     worker_started = next(event for event in trace_events if event.event_type == "worker.call.started")
     assert worker_started.payload["worker_name"] == "Legacy App Worker"
     assert worker_started.payload["task"] == "summarize sales notes"
+    assert worker_started.payload["selection_reason"]
 
 
 def test_execute_manager_run_steps_passes_input_files_to_worker_context() -> None:
@@ -1062,3 +1068,107 @@ def test_execute_manager_run_steps_replans_once_after_worker_failure() -> None:
     assert "planner.replan.validated" in trace_event_types
     assert "planner.replan.preflight.succeeded" in trace_event_types
     assert "planner.replan.applied" in trace_event_types
+    replan_applied = next(
+        item for item in session.added if isinstance(item, TraceEvent) and item.event_type == "planner.replan.applied"
+    )
+    assert replan_applied.payload["previous_plan"]["steps"][0]["worker_name"] == "Failing Worker"
+    assert replan_applied.payload["new_plan"]["steps"][0]["worker_name"] == "Replacement Worker"
+    assert replan_applied.payload["plan_diff"]["summary"]["added"] == 1
+    assert replan_applied.payload["plan_diff"]["summary"]["removed"] == 1
+
+
+def test_dry_run_planner_returns_plan_without_creating_task() -> None:
+    tenant_id = uuid.uuid4()
+    router_agent_id = uuid.uuid4()
+    worker_agent_id = uuid.uuid4()
+    planner_app_id = uuid.uuid4()
+    account = Account(id=tenant_id, name="tester", email="tester@example.test")
+
+    class FakeLanguageModelService:
+        def load_language_model(self, model_config, *, session, account):  # noqa: ANN001
+            return BaseLanguageModel(provider="fake", model="planner", parameters={})
+
+    class FakePlannerAgent:
+        def create_plan(self, *, model, planner_input):  # noqa: ANN001
+            return PlannerResult(
+                plan=RouterPlan(
+                    router_id=str(router_agent_id),
+                    user_intent=planner_input.query,
+                    risk_assessment={"risk_level": "low", "source": "llm_planner_v1"},
+                    steps=[
+                        RouterPlanStep(
+                            step_id="step_1",
+                            worker_id=str(worker_agent_id),
+                            task="draft answer",
+                            selection_reason="best writer",
+                            selection_signals=["semantic:writing"],
+                        )
+                    ],
+                ),
+                raw_output='{"schema_version":"router_plan_v1"}',
+                usage={"total_tokens": 9},
+                latency_ms=20,
+            )
+
+    class FakeCapabilityService:
+        def ensure_worker_capability_summary(self, session, worker, account=None):  # noqa: ANN001
+            return {
+                "schema_version": "worker_capability_v2",
+                "input_modalities": ["text/plain"],
+                "semantic_tags": ["writing"],
+                "model_features": [],
+                "executor_type": "app",
+            }
+
+        def validate_routing_policy(self, routing_policy):  # noqa: ANN001
+            return {"routing_policy": {"schema_version": "routing_policy_v1", "rules": []}}
+
+    class FakeRouterService(RouterAgentManagerService):
+        def create_planner_agent_from_app(self, session, *, tenant_id, app_id, account, status=None):  # noqa: ANN001
+            assert app_id == planner_app_id
+            return (
+                Agent(
+                    id=router_agent_id,
+                    tenant_id=tenant_id,
+                    name="Planner",
+                    runtime_type="router",
+                    product_category="planner",
+                    status="draft",
+                ),
+                SimpleNamespace(id=uuid.uuid4(), router_config={}),
+            )
+
+        def list_bound_workers(self, session, *, tenant_id, router_agent_id):  # noqa: ANN001
+            return [
+                Agent(
+                    id=worker_agent_id,
+                    tenant_id=tenant_id,
+                    name="Writer",
+                    runtime_type="worker",
+                    product_category="custom",
+                    status="published",
+                    target_ref_type="app",
+                    target_ref_id=str(uuid.uuid4()),
+                )
+            ]
+
+    session = FakeSession()
+    service = FakeRouterService(
+        planner_agent=FakePlannerAgent(),
+        language_model_service=FakeLanguageModelService(),
+        capability_service=FakeCapabilityService(),
+    )
+
+    result = service.dry_run_planner(
+        session,
+        planner_app_id=planner_app_id,
+        account=account,
+        query="write launch copy",
+    )
+
+    assert result["dry_run"] is True
+    assert result["status"] == "ready"
+    assert result["planned_steps"][0]["worker_name"] == "Writer"
+    assert result["planned_steps"][0]["selection_reason"] == "best writer"
+    assert result["preflight"]["status"] == "succeeded"
+    assert session.added == []

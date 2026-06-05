@@ -16,6 +16,7 @@ from app.schemas.app import (
     GetDebugConversationMessagesWithPageRequest,
     GetPublishHistoriesWithPageRequest,
     PatchCapabilitySummaryRequest,
+    PlannerDryRunRequest,
     PlannerPreflightRequest,
     PublishHistoryResponse,
     RefreshCapabilitySummaryRequest,
@@ -275,6 +276,27 @@ def preflight_planner_workers(
             planner_app_id=app_id,
             account=current_user,
             message=req.message,
+            input_modalities=req.input_modalities,
+            candidate_worker_ids=req.candidate_worker_ids,
+        )
+    )
+
+
+@router.post("/{app_id}/planner/dry-run")
+def dry_run_planner(
+    app_id: UUID,
+    req: PlannerDryRunRequest,
+    session: Session = Depends(get_db_session),
+    current_user: Account = Depends(get_current_account),
+    svc: RouterAgentManagerService = Depends(get_router_agent_manager_service),
+):
+    return success_json(
+        svc.dry_run_planner(
+            session,
+            planner_app_id=app_id,
+            account=current_user,
+            query=req.query,
+            image_urls=req.image_urls,
             input_modalities=req.input_modalities,
             candidate_worker_ids=req.candidate_worker_ids,
         )

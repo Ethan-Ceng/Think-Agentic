@@ -852,8 +852,9 @@ class RouterAgentManagerService(BaseService):
                 plan=plan,
                 user_input=user_input,
                 preflight_result=preflight_result,
+                workers=selected_workers,
             )
-            self._record_manager_run_created(session, run)
+            self._record_manager_run_created(session, run, workers=selected_workers)
         except Exception as exc:  # noqa: BLE001
             self.task_engine.fail_task(
                 session,
@@ -1332,6 +1333,8 @@ class RouterAgentManagerService(BaseService):
                     dependencies=[],
                     execution_mode="sync",
                     required_approval=False,
+                    selection_reason=self._rule_selection_reason(worker, source="manager_rule_v1"),
+                    selection_signals=self._worker_selection_signals(worker),
                 )
                 for index, worker in enumerate(selected_workers)
             ],
@@ -1374,6 +1377,7 @@ class RouterAgentManagerService(BaseService):
             plan=plan,
             user_input=user_input,
             preflight_result=preflight_result,
+            workers=None,
         )
         self._record_manager_run_created(session, result)
         return result
@@ -1443,6 +1447,8 @@ class RouterAgentManagerService(BaseService):
                             "step_count": len(plan.steps),
                             "worker_ids": [step.worker_id for step in plan.steps],
                             "planned_steps": self._plan_step_payload(plan, workers),
+                            "plan_snapshot": self._plan_snapshot_payload(plan, workers),
+                            "planning_reason": str(plan.risk_assessment.get("planning_reason") or ""),
                             "risk_level": plan.risk_assessment.get("risk_level") or "low",
                             "source": plan.risk_assessment.get("source") or "llm_planner_v1",
                         },
@@ -1474,6 +1480,8 @@ class RouterAgentManagerService(BaseService):
                 "selected_worker_ids": [step.worker_id for step in fallback_plan.steps],
                 "selected_workers": self._worker_summary_payload(workers),
                 "planned_steps": self._plan_step_payload(fallback_plan, workers),
+                "plan_snapshot": self._plan_snapshot_payload(fallback_plan, workers),
+                "planning_reason": str(fallback_plan.risk_assessment.get("planning_reason") or ""),
             },
         )
         return fallback_plan
@@ -1598,6 +1606,7 @@ class RouterAgentManagerService(BaseService):
         user_input: dict[str, Any],
         preflight_result: dict[str, Any] | None = None,
         replan_metadata: dict[str, Any] | None = None,
+        workers: list[Agent] | None = None,
     ) -> RouterManagerRunResult:
         plan_json = plan.model_dump(mode="json")
         if preflight_result is not None:
@@ -1622,6 +1631,7 @@ class RouterAgentManagerService(BaseService):
                 input_json={
                     "task": step.task,
                     "user_input": user_input,
+                    "planner_selection": self._step_selection_payload(step, plan, workers or []),
                     "preflight": preflight_by_step.get(step.step_id),
                 },
                 execution_mode=step.execution_mode,
@@ -1633,7 +1643,13 @@ class RouterAgentManagerService(BaseService):
         result = RouterManagerRunResult(task=task, plan=persisted_plan, steps=steps)
         return result
 
-    def _record_manager_run_created(self, session: Session, result: RouterManagerRunResult) -> None:
+    def _record_manager_run_created(
+        self,
+        session: Session,
+        result: RouterManagerRunResult,
+        *,
+        workers: list[Agent] | None = None,
+    ) -> None:
         self.trace_service.record(
             session,
             tenant_id=result.task.tenant_id,
@@ -1645,6 +1661,7 @@ class RouterAgentManagerService(BaseService):
                 "step_count": len(result.steps),
                 "risk_level": result.plan.risk_level,
                 "plan_source": (result.plan.plan_json or {}).get("risk_assessment", {}).get("source", ""),
+                "plan_snapshot": self._plan_json_snapshot_payload(result.plan.plan_json or {}, workers or []),
                 "status": result.task.status,
                 "steps": [
                     {
@@ -1652,6 +1669,8 @@ class RouterAgentManagerService(BaseService):
                         "step_key": step.step_key,
                         "worker_agent_id": str(step.worker_agent_id),
                         "task": self._step_task_text(step),
+                        "selection_reason": self._planner_selection_from_step(step).get("reason", ""),
+                        "selection_signals": self._planner_selection_from_step(step).get("signals", []),
                     }
                     for step in result.steps
                 ],
@@ -1771,6 +1790,7 @@ class RouterAgentManagerService(BaseService):
                 "trigger": trigger,
                 "attempt": attempt,
                 "current_plan_id": str(run.plan.id),
+                "current_plan_snapshot": self._plan_json_snapshot_payload(run.plan.plan_json or {}, workers),
                 "failed_step_id": str(failed_step.id) if failed_step else "",
                 "failed_step_key": failed_step.step_key if failed_step else "",
                 "failed_step_task": self._step_task_text(failed_step),
@@ -1839,12 +1859,16 @@ class RouterAgentManagerService(BaseService):
             )
             return ReplanAttemptResult(run=None, error_code=next_error_code, user_message=next_user_message)
 
+        previous_plan_snapshot = self._plan_json_snapshot_payload(run.plan.plan_json or {}, workers)
+        new_plan_snapshot = self._plan_snapshot_payload(replan, candidate_workers)
+        plan_diff = self._plan_diff_payload(previous_plan_snapshot, new_plan_snapshot)
         new_run = self._persist_manager_plan_for_task(
             session,
             task=run.task,
             plan=replan,
             user_input=run.task.user_input or {},
             preflight_result=preflight_result,
+            workers=candidate_workers,
             replan_metadata={
                 "schema_version": "router_replan_v1",
                 "attempt": attempt,
@@ -1857,6 +1881,9 @@ class RouterAgentManagerService(BaseService):
                 "completed_steps": completed_steps,
                 "candidate_worker_ids": [str(worker.id) for worker in candidate_workers],
                 "preflight": preflight_result,
+                "previous_plan": previous_plan_snapshot,
+                "new_plan": new_plan_snapshot,
+                "plan_diff": plan_diff,
             },
         )
         self._mark_replanned_step_failed(
@@ -1866,7 +1893,7 @@ class RouterAgentManagerService(BaseService):
             user_message=user_message,
         )
         self._mark_plan_superseded(session, run.plan, superseded_by_plan_id=new_run.plan.id)
-        self._record_manager_run_created(session, new_run)
+        self._record_manager_run_created(session, new_run, workers=candidate_workers)
         self.trace_service.record(
             session,
             tenant_id=run.task.tenant_id,
@@ -1881,6 +1908,9 @@ class RouterAgentManagerService(BaseService):
                 "new_plan_id": str(new_run.plan.id),
                 "new_step_ids": [str(step.id) for step in new_run.steps],
                 "planned_steps": self._plan_step_payload(replan, candidate_workers),
+                "previous_plan": previous_plan_snapshot,
+                "new_plan": new_plan_snapshot,
+                "plan_diff": plan_diff,
             },
         )
         return ReplanAttemptResult(run=new_run)
@@ -1964,6 +1994,8 @@ class RouterAgentManagerService(BaseService):
                             "step_count": len(plan.steps),
                             "worker_ids": [step.worker_id for step in plan.steps],
                             "planned_steps": self._plan_step_payload(plan, workers),
+                            "plan_snapshot": self._plan_snapshot_payload(plan, workers),
+                            "planning_reason": str(plan.risk_assessment.get("planning_reason") or ""),
                             "risk_level": plan.risk_assessment.get("risk_level") or "low",
                             "source": plan.risk_assessment.get("source") or "llm_replan_v1",
                         },
@@ -1972,6 +2004,13 @@ class RouterAgentManagerService(BaseService):
             except Exception as exc:  # noqa: BLE001
                 fallback_reason = str(exc)
 
+        fallback_plan = self._build_rule_replan_plan(
+            router_agent=router_agent,
+            workers=workers,
+            user_input=task.user_input or {},
+            failed_step=failed_step,
+            attempt=attempt,
+        )
         self.trace_service.record(
             session,
             tenant_id=task.tenant_id,
@@ -1985,14 +2024,10 @@ class RouterAgentManagerService(BaseService):
                 "source": "manager_replan_rule_v1",
                 "selected_worker_ids": [str(worker.id) for worker in workers[:1]],
                 "selected_workers": self._worker_summary_payload(workers[:1]),
+                "planned_steps": self._plan_step_payload(fallback_plan, workers),
+                "plan_snapshot": self._plan_snapshot_payload(fallback_plan, workers),
+                "planning_reason": str(fallback_plan.risk_assessment.get("planning_reason") or ""),
             },
-        )
-        fallback_plan = self._build_rule_replan_plan(
-            router_agent=router_agent,
-            workers=workers,
-            user_input=task.user_input or {},
-            failed_step=failed_step,
-            attempt=attempt,
         )
         return self.router_runtime.validate_plan(
             fallback_plan,
@@ -2065,6 +2100,8 @@ class RouterAgentManagerService(BaseService):
                     dependencies=[],
                     execution_mode="sync",
                     required_approval=False,
+                    selection_reason=self._rule_selection_reason(worker, source="manager_replan_rule_v1"),
+                    selection_signals=self._worker_selection_signals(worker),
                 )
             ],
             final_response_policy={"mode": "summarize_worker_results"},
@@ -2453,8 +2490,9 @@ class RouterAgentManagerService(BaseService):
             plan=plan,
             user_input=user_input,
             preflight_result=preflight_result,
+            workers=selected_workers,
         )
-        self._record_manager_run_created(session, result)
+        self._record_manager_run_created(session, result, workers=selected_workers)
         if preflight_result.get("status") == "failed":
             error_code, user_message = self._first_preflight_error(preflight_result)
             replan = self._maybe_replan(
@@ -2498,9 +2536,7 @@ class RouterAgentManagerService(BaseService):
         app_id: uuid.UUID,
         account: Account,
     ) -> dict[str, Any]:
-        app = self.app_service.get_app(session, app_id, account)
-        if (getattr(app, "agent_type", "worker") or "worker") != "worker":
-            raise FailException("Only WorkerAgent apps have capability summaries")
+        self._ensure_worker_app_for_capability(session, app_id=app_id, account=account)
         existing = self._find_app_worker_agent(session, account.id, app_id)
         if existing is not None:
             version = self._active_version(session, existing)
@@ -2536,6 +2572,7 @@ class RouterAgentManagerService(BaseService):
         account: Account,
         preserve_manual_overrides: bool = True,
     ) -> dict[str, Any]:
+        self._ensure_worker_app_for_capability(session, app_id=app_id, account=account)
         worker_agent, _ = self.create_worker_agent_from_app(
             session,
             tenant_id=account.id,
@@ -2558,6 +2595,7 @@ class RouterAgentManagerService(BaseService):
         account: Account,
         manual_overrides: dict[str, Any],
     ) -> dict[str, Any]:
+        self._ensure_worker_app_for_capability(session, app_id=app_id, account=account)
         worker_agent, _ = self.create_worker_agent_from_app(
             session,
             tenant_id=account.id,
@@ -2571,6 +2609,21 @@ class RouterAgentManagerService(BaseService):
             account,
             manual_overrides=manual_overrides,
         )
+
+    def _ensure_worker_app_for_capability(
+        self,
+        session: Session,
+        *,
+        app_id: uuid.UUID,
+        account: Account,
+    ) -> App:
+        app = self.app_service.get_app(session, app_id, account)
+        if (getattr(app, "agent_type", "worker") or "worker") != "worker":
+            raise FailException(
+                "PlannerAgent 不直接维护能力摘要，"
+                "请在 Planner 编排的 WorkerAgent 绑定列表中查看每个 Worker 的能力摘要"
+            )
+        return app
 
     def get_planner_routing_policy(
         self,
@@ -2678,6 +2731,115 @@ class RouterAgentManagerService(BaseService):
             "status": "succeeded" if suggested_worker_ids else "failed",
             "results": results,
             "suggested_worker_ids": suggested_worker_ids,
+        }
+
+    def dry_run_planner(
+        self,
+        session: Session,
+        *,
+        planner_app_id: uuid.UUID,
+        account: Account,
+        query: str,
+        image_urls: list[str] | None = None,
+        input_modalities: list[str] | None = None,
+        candidate_worker_ids: list[uuid.UUID] | None = None,
+    ) -> dict[str, Any]:
+        planner_agent, _ = self.create_planner_agent_from_app(
+            session,
+            tenant_id=account.id,
+            app_id=planner_app_id,
+            account=account,
+        )
+        workers = self.list_bound_workers(session, tenant_id=account.id, router_agent_id=planner_agent.id)
+        selected_workers = self._select_workers(workers, candidate_worker_ids)
+        if not selected_workers:
+            raise FailException("Router agent has no available worker bindings")
+
+        user_input = {
+            "query": query,
+            "image_urls": image_urls or [],
+            "input_modalities": input_modalities or [],
+            "invoke_from": "planner_dry_run",
+        }
+        allowed_worker_ids = {str(worker.id) for worker in selected_workers}
+        fallback_reason = ""
+        raw_output = ""
+        usage: dict[str, Any] = {}
+        latency_ms = 0
+        try:
+            model = self.language_model_service.load_language_model(
+                self._router_model_config(session, planner_agent),
+                session=session,
+                account=account,
+            )
+            planner_result = self.planner_agent.create_plan(
+                model=model,
+                planner_input=PlannerInput(
+                    router_id=str(planner_agent.id),
+                    query=query,
+                    workers=[
+                        self._planner_worker_descriptor(session=session, worker=worker)
+                        for worker in selected_workers
+                    ],
+                    constraints={
+                        "allow_parallel": False,
+                        "allow_replan": False,
+                        "allow_required_approval": False,
+                        "execution_mode": "sync",
+                        "max_steps": 5,
+                        "dry_run": True,
+                    },
+                ),
+            )
+            raw_output = planner_result.raw_output
+            usage = planner_result.usage
+            latency_ms = int(planner_result.latency_ms or 0)
+            if planner_result.plan is None:
+                fallback_reason = planner_result.error or "planner_returned_empty_plan"
+                plan = self._build_rule_manager_plan(
+                    router_agent=planner_agent,
+                    workers=selected_workers,
+                    user_input=user_input,
+                )
+            else:
+                plan = self.router_runtime.validate_plan(
+                    planner_result.plan,
+                    allowed_worker_ids=allowed_worker_ids,
+                    router_id=str(planner_agent.id),
+                    max_steps=5,
+                    allow_async=False,
+                    allow_required_approval=False,
+                )
+        except Exception as exc:  # noqa: BLE001
+            fallback_reason = str(exc)
+            plan = self._build_rule_manager_plan(
+                router_agent=planner_agent,
+                workers=selected_workers,
+                user_input=user_input,
+            )
+
+        preflight = self.router_runtime.preflight_plan(
+            plan,
+            worker_capabilities=self._worker_capability_map(session, selected_workers, account=account),
+            user_input=user_input,
+            routing_policy=self._routing_policy_for_agent(session, planner_agent),
+        )
+        plan_snapshot = self._plan_snapshot_payload(plan, selected_workers)
+        return {
+            "dry_run": True,
+            "status": "ready" if preflight.get("status") == "succeeded" else "blocked",
+            "query": query,
+            "router_agent": self._agent_payload(planner_agent),
+            "workers": self._worker_summary_payload(selected_workers),
+            "plan": plan_snapshot,
+            "planned_steps": plan_snapshot["steps"],
+            "preflight": preflight,
+            "source": plan.risk_assessment.get("source") or "",
+            "risk_level": plan.risk_assessment.get("risk_level") or "low",
+            "fallback_reason": self._truncate(fallback_reason, 1000),
+            "raw_output": self._truncate(raw_output, 4000),
+            "usage": usage,
+            "latency_ms": latency_ms,
         }
 
     def _get_planner_binding(
@@ -2910,21 +3072,128 @@ class RouterAgentManagerService(BaseService):
             lines.append(f"{index}. {worker_name}: {step.task}")
         return f"计划来源: {source}\n" + "\n".join(lines)
 
-    @staticmethod
-    def _plan_step_payload(plan: RouterPlan, workers: list[Agent]) -> list[dict[str, Any]]:
+    @classmethod
+    def _plan_snapshot_payload(cls, plan: RouterPlan, workers: list[Agent]) -> dict[str, Any]:
+        return {
+            "schema_version": plan.schema_version,
+            "router_id": plan.router_id,
+            "user_intent": plan.user_intent,
+            "risk_assessment": cls._json_ready(plan.risk_assessment),
+            "final_response_policy": cls._json_ready(plan.final_response_policy),
+            "steps": cls._plan_step_payload(plan, workers),
+        }
+
+    @classmethod
+    def _plan_json_snapshot_payload(cls, plan_json: dict[str, Any] | None, workers: list[Agent]) -> dict[str, Any]:
+        data = plan_json if isinstance(plan_json, dict) else {}
         worker_map = {str(worker.id): worker for worker in workers}
-        return [
-            {
-                "step_id": step.step_id,
-                "worker_id": str(step.worker_id),
-                "worker_name": worker_map.get(str(step.worker_id)).name if worker_map.get(str(step.worker_id)) else "",
-                "task": step.task,
-                "dependencies": list(step.dependencies or []),
-                "execution_mode": step.execution_mode,
-                "required_approval": bool(step.required_approval),
-            }
-            for step in plan.steps
-        ]
+        risk_assessment = data.get("risk_assessment") if isinstance(data.get("risk_assessment"), dict) else {}
+        source = str(risk_assessment.get("source") or "planner")
+        steps = []
+        for raw_step in data.get("steps", []) if isinstance(data.get("steps"), list) else []:
+            if not isinstance(raw_step, dict):
+                continue
+            worker_id = str(raw_step.get("worker_id") or "")
+            worker = worker_map.get(worker_id)
+            signals = cls._unique_strings(
+                [
+                    *(raw_step.get("selection_signals") if isinstance(raw_step.get("selection_signals"), list) else []),
+                    *cls._worker_selection_signals(worker),
+                ]
+            )
+            steps.append(
+                {
+                    "step_id": str(raw_step.get("step_id") or ""),
+                    "worker_id": worker_id,
+                    "worker_name": worker.name if worker else str(raw_step.get("worker_name") or ""),
+                    "task": str(raw_step.get("task") or ""),
+                    "dependencies": list(raw_step.get("dependencies") or []),
+                    "execution_mode": str(raw_step.get("execution_mode") or "sync"),
+                    "required_approval": bool(raw_step.get("required_approval")),
+                    "selection_reason": str(
+                        raw_step.get("selection_reason")
+                        or cls._default_selection_reason(source=source, worker=worker)
+                    ),
+                    "selection_signals": signals,
+                }
+            )
+        return {
+            "schema_version": str(data.get("schema_version") or "router_plan_v1"),
+            "router_id": str(data.get("router_id") or ""),
+            "user_intent": str(data.get("user_intent") or ""),
+            "risk_assessment": cls._json_ready(risk_assessment),
+            "final_response_policy": cls._json_ready(data.get("final_response_policy") or {}),
+            "steps": steps,
+        }
+
+    @classmethod
+    def _plan_diff_payload(cls, previous_plan: dict[str, Any], next_plan: dict[str, Any]) -> dict[str, Any]:
+        previous_steps = [step for step in previous_plan.get("steps", []) if isinstance(step, dict)]
+        next_steps = [step for step in next_plan.get("steps", []) if isinstance(step, dict)]
+        previous_by_key = {str(step.get("step_id") or ""): step for step in previous_steps}
+        next_by_key = {str(step.get("step_id") or ""): step for step in next_steps}
+        previous_keys = {key for key in previous_by_key if key}
+        next_keys = {key for key in next_by_key if key}
+        added = [next_by_key[key] for key in sorted(next_keys - previous_keys)]
+        removed = [previous_by_key[key] for key in sorted(previous_keys - next_keys)]
+        changed = []
+        for key in sorted(previous_keys & next_keys):
+            previous = previous_by_key[key]
+            current = next_by_key[key]
+            changes = {}
+            if str(previous.get("worker_id") or "") != str(current.get("worker_id") or ""):
+                changes["worker"] = {
+                    "from": {
+                        "id": str(previous.get("worker_id") or ""),
+                        "name": str(previous.get("worker_name") or ""),
+                    },
+                    "to": {
+                        "id": str(current.get("worker_id") or ""),
+                        "name": str(current.get("worker_name") or ""),
+                    },
+                }
+            if str(previous.get("task") or "") != str(current.get("task") or ""):
+                changes["task"] = {
+                    "from": str(previous.get("task") or ""),
+                    "to": str(current.get("task") or ""),
+                }
+            if changes:
+                changed.append({"step_id": key, "changes": changes})
+        return {
+            "added_steps": added,
+            "removed_steps": removed,
+            "changed_steps": changed,
+            "summary": {
+                "added": len(added),
+                "removed": len(removed),
+                "changed": len(changed),
+            },
+        }
+
+    @classmethod
+    def _plan_step_payload(cls, plan: RouterPlan, workers: list[Agent]) -> list[dict[str, Any]]:
+        worker_map = {str(worker.id): worker for worker in workers}
+        steps = []
+        for step in plan.steps:
+            worker = worker_map.get(str(step.worker_id))
+            selection = cls._step_selection_payload(step, plan, workers)
+            steps.append(
+                {
+                    "step_id": step.step_id,
+                    "worker_id": str(step.worker_id),
+                    "worker_name": worker.name if worker else "",
+                    "target_ref_type": worker.target_ref_type if worker else "",
+                    "target_ref_id": worker.target_ref_id if worker else "",
+                    "product_category": worker.product_category if worker else "",
+                    "task": step.task,
+                    "dependencies": list(step.dependencies or []),
+                    "execution_mode": step.execution_mode,
+                    "required_approval": bool(step.required_approval),
+                    "selection_reason": selection["reason"],
+                    "selection_signals": selection["signals"],
+                }
+            )
+        return steps
 
     @staticmethod
     def _worker_summary_payload(workers: list[Agent]) -> list[dict[str, Any]]:
@@ -2932,15 +3201,19 @@ class RouterAgentManagerService(BaseService):
             {
                 "id": str(worker.id),
                 "name": worker.name,
+                "description": worker.description or "",
                 "runtime_type": worker.runtime_type,
+                "product_category": worker.product_category,
                 "target_ref_type": worker.target_ref_type,
                 "target_ref_id": worker.target_ref_id,
+                "selection_signals": RouterAgentManagerService._worker_selection_signals(worker),
             }
             for worker in workers
         ]
 
     @classmethod
     def _worker_trace_payload(cls, worker: Agent, step: AgentStep, **extra: Any) -> dict[str, Any]:
+        selection = cls._planner_selection_from_step(step)
         payload = {
             "step_key": step.step_key,
             "task": cls._step_task_text(step),
@@ -2948,6 +3221,8 @@ class RouterAgentManagerService(BaseService):
             "worker_name": worker.name,
             "target_ref_type": worker.target_ref_type,
             "target_ref_id": worker.target_ref_id,
+            "selection_reason": selection.get("reason", ""),
+            "selection_signals": selection.get("signals", []),
         }
         payload.update(extra)
         return payload
@@ -2957,6 +3232,75 @@ class RouterAgentManagerService(BaseService):
         if step is None or not isinstance(step.input_json, dict):
             return ""
         return str(step.input_json.get("task") or "")
+
+    @classmethod
+    def _step_selection_payload(cls, step: RouterPlanStep, plan: RouterPlan, workers: list[Agent]) -> dict[str, Any]:
+        worker = {str(worker.id): worker for worker in workers}.get(str(step.worker_id))
+        source = str(plan.risk_assessment.get("source") or "planner")
+        reason = str(step.selection_reason or cls._default_selection_reason(source=source, worker=worker))
+        signals = cls._unique_strings([*step.selection_signals, *cls._worker_selection_signals(worker)])
+        return {
+            "reason": reason,
+            "signals": signals,
+            "source": source,
+        }
+
+    @staticmethod
+    def _planner_selection_from_step(step: AgentStep | None) -> dict[str, Any]:
+        input_json = step.input_json if step is not None and isinstance(step.input_json, dict) else {}
+        selection = input_json.get("planner_selection")
+        if isinstance(selection, dict):
+            return {
+                "reason": str(selection.get("reason") or selection.get("selection_reason") or ""),
+                "signals": [
+                    str(item)
+                    for item in selection.get("signals", selection.get("selection_signals", []))
+                    if str(item).strip()
+                ]
+                if isinstance(selection.get("signals", selection.get("selection_signals", [])), list)
+                else [],
+                "source": str(selection.get("source") or ""),
+            }
+        return {"reason": "", "signals": [], "source": ""}
+
+    @classmethod
+    def _worker_selection_signals(cls, worker: Agent | None) -> list[str]:
+        if worker is None:
+            return []
+        values = [
+            f"name:{worker.name}",
+            f"runtime:{worker.runtime_type}",
+            f"category:{worker.product_category}",
+            f"target:{worker.target_ref_type}",
+        ]
+        if worker.description:
+            values.append(f"description:{cls._truncate(worker.description, 160)}")
+        return cls._unique_strings(values)
+
+    @classmethod
+    def _rule_selection_reason(cls, worker: Agent, *, source: str) -> str:
+        return cls._default_selection_reason(source=source, worker=worker)
+
+    @staticmethod
+    def _default_selection_reason(*, source: str, worker: Agent | None) -> str:
+        worker_name = worker.name if worker is not None else "the selected worker"
+        if "replan" in source:
+            return f"Replan selected {worker_name} to recover the failed or remaining work."
+        if "rule" in source:
+            return f"Rule fallback selected {worker_name} from the bound WorkerAgent list."
+        return f"Planner selected {worker_name} for this step based on worker metadata and routing constraints."
+
+    @staticmethod
+    def _unique_strings(values: list[Any]) -> list[str]:
+        seen: set[str] = set()
+        result: list[str] = []
+        for value in values:
+            text = str(value or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            result.append(text)
+        return result
 
     @staticmethod
     def _worker_app_map(session: Session, workers: list[Agent], account_id: uuid.UUID) -> dict[str, App]:
@@ -3038,6 +3382,7 @@ class RouterAgentManagerService(BaseService):
                 "worker_ids": [str(worker.id) for worker in workers],
                 "workers": self._worker_summary_payload(workers),
                 "planned_steps": self._plan_step_payload(plan, workers),
+                "plan_snapshot": self._plan_snapshot_payload(plan, workers),
                 "step_count": len(plan.steps),
             },
         )
@@ -3056,6 +3401,7 @@ class RouterAgentManagerService(BaseService):
                 **result,
                 "workers": self._worker_summary_payload(workers),
                 "planned_steps": self._plan_step_payload(plan, workers),
+                "plan_snapshot": self._plan_snapshot_payload(plan, workers),
             },
         )
         return result

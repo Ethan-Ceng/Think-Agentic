@@ -271,3 +271,27 @@ export type PlannerPreflightResponse = BaseResponse<{
   results: PlannerPreflightResult[]
   suggested_worker_ids: string[]
 }>
+
+export type PlannerDryRunRequest = {
+  query: string
+  image_urls?: string[]
+  input_modalities?: string[]
+  candidate_worker_ids?: string[]
+}
+
+export type PlannerDryRunResponse = BaseResponse<{
+  dry_run: boolean
+  status: 'ready' | 'blocked' | string
+  query: string
+  router_agent: Record<string, any>
+  workers: Record<string, any>[]
+  plan: Record<string, any>
+  planned_steps: Record<string, any>[]
+  preflight: Record<string, any>
+  source: string
+  risk_level: string
+  fallback_reason: string
+  raw_output: string
+  usage: Record<string, any>
+  latency_ms: number
+}>

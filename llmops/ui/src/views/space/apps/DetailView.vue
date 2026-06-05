@@ -19,6 +19,7 @@ const props = defineProps({
   },
 })
 const { draftAppConfigForm, loadDraftAppConfig } = useGetDraftAppConfig()
+const appReady = computed(() => Boolean(props.app?.id && props.app?.agent_type))
 const isPlannerApp = computed(() => props.app?.agent_type === 'planner')
 
 watch(
@@ -77,8 +78,14 @@ watch(
               />
             </template>
             <template #abilities>
+              <div
+                v-if="!appReady"
+                class="flex h-full min-h-0 flex-col bg-white px-3 py-3"
+              >
+                <el-skeleton :rows="8" animated />
+              </div>
               <agent-app-ability
-                v-if="!isPlannerApp"
+                v-else-if="!isPlannerApp"
                 class="h-full min-h-0"
                 v-model:draft_app_config="draftAppConfigForm"
                 :app_id="String(route.params?.app_id)"

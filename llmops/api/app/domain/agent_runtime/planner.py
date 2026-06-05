@@ -99,6 +99,7 @@ class PlannerPromptBuilder:
                 "risk_assessment": {
                     "risk_level": "low|medium|high",
                     "source": "llm_planner_v1",
+                    "planning_reason": "brief reason for the overall worker routing strategy",
                 },
                 "steps": [
                     {
@@ -108,6 +109,8 @@ class PlannerPromptBuilder:
                         "dependencies": [],
                         "execution_mode": "sync",
                         "required_approval": False,
+                        "selection_reason": "why this worker is the best fit for this step",
+                        "selection_signals": ["worker capability, description, or routing signal used"],
                     }
                 ],
                 "final_response_policy": {"mode": "summarize_worker_results"},
@@ -117,6 +120,7 @@ class PlannerPromptBuilder:
             "Create the smallest valid sequential plan for this user request.\n"
             "If one worker can do the job, use one step. If multiple workers are needed, "
             "make later tasks explain how to use previous results.\n"
+            "For every step, include selection_reason and selection_signals explaining why that worker was chosen.\n"
             "Use recent_history to resolve short follow-up requests, and make each worker task explicit.\n"
             "Input files are references only; do not pretend to have read unavailable content.\n\n"
             f"{json.dumps(payload, ensure_ascii=False, default=str)}"
@@ -151,6 +155,7 @@ class PlannerPromptBuilder:
                 "risk_assessment": {
                     "risk_level": "low|medium|high",
                     "source": "llm_replan_v1",
+                    "planning_reason": "brief reason for the replacement routing strategy",
                 },
                 "steps": [
                     {
@@ -160,6 +165,8 @@ class PlannerPromptBuilder:
                         "dependencies": [],
                         "execution_mode": "sync",
                         "required_approval": False,
+                        "selection_reason": "why this worker should handle this replacement step",
+                        "selection_signals": ["failure context, capability, description, or routing signal used"],
                     }
                 ],
                 "final_response_policy": {"mode": "summarize_worker_results"},
@@ -169,6 +176,7 @@ class PlannerPromptBuilder:
             "Create a replacement RouterPlan for the failed or remaining work only.\n"
             "Use only worker_id values from the provided workers list. Do not use the failed worker "
             "when another suitable worker is available.\n"
+            "For every replacement step, include selection_reason and selection_signals explaining the worker choice.\n"
             f"Use unique step_id values beginning with {step_prefix}.\n"
             "Do not depend on step ids from the previous plan; completed step outputs and artifacts "
             "will be provided as execution context.\n"

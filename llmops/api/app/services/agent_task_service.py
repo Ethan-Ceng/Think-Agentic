@@ -1,3 +1,4 @@
+import json
 import math
 from collections import defaultdict
 from typing import Any
@@ -817,6 +818,9 @@ class AgentTaskService(BaseService):
         }
 
     def _step_response(self, step: AgentStep, agent_map: dict[UUID, Agent]) -> dict[str, Any]:
+        input_json = step.input_json or {}
+        output_json = step.output_json or {}
+        selection = self._planner_selection(input_json)
         return {
             "id": step.id,
             "plan_id": step.plan_id,
@@ -825,8 +829,13 @@ class AgentTaskService(BaseService):
             "dependencies": step.dependencies or [],
             "execution_mode": step.execution_mode,
             "status": step.status,
-            "input_json": step.input_json or {},
-            "output_json": step.output_json or {},
+            "task": str(input_json.get("task") or ""),
+            "selection_reason": selection["reason"],
+            "selection_signals": selection["signals"],
+            "input_preview": self._preview_json(input_json),
+            "output_preview": self._preview_json(output_json),
+            "input_json": input_json,
+            "output_json": output_json,
             "retry_count": step.retry_count,
             "timeout_seconds": step.timeout_seconds,
             "started_at": self._ts(step.started_at),
@@ -836,12 +845,16 @@ class AgentTaskService(BaseService):
         }
 
     def _worker_call_response(self, call: WorkerCall, agent_map: dict[UUID, Agent]) -> dict[str, Any]:
+        invocation_json = call.invocation_json or {}
+        result_json = call.result_json or {}
         return {
             "id": call.id,
             "step_id": call.step_id,
             "worker_agent": self._agent_response(agent_map.get(call.worker_agent_id)),
-            "invocation_json": call.invocation_json or {},
-            "result_json": call.result_json or {},
+            "invocation_preview": self._preview_json(invocation_json),
+            "result_preview": self._preview_json(result_json),
+            "invocation_json": invocation_json,
+            "result_json": result_json,
             "status": call.status,
             "token_count": call.token_count,
             "cost": float(call.cost or 0),
@@ -943,6 +956,8 @@ class AgentTaskService(BaseService):
         if step is None:
             return None
         input_json = step.input_json if isinstance(step.input_json, dict) else {}
+        output_json = step.output_json if isinstance(step.output_json, dict) else {}
+        selection = self._planner_selection(input_json)
         return {
             "id": step.id,
             "plan_id": step.plan_id,
@@ -950,6 +965,10 @@ class AgentTaskService(BaseService):
             "task": str(input_json.get("task") or ""),
             "status": step.status,
             "worker_agent": self._agent_response(agent_map.get(step.worker_agent_id)),
+            "selection_reason": selection["reason"],
+            "selection_signals": selection["signals"],
+            "input_preview": self._preview_json(input_json),
+            "output_preview": self._preview_json(output_json),
         }
 
     def _trace_worker_call_response(
@@ -959,13 +978,39 @@ class AgentTaskService(BaseService):
     ) -> dict[str, Any] | None:
         if worker_call is None:
             return None
+        invocation_json = worker_call.invocation_json if isinstance(worker_call.invocation_json, dict) else {}
+        result_json = worker_call.result_json if isinstance(worker_call.result_json, dict) else {}
         return {
             "id": worker_call.id,
             "status": worker_call.status,
             "worker_agent": self._agent_response(agent_map.get(worker_call.worker_agent_id)),
+            "invocation_preview": self._preview_json(invocation_json),
+            "result_preview": self._preview_json(result_json),
             "token_count": worker_call.token_count,
             "latency": float(worker_call.latency or 0),
         }
+
+    @staticmethod
+    def _planner_selection(input_json: dict[str, Any]) -> dict[str, Any]:
+        selection = input_json.get("planner_selection") if isinstance(input_json, dict) else {}
+        if not isinstance(selection, dict):
+            return {"reason": "", "signals": []}
+        raw_signals = selection.get("signals", selection.get("selection_signals", []))
+        signals = [str(item) for item in raw_signals if str(item).strip()] if isinstance(raw_signals, list) else []
+        return {
+            "reason": str(selection.get("reason") or selection.get("selection_reason") or ""),
+            "signals": signals,
+        }
+
+    @staticmethod
+    def _preview_json(value: Any, limit: int = 260) -> str:
+        if value in (None, {}, []):
+            return ""
+        try:
+            text = json.dumps(value, ensure_ascii=False, default=str)
+        except TypeError:
+            text = str(value)
+        return text if len(text) <= limit else f"{text[:limit]}..."
 
     @staticmethod
     def _sort_trace_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:

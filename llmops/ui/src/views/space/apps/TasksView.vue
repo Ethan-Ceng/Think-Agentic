@@ -14,6 +14,7 @@ import type {
   TraceEventItem,
   WorkerCallItem,
 } from '@/models/agent-task'
+import { dryRunPlanner } from '@/services/app'
 import { getAppAgentTaskDetail, getAppAgentTasksWithPage } from '@/services/agent-task'
 import JsonDrawer from './tasks/components/JsonDrawer.vue'
 import TaskStatusTag from './tasks/components/TaskStatusTag.vue'
@@ -29,6 +30,13 @@ const userOptions = ref<AgentConversationUserOption[]>([])
 const selectedUserId = ref('all')
 const searchWord = ref('')
 const activeDetailTab = ref('messages')
+const logAgentFilter = ref('all')
+const logTypeFilter = ref('all')
+const logSearchWord = ref('')
+const showLogPayload = ref(false)
+const dryRunQuery = ref('')
+const dryRunLoading = ref(false)
+const dryRunResult = ref<Record<string, any> | null>(null)
 const paginator = ref({
   current_page: 1,
   page_size: 20,
@@ -77,6 +85,8 @@ const loadDetail = async () => {
     const res = await getAppAgentTaskDetail(appId.value, selectedRecordId.value)
     recordDetail.value = res.data
     activeDetailTab.value = 'messages'
+    dryRunQuery.value = res.data.user_input_preview || String(res.data.user_input?.query || '')
+    dryRunResult.value = null
   } finally {
     detailLoading.value = false
   }
@@ -183,6 +193,111 @@ const traceTaskText = (event: TraceEventItem) => {
   return `${tasks.slice(0, 2).join(' / ')} 等 ${tasks.length} 个任务`
 }
 
+const traceSelectionReason = (event: TraceEventItem) => {
+  const payload = event.payload || {}
+  const plannedSteps = Array.isArray(payload.planned_steps) ? payload.planned_steps : []
+  const reasons = uniqueTexts([
+    event.step?.selection_reason,
+    payload.selection_reason,
+    payload.planning_reason,
+    ...plannedSteps.map((step: Record<string, any>) => step.selection_reason),
+    payload.reason,
+  ])
+  return reasons.slice(0, 2).join(' / ')
+}
+
+const traceSelectionSignals = (event: TraceEventItem) => {
+  const payload = event.payload || {}
+  const plannedSteps = Array.isArray(payload.planned_steps) ? payload.planned_steps : []
+  const values = [
+    ...(Array.isArray(event.step?.selection_signals) ? event.step?.selection_signals || [] : []),
+    ...(Array.isArray(payload.selection_signals) ? payload.selection_signals : []),
+    ...plannedSteps.flatMap((step: Record<string, any>) =>
+      Array.isArray(step.selection_signals) ? step.selection_signals : [],
+    ),
+  ]
+  return uniqueTexts(values).slice(0, 4)
+}
+
+const tracePayloadSummary = (event: TraceEventItem) => {
+  const payload = event.payload || {}
+  const plannedSteps = Array.isArray(payload.planned_steps) ? payload.planned_steps : []
+  if (plannedSteps.length) {
+    return `${plannedSteps.length} step · ${uniqueTexts(plannedSteps.map((step: Record<string, any>) => step.worker_name)).join(' / ')}`
+  }
+  return toPreview(payload, 180)
+}
+
+const matchesLogType = (event: TraceEventItem, type: string) => {
+  const eventType = event.event_type || ''
+  if (type === 'all') return true
+  if (type === 'failed') {
+    return eventType.includes('failed') || String(event.payload?.status || '').includes('failed')
+  }
+  if (type === 'replan') return eventType.includes('replan')
+  if (type === 'preflight') return eventType.includes('preflight')
+  return eventType.startsWith(`${type}.`)
+}
+
+const isPlaybackEvent = (event: TraceEventItem) => {
+  const eventType = event.event_type || ''
+  return (
+    eventType.startsWith('planner.') ||
+    eventType === 'router.manager_run.created' ||
+    eventType.startsWith('router.capability_preflight') ||
+    eventType.startsWith('planner.replan.preflight')
+  )
+}
+
+const playbackSteps = (event: TraceEventItem) => {
+  const payload = event.payload || {}
+  const snapshot = payload.plan_snapshot || payload.new_plan || payload.current_plan_snapshot
+  if (Array.isArray(snapshot?.steps)) return snapshot.steps
+  if (Array.isArray(payload.planned_steps)) return payload.planned_steps
+  return []
+}
+
+const playbackDiff = (event: TraceEventItem) => {
+  const diff = event.payload?.plan_diff
+  return diff && typeof diff === 'object' ? diff : null
+}
+
+const playbackStatusType = (event: TraceEventItem) => {
+  const status = String(event.payload?.status || event.event_type || '')
+  if (status.includes('failed') || status.includes('fallback') || status.includes('blocked')) return 'danger'
+  if (status.includes('succeeded') || status.includes('validated') || status.includes('applied')) return 'success'
+  return 'info'
+}
+
+const logAgentOptions = computed(() => {
+  return uniqueTexts(
+    traceEvents.value.flatMap((event) => traceAgentName(event).split('/').map((name) => name.trim())),
+  )
+})
+
+const filteredTraceEvents = computed(() => {
+  const keyword = logSearchWord.value.trim().toLowerCase()
+  return traceEvents.value.filter((event) => {
+    const agentName = traceAgentName(event)
+    if (logAgentFilter.value !== 'all' && !agentName.includes(logAgentFilter.value)) return false
+    if (!matchesLogType(event, logTypeFilter.value)) return false
+    if (!keyword) return true
+    return [
+      event.event_type,
+      traceMessage(event),
+      agentName,
+      traceStepName(event),
+      traceTaskText(event),
+      traceSelectionReason(event),
+    ]
+      .join(' ')
+      .toLowerCase()
+      .includes(keyword)
+  })
+})
+
+const playbackEvents = computed(() => traceEvents.value.filter(isPlaybackEvent))
+
 const planSourceLabel = (source?: string) => {
   const map: Record<string, string> = {
     llm_planner_v1: 'LLM Planner',
@@ -234,6 +349,46 @@ const workerAnswer = (call: WorkerCallItem) => {
   return String(call.result_json?.answer || call.result_json?.data?.answer || call.result_json?.summary || call.result_json?.error || '')
 }
 
+const toPreview = (value: unknown, limit = 220) => {
+  if (value === null || value === undefined || value === '') return ''
+  let text = ''
+  if (typeof value === 'string') {
+    text = value
+  } else {
+    try {
+      text = JSON.stringify(value)
+    } catch {
+      text = String(value)
+    }
+  }
+  return text.length <= limit ? text : `${text.slice(0, limit)}...`
+}
+
+const stepTaskText = (step: AgentStepItem) => {
+  return String(step.task || step.input_json?.task || '')
+}
+
+const stepSelectionReason = (step: AgentStepItem) => {
+  return String(
+    step.selection_reason ||
+      step.input_json?.planner_selection?.reason ||
+      step.input_json?.planner_selection?.selection_reason ||
+      '',
+  )
+}
+
+const stepSelectionSignals = (step: AgentStepItem) => {
+  const direct = Array.isArray(step.selection_signals) ? step.selection_signals : []
+  const nested = Array.isArray(step.input_json?.planner_selection?.signals)
+    ? step.input_json.planner_selection.signals
+    : []
+  return uniqueTexts([...direct, ...nested]).slice(0, 4)
+}
+
+const stepInputSummary = (step: AgentStepItem) => {
+  return step.input_preview || stepTaskText(step) || toPreview(step.input_json)
+}
+
 const taskPreflight = (task: AgentMessageTask | AgentTaskDetail) => {
   const preflight = task.plan?.plan_json?.preflight
   return preflight && typeof preflight === 'object' ? preflight : null
@@ -259,7 +414,22 @@ const preflightStatusType = (status?: string, passed?: boolean) => {
 }
 
 const stepOutputSummary = (step: AgentStepItem) => {
-  return String(step.output_json?.answer || step.output_json?.summary || step.output_json?.error_message || step.output_json?.error || '')
+  return String(
+    step.output_preview ||
+      step.output_json?.answer ||
+      step.output_json?.summary ||
+      step.output_json?.error_message ||
+      step.output_json?.error ||
+      '',
+  )
+}
+
+const workerInputSummary = (call: WorkerCallItem) => {
+  return call.invocation_preview || String(call.invocation_json?.task?.task || call.invocation_json?.task || '')
+}
+
+const workerOutputSummary = (call: WorkerCallItem) => {
+  return call.result_preview || workerAnswer(call)
 }
 
 const fileName = (file: AgentFileRef | AgentArtifactRef) => {
@@ -278,6 +448,22 @@ const openFile = (file: AgentFileRef | AgentArtifactRef, mode: 'preview' | 'down
   const url = mode === 'preview' ? filePreviewUrl(file) : fileDownloadUrl(file)
   if (!url) return
   window.open(url, '_blank', 'noopener,noreferrer')
+}
+
+const runPlannerDryRun = async () => {
+  const query = dryRunQuery.value.trim()
+  if (!appId.value || !query) return
+  dryRunLoading.value = true
+  try {
+    const res = await dryRunPlanner(appId.value, {
+      query,
+      image_urls: [],
+      input_modalities: [],
+    })
+    dryRunResult.value = res.data
+  } finally {
+    dryRunLoading.value = false
+  }
 }
 
 function formatDate(timestamp: number) {
@@ -638,6 +824,9 @@ onMounted(async () => {
                                         <div class="mt-1 text-xs text-slate-500">
                                           {{ step.worker_agent?.name || '未知 Worker' }}
                                         </div>
+                                        <p v-if="stepTaskText(step)" class="mt-1 line-clamp-2 break-words text-xs text-slate-600">
+                                          {{ stepTaskText(step) }}
+                                        </p>
                                         <div class="mt-1 flex flex-wrap gap-1">
                                           <el-tag v-if="step.worker_agent?.target_ref_type" size="small" type="info">
                                             {{ step.worker_agent.target_ref_type }}
@@ -650,6 +839,22 @@ onMounted(async () => {
                                             {{ step.input_json.preflight.capability_snapshot.executor_type }}
                                           </el-tag>
                                         </div>
+                                        <p
+                                          v-if="stepSelectionReason(step)"
+                                          class="mt-2 line-clamp-2 break-words text-xs text-slate-500"
+                                        >
+                                          选择依据：{{ stepSelectionReason(step) }}
+                                        </p>
+                                        <div v-if="stepSelectionSignals(step).length" class="mt-1 flex flex-wrap gap-1">
+                                          <el-tag
+                                            v-for="signal in stepSelectionSignals(step)"
+                                            :key="`${step.id}-${signal}`"
+                                            size="small"
+                                            type="info"
+                                          >
+                                            {{ signal }}
+                                          </el-tag>
+                                        </div>
                                       </div>
                                       <div class="flex shrink-0 flex-wrap items-center gap-2">
                                         <el-button size="small" @click="openJson('Step 输入', step.input_json)">输入</el-button>
@@ -657,9 +862,20 @@ onMounted(async () => {
                                       </div>
                                     </div>
 
-                                    <p v-if="stepOutputSummary(step)" class="mt-2 line-clamp-3 break-words text-xs text-slate-500">
-                                      {{ stepOutputSummary(step) }}
-                                    </p>
+                                    <div class="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
+                                      <div class="bg-slate-50 p-2">
+                                        <div class="mb-1 text-xs font-medium text-slate-700">Step 输入</div>
+                                        <p class="line-clamp-3 break-words text-xs text-slate-500">
+                                          {{ stepInputSummary(step) || '-' }}
+                                        </p>
+                                      </div>
+                                      <div class="bg-slate-50 p-2">
+                                        <div class="mb-1 text-xs font-medium text-slate-700">Step 输出</div>
+                                        <p class="line-clamp-3 break-words text-xs text-slate-500">
+                                          {{ stepOutputSummary(step) || '-' }}
+                                        </p>
+                                      </div>
+                                    </div>
 
                                     <div v-if="stepPreflight(step)" class="mt-3 border border-slate-200 bg-slate-50 p-2">
                                       <div class="flex flex-wrap items-center justify-between gap-2">
@@ -730,9 +946,20 @@ onMounted(async () => {
                                             <el-button size="small" @click="openJson('WorkerResult', call.result_json)">Result</el-button>
                                           </div>
                                         </div>
-                                        <p v-if="workerAnswer(call)" class="mt-2 line-clamp-3 break-words text-xs text-slate-500">
-                                          {{ workerAnswer(call) }}
-                                        </p>
+                                        <div class="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2">
+                                          <div>
+                                            <div class="mb-1 text-xs font-medium text-slate-600">Invocation</div>
+                                            <p class="line-clamp-3 break-words text-xs text-slate-500">
+                                              {{ workerInputSummary(call) || '-' }}
+                                            </p>
+                                          </div>
+                                          <div>
+                                            <div class="mb-1 text-xs font-medium text-slate-600">Result</div>
+                                            <p class="line-clamp-3 break-words text-xs text-slate-500">
+                                              {{ workerOutputSummary(call) || '-' }}
+                                            </p>
+                                          </div>
+                                        </div>
                                       </div>
                                     </div>
 
@@ -794,7 +1021,41 @@ onMounted(async () => {
 
               <el-tab-pane label="执行日志" name="logs">
                 <div class="pb-4">
-                  <el-table :data="traceEvents" stripe>
+                  <div class="mb-3 flex flex-wrap items-center gap-2">
+                    <el-select v-model="logAgentFilter" class="w-[180px]" size="small">
+                      <el-option label="全部 Agent" value="all" />
+                      <el-option
+                        v-for="agentName in logAgentOptions"
+                        :key="agentName"
+                        :label="agentName"
+                        :value="agentName"
+                      />
+                    </el-select>
+                    <el-select v-model="logTypeFilter" class="w-[150px]" size="small">
+                      <el-option label="全部事件" value="all" />
+                      <el-option label="Planner" value="planner" />
+                      <el-option label="Replan" value="replan" />
+                      <el-option label="Worker" value="worker" />
+                      <el-option label="Router" value="router" />
+                      <el-option label="Preflight" value="preflight" />
+                      <el-option label="失败" value="failed" />
+                    </el-select>
+                    <el-input
+                      v-model="logSearchWord"
+                      clearable
+                      size="small"
+                      class="min-w-[180px] flex-1"
+                      placeholder="搜索事件、Agent、Step 或选择理由"
+                    />
+                    <el-switch
+                      v-model="showLogPayload"
+                      size="small"
+                      active-text="Payload"
+                      inactive-text="摘要"
+                    />
+                  </div>
+
+                  <el-table :data="filteredTraceEvents" stripe>
                     <el-table-column label="时间" width="170">
                       <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
                     </el-table-column>
@@ -804,7 +1065,7 @@ onMounted(async () => {
                         <div v-if="traceMessage(row)" class="truncate text-xs text-slate-500">{{ traceMessage(row) }}</div>
                       </template>
                     </el-table-column>
-                    <el-table-column label="Agent" min-width="160">
+                    <el-table-column label="Agent" min-width="150">
                       <template #default="{ row }">
                         <div class="truncate text-sm text-slate-700">{{ traceAgentName(row) || '-' }}</div>
                       </template>
@@ -814,6 +1075,30 @@ onMounted(async () => {
                         <div class="font-medium text-slate-800">{{ traceStepName(row) || '-' }}</div>
                         <div v-if="traceTaskText(row)" class="line-clamp-2 break-words text-xs text-slate-500">
                           {{ traceTaskText(row) }}
+                        </div>
+                      </template>
+                    </el-table-column>
+                    <el-table-column label="选择依据" min-width="260">
+                      <template #default="{ row }">
+                        <div class="line-clamp-2 break-words text-sm text-slate-700">
+                          {{ traceSelectionReason(row) || '-' }}
+                        </div>
+                        <div v-if="traceSelectionSignals(row).length" class="mt-1 flex flex-wrap gap-1">
+                          <el-tag
+                            v-for="signal in traceSelectionSignals(row)"
+                            :key="`${row.id}-${signal}`"
+                            size="small"
+                            type="info"
+                          >
+                            {{ signal }}
+                          </el-tag>
+                        </div>
+                      </template>
+                    </el-table-column>
+                    <el-table-column v-if="showLogPayload" label="Payload 摘要" min-width="220">
+                      <template #default="{ row }">
+                        <div class="line-clamp-2 break-words text-xs text-slate-500">
+                          {{ tracePayloadSummary(row) }}
                         </div>
                       </template>
                     </el-table-column>
@@ -829,6 +1114,143 @@ onMounted(async () => {
                       </template>
                     </el-table-column>
                   </el-table>
+                  <el-empty
+                    v-if="!filteredTraceEvents.length"
+                    class="py-10"
+                    description="没有匹配的执行事件"
+                  />
+                </div>
+              </el-tab-pane>
+
+              <el-tab-pane label="调度回放" name="playback">
+                <div class="space-y-3 pb-4">
+                  <section class="border border-slate-200 p-3">
+                    <div class="flex flex-wrap items-center justify-between gap-2">
+                      <div class="min-w-0">
+                        <div class="text-sm font-medium text-slate-900">重新规划，不执行</div>
+                        <p class="mt-1 text-xs text-slate-500">
+                          只调用 Planner 生成计划和能力预检，不创建任务，不调用 Worker。
+                        </p>
+                      </div>
+                      <div class="flex min-w-[280px] flex-1 flex-wrap items-center gap-2 md:flex-nowrap">
+                        <el-input
+                          v-model="dryRunQuery"
+                          size="small"
+                          class="min-w-[220px] flex-1"
+                          placeholder="输入要重新规划的问题"
+                          @keyup.enter="runPlannerDryRun"
+                        />
+                        <el-button size="small" type="primary" :loading="dryRunLoading" @click="runPlannerDryRun">
+                          Dry-run
+                        </el-button>
+                      </div>
+                    </div>
+
+                    <div v-if="dryRunResult" class="mt-3 border-t border-slate-100 pt-3">
+                      <div class="mb-2 flex flex-wrap items-center gap-2">
+                        <el-tag size="small" :type="dryRunResult.status === 'ready' ? 'success' : 'danger'">
+                          {{ dryRunResult.status }}
+                        </el-tag>
+                        <el-tag v-if="dryRunResult.source" size="small" type="info">
+                          {{ planSourceLabel(dryRunResult.source) || dryRunResult.source }}
+                        </el-tag>
+                        <span class="text-xs text-slate-400">{{ dryRunResult.latency_ms || 0 }} ms</span>
+                        <el-button size="small" @click="openJson('Planner Dry-run', dryRunResult)">JSON</el-button>
+                      </div>
+                      <p v-if="dryRunResult.fallback_reason" class="mb-2 break-words text-xs text-red-600">
+                        {{ dryRunResult.fallback_reason }}
+                      </p>
+                      <div class="grid grid-cols-1 gap-2 lg:grid-cols-2">
+                        <div
+                          v-for="step in dryRunResult.planned_steps || []"
+                          :key="`${dryRunResult.query}-${step.step_id}`"
+                          class="bg-slate-50 p-2"
+                        >
+                          <div class="flex flex-wrap items-center gap-2">
+                            <span class="text-xs font-medium text-slate-900">{{ step.step_id }}</span>
+                            <span class="text-xs text-slate-500">{{ step.worker_name || step.worker_id }}</span>
+                          </div>
+                          <p class="mt-1 line-clamp-2 break-words text-xs text-slate-600">{{ step.task }}</p>
+                          <p v-if="step.selection_reason" class="mt-1 line-clamp-2 break-words text-xs text-slate-500">
+                            {{ step.selection_reason }}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  </section>
+
+                  <el-empty v-if="!playbackEvents.length" description="暂无 Planner 调度事件" />
+                  <el-timeline v-else>
+                    <el-timeline-item
+                      v-for="event in playbackEvents"
+                      :key="event.id"
+                      :timestamp="formatDate(event.created_at)"
+                      placement="top"
+                    >
+                      <div class="border border-slate-200 p-3">
+                        <div class="flex flex-wrap items-start justify-between gap-2">
+                          <div class="min-w-0">
+                            <div class="flex flex-wrap items-center gap-2">
+                              <span class="font-medium text-slate-900">{{ event.event_type }}</span>
+                              <el-tag size="small" :type="playbackStatusType(event)">
+                                {{ event.payload?.status || event.payload?.source || 'trace' }}
+                              </el-tag>
+                              <span class="text-xs text-slate-400">{{ traceAgentName(event) || 'Planner' }}</span>
+                            </div>
+                            <p v-if="traceSelectionReason(event)" class="mt-1 line-clamp-2 break-words text-xs text-slate-500">
+                              {{ traceSelectionReason(event) }}
+                            </p>
+                          </div>
+                          <div class="flex shrink-0 flex-wrap items-center gap-2">
+                            <el-button size="small" @click="openJson('调度事件', event)">事件 JSON</el-button>
+                            <el-button
+                              v-if="event.payload?.plan_snapshot"
+                              size="small"
+                              @click="openJson('计划快照', event.payload.plan_snapshot)"
+                            >
+                              计划
+                            </el-button>
+                            <el-button
+                              v-if="playbackDiff(event)"
+                              size="small"
+                              @click="openJson('Replan Diff', playbackDiff(event))"
+                            >
+                              Diff
+                            </el-button>
+                          </div>
+                        </div>
+
+                        <div v-if="playbackSteps(event).length" class="mt-3 grid grid-cols-1 gap-2 lg:grid-cols-2">
+                          <div
+                            v-for="step in playbackSteps(event)"
+                            :key="`${event.id}-${step.step_id}-${step.worker_id}`"
+                            class="bg-slate-50 p-2"
+                          >
+                            <div class="flex flex-wrap items-center gap-2">
+                              <span class="text-xs font-medium text-slate-900">{{ step.step_id }}</span>
+                              <span class="truncate text-xs text-slate-500">{{ step.worker_name || step.worker_id }}</span>
+                            </div>
+                            <p class="mt-1 line-clamp-2 break-words text-xs text-slate-600">{{ step.task }}</p>
+                            <p v-if="step.selection_reason" class="mt-1 line-clamp-2 break-words text-xs text-slate-500">
+                              {{ step.selection_reason }}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div v-if="playbackDiff(event)" class="mt-3 flex flex-wrap gap-2 text-xs text-slate-500">
+                          <el-tag size="small" type="success">
+                            新增 {{ playbackDiff(event)?.summary?.added || 0 }}
+                          </el-tag>
+                          <el-tag size="small" type="danger">
+                            移除 {{ playbackDiff(event)?.summary?.removed || 0 }}
+                          </el-tag>
+                          <el-tag size="small" type="warning">
+                            变更 {{ playbackDiff(event)?.summary?.changed || 0 }}
+                          </el-tag>
+                        </div>
+                      </div>
+                    </el-timeline-item>
+                  </el-timeline>
                 </div>
               </el-tab-pane>
 

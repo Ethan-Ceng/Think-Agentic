@@ -307,7 +307,13 @@ def test_agent_task_service_attaches_task_execution_to_conversation_message() ->
         dependencies=[],
         execution_mode="sync",
         status="succeeded",
-        input_json={"task": "hello"},
+        input_json={
+            "task": "hello",
+            "planner_selection": {
+                "reason": "Planner selected Router for the test step",
+                "signals": ["name:Router"],
+            },
+        },
         output_json={"answer": "worker answer"},
         retry_count=0,
         timeout_seconds=120,
@@ -322,7 +328,7 @@ def test_agent_task_service_attaches_task_execution_to_conversation_message() ->
         task_id=task.id,
         step_id=step.id,
         worker_agent_id=agent.id,
-        invocation_json={"context": {"input_files": [{"name": "input.txt"}]}},
+        invocation_json={"task": {"task": "hello"}, "context": {"input_files": [{"name": "input.txt"}]}},
         result_json={"answer": "worker answer"},
         status="succeeded",
         token_count=8,
@@ -377,6 +383,9 @@ def test_agent_task_service_attaches_task_execution_to_conversation_message() ->
     assert task_trace["agent"]["name"] == "Router"
     assert task_trace["step"]["step_key"] == "worker_1"
     assert task_trace["step"]["task"] == "hello"
+    assert task_trace["step"]["selection_reason"] == "Planner selected Router for the test step"
+    assert "hello" in task_trace["step"]["input_preview"]
     assert task_trace["worker_call"]["id"] == worker_call.id
+    assert "hello" in task_trace["worker_call"]["invocation_preview"]
     assert detail["input_files"][0]["name"] == "input.txt"
     assert detail["artifacts"][0]["name"] == "result.txt"

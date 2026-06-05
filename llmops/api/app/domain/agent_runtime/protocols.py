@@ -11,6 +11,8 @@ class RouterPlanStep(BaseModel):
     dependencies: list[str] = Field(default_factory=list)
     execution_mode: Literal["sync", "async"] = "sync"
     required_approval: bool = False
+    selection_reason: str = ""
+    selection_signals: list[str] = Field(default_factory=list)
 
 
 class RouterPlan(BaseModel):
