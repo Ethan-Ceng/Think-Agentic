@@ -57,21 +57,33 @@ class FakeSession:
         thought: MessageAgentThought,
         *,
         agent: Agent | None = None,
+        agents: list[Agent] | None = None,
         task: AgentTask | None = None,
+        tasks: list[AgentTask] | None = None,
         plan: AgentPlan | None = None,
+        plans: list[AgentPlan] | None = None,
         step: AgentStep | None = None,
+        steps: list[AgentStep] | None = None,
         worker_call: WorkerCall | None = None,
+        worker_calls: list[WorkerCall] | None = None,
         trace_event: TraceEvent | None = None,
+        trace_events: list[TraceEvent] | None = None,
     ) -> None:
         self.conversation = conversation
         self.message = message
         self.thought = thought
-        self.agent = agent
-        self.task = task
-        self.plan = plan
-        self.step = step
-        self.worker_call = worker_call
-        self.trace_event = trace_event
+        self.agents = agents if agents is not None else ([agent] if agent else [])
+        self.tasks = tasks if tasks is not None else ([task] if task else [])
+        self.plans = plans if plans is not None else ([plan] if plan else [])
+        self.steps = steps if steps is not None else ([step] if step else [])
+        self.worker_calls = worker_calls if worker_calls is not None else ([worker_call] if worker_call else [])
+        self.trace_events = trace_events if trace_events is not None else ([trace_event] if trace_event else [])
+        self.agent = self.agents[0] if self.agents else None
+        self.task = self.tasks[0] if self.tasks else None
+        self.plan = self.plans[0] if self.plans else None
+        self.step = self.steps[0] if self.steps else None
+        self.worker_call = self.worker_calls[0] if self.worker_calls else None
+        self.trace_event = self.trace_events[0] if self.trace_events else None
 
     def query(self, *models):  # noqa: ANN002
         model = models[0]
@@ -80,9 +92,9 @@ class FakeSession:
         if model is MessageAgentThought.conversation_id:
             return FakeQuery(rows=[(self.conversation.id, 1)])
         if model is TraceEvent.task_id:
-            return FakeQuery(rows=[(self.task.id, 1)] if self.task else [])
+            return FakeQuery(rows=[(task.id, 1) for task in self.tasks])
         if model is AgentStep.task_id:
-            return FakeQuery(rows=[(self.task.id,)] if self.task else [])
+            return FakeQuery(rows=[(step.task_id,) for step in self.steps])
         if model is Conversation:
             return FakeQuery([self.conversation])
         if model is Account:
@@ -90,19 +102,19 @@ class FakeSession:
         if model is EndUser:
             return FakeQuery([])
         if model is Agent:
-            return FakeQuery([self.agent] if self.agent else [])
+            return FakeQuery(self.agents)
         if model is AgentTask:
-            return FakeQuery([self.task] if self.task else [])
+            return FakeQuery(self.tasks)
         if model is AgentPlan:
-            return FakeQuery([self.plan] if self.plan else [])
+            return FakeQuery(self.plans)
         if model is AgentStep:
-            return FakeQuery([self.step] if self.step else [])
+            return FakeQuery(self.steps)
         if model is WorkerCall:
-            return FakeQuery([self.worker_call] if self.worker_call else [])
+            return FakeQuery(self.worker_calls)
         if model is CapabilityCall:
             return FakeQuery([])
         if model is TraceEvent:
-            return FakeQuery([self.trace_event] if self.trace_event else [])
+            return FakeQuery(self.trace_events)
         if model is Message:
             return FakeQuery([self.message])
         if model is MessageAgentThought:
@@ -389,3 +401,279 @@ def test_agent_task_service_attaches_task_execution_to_conversation_message() ->
     assert "hello" in task_trace["worker_call"]["invocation_preview"]
     assert detail["input_files"][0]["name"] == "input.txt"
     assert detail["artifacts"][0]["name"] == "result.txt"
+
+
+def test_agent_task_runtime_metrics_summarizes_existing_execution() -> None:
+    app_id = uuid.uuid4()
+    account = SimpleNamespace(id=uuid.uuid4())
+    now = datetime.now()
+    conversation = Conversation(
+        id=uuid.uuid4(),
+        app_id=app_id,
+        name="New Conversation",
+        summary="",
+        is_pinned=False,
+        is_deleted=False,
+        invoke_from=InvokeFrom.WEB_APP.value,
+        created_by=uuid.uuid4(),
+        created_at=now,
+        updated_at=now,
+    )
+    message = Message(
+        id=uuid.uuid4(),
+        app_id=app_id,
+        conversation_id=conversation.id,
+        invoke_from=InvokeFrom.WEB_APP.value,
+        created_by=conversation.created_by,
+        query="hello",
+        image_urls=[],
+        message=[],
+        answer="hi",
+        status=MessageStatus.NORMAL.value,
+        error="",
+        total_token_count=12,
+        total_price=Decimal("0"),
+        latency=1.2,
+        is_deleted=False,
+        created_at=now,
+        updated_at=now,
+    )
+    thought = MessageAgentThought(
+        id=uuid.uuid4(),
+        app_id=app_id,
+        conversation_id=message.conversation_id,
+        message_id=message.id,
+        invoke_from=InvokeFrom.WEB_APP.value,
+        created_by=message.created_by,
+        position=1,
+        event="agent_message",
+        thought="thinking",
+        observation="",
+        tool="",
+        tool_input={},
+        message=[],
+        answer="hi",
+        total_token_count=12,
+        total_price=Decimal("0"),
+        latency=1.2,
+        created_at=now,
+        updated_at=now,
+    )
+    router = Agent(
+        id=uuid.uuid4(),
+        tenant_id=account.id,
+        created_by=account.id,
+        name="Router",
+        icon="",
+        description="",
+        runtime_type="router",
+        product_category="router",
+        status="published",
+        visibility_scope={},
+        target_ref_type="app",
+        target_ref_id=str(app_id),
+        created_at=now,
+        updated_at=now,
+    )
+    worker = Agent(
+        id=uuid.uuid4(),
+        tenant_id=account.id,
+        created_by=account.id,
+        name="Worker",
+        icon="",
+        description="",
+        runtime_type="worker",
+        product_category="custom",
+        status="published",
+        visibility_scope={},
+        target_ref_type="app",
+        target_ref_id=str(app_id),
+        created_at=now,
+        updated_at=now,
+    )
+    succeeded_task = AgentTask(
+        id=uuid.uuid4(),
+        tenant_id=account.id,
+        conversation_id=conversation.id,
+        router_agent_id=router.id,
+        user_id=message.created_by,
+        status="succeeded",
+        user_input={"query": "done"},
+        final_result={"answer": "done"},
+        error_code="",
+        error_message="",
+        version=1,
+        started_at=now,
+        finished_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    waiting_task = AgentTask(
+        id=uuid.uuid4(),
+        tenant_id=account.id,
+        conversation_id=conversation.id,
+        router_agent_id=router.id,
+        user_id=message.created_by,
+        status="waiting_user",
+        user_input={"query": "weather"},
+        final_result={},
+        error_code="waiting_user",
+        error_message="需要用户提供城市",
+        version=2,
+        started_at=now,
+        finished_at=None,
+        created_at=now,
+        updated_at=now,
+    )
+    initial_plan = AgentPlan(
+        id=uuid.uuid4(),
+        tenant_id=account.id,
+        task_id=succeeded_task.id,
+        router_agent_id=router.id,
+        schema_version="router_plan_v1",
+        plan_json={"steps": [{"step_id": "step_1"}]},
+        risk_level="low",
+        status="succeeded",
+        created_at=now,
+        updated_at=now,
+    )
+    updated_plan = AgentPlan(
+        id=uuid.uuid4(),
+        tenant_id=account.id,
+        task_id=succeeded_task.id,
+        router_agent_id=router.id,
+        schema_version="router_plan_v1",
+        plan_json={"steps": [{"step_id": "update_1_step_1"}], "plan_update": {"attempt": 1}},
+        risk_level="low",
+        status="succeeded",
+        created_at=now,
+        updated_at=now,
+    )
+    waiting_plan = AgentPlan(
+        id=uuid.uuid4(),
+        tenant_id=account.id,
+        task_id=waiting_task.id,
+        router_agent_id=router.id,
+        schema_version="router_plan_v1",
+        plan_json={"steps": [{"step_id": "weather"}]},
+        risk_level="low",
+        status="running",
+        created_at=now,
+        updated_at=now,
+    )
+    succeeded_step = AgentStep(
+        id=uuid.uuid4(),
+        tenant_id=account.id,
+        task_id=succeeded_task.id,
+        plan_id=updated_plan.id,
+        step_key="update_1_step_1",
+        worker_agent_id=worker.id,
+        dependencies=[],
+        execution_mode="sync",
+        status="succeeded",
+        input_json={"task": "done"},
+        output_json={"answer": "done"},
+        retry_count=0,
+        timeout_seconds=120,
+        started_at=now,
+        finished_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    waiting_step = AgentStep(
+        id=uuid.uuid4(),
+        tenant_id=account.id,
+        task_id=waiting_task.id,
+        plan_id=waiting_plan.id,
+        step_key="weather",
+        worker_agent_id=worker.id,
+        dependencies=[],
+        execution_mode="sync",
+        status="running",
+        input_json={"task": "weather"},
+        output_json={},
+        retry_count=0,
+        timeout_seconds=120,
+        started_at=now,
+        finished_at=None,
+        created_at=now,
+        updated_at=now,
+    )
+    worker_calls = [
+        WorkerCall(
+            id=uuid.uuid4(),
+            tenant_id=account.id,
+            task_id=succeeded_task.id,
+            step_id=succeeded_step.id,
+            worker_agent_id=worker.id,
+            invocation_json={},
+            result_json={"data": {"plan_feedback": {"needs_plan_update": True}}},
+            status="succeeded",
+            token_count=10,
+            cost=Decimal("0.01"),
+            latency=Decimal("1.0"),
+            created_at=now,
+            updated_at=now,
+        ),
+        WorkerCall(
+            id=uuid.uuid4(),
+            tenant_id=account.id,
+            task_id=waiting_task.id,
+            step_id=waiting_step.id,
+            worker_agent_id=worker.id,
+            invocation_json={},
+            result_json={
+                "data": {
+                    "plan_feedback": {
+                        "reason_code": "waiting_user",
+                        "missing_info": ["city"],
+                    }
+                }
+            },
+            status="succeeded",
+            token_count=5,
+            cost=Decimal("0.005"),
+            latency=Decimal("0.5"),
+            created_at=now,
+            updated_at=now,
+        ),
+    ]
+    trace_events = [
+        TraceEvent(
+            id=uuid.uuid4(),
+            tenant_id=account.id,
+            trace_id=f"task:{waiting_task.id}",
+            task_id=waiting_task.id,
+            plan_id=waiting_plan.id,
+            step_id=waiting_step.id,
+            worker_call_id=worker_calls[1].id,
+            event_type="wait.user.requested",
+            payload={"wait_type": "user_input", "missing_info": ["city"]},
+            token_count=0,
+            cost=Decimal("0"),
+            latency=Decimal("0"),
+            created_at=now,
+            updated_at=now,
+        )
+    ]
+    service = AgentTaskService(app_service=FakeAppService())
+    session = FakeSession(
+        conversation,
+        message,
+        thought,
+        agents=[router, worker],
+        tasks=[succeeded_task, waiting_task],
+        plans=[initial_plan, updated_plan, waiting_plan],
+        steps=[succeeded_step, waiting_step],
+        worker_calls=worker_calls,
+        trace_events=trace_events,
+    )
+
+    metrics = service.get_app_task_runtime_metrics(session, app_id=app_id, account=account)
+
+    assert metrics["overview"]["task_count"] == 2
+    assert metrics["overview"]["waiting_count"] == 1
+    assert metrics["planner"]["plan_update_task_count"] == 1
+    assert metrics["worker"]["worker_waiting_count"] == 1
+    assert metrics["worker"]["by_worker"][0]["plan_update_count"] == 1
+    assert metrics["wait"]["missing_info"][0] == {"field": "city", "count": 2}
