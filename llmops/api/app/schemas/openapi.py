@@ -7,6 +7,7 @@ class OpenAPIChatRequest(BaseModel):
     app_id: UUID
     end_user_id: UUID | None = None
     conversation_id: UUID | None = None
+    resume_task_id: UUID | None = None
     query: str = Field(..., min_length=1)
     image_urls: list[str] = Field(default_factory=list, max_length=5)
     stream: bool = True

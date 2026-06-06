@@ -12,6 +12,7 @@ from app.models.agent import Agent
 from app.models.conversation import Message, MessageAgentThought
 from app.models.task import AgentPlan, AgentStep, AgentTask, WorkerCall
 from app.models.trace import TraceEvent
+from app.services.runtime_event_store_service import RuntimeEventStoreService
 
 RUNTIME_EVENT_SSE_NAME = "runtime_event"
 WAITING_STATUS_VALUES = {"waiting", "waiting_user", "waiting_approval"}
@@ -19,6 +20,9 @@ WAITING_STATUS_VALUES = {"waiting", "waiting_user", "waiting_approval"}
 
 class ChatRuntimeEventService:
     """Adapt persisted router-agent runtime records into chat-friendly events."""
+
+    def __init__(self, *, event_store: RuntimeEventStoreService | None = None) -> None:
+        self.event_store = event_store or RuntimeEventStoreService()
 
     def events_from_agent_thought(
         self,
@@ -92,50 +96,16 @@ class ChatRuntimeEventService:
         *,
         account_id: UUID | None = None,
     ) -> list[dict[str, Any]]:
-        tasks = self._message_tasks(session, message, account_id=account_id)
-        if not tasks:
+        records = self.event_store.records_for_message(session, message, account_id=account_id)
+        if not records.tasks:
             return self.runtime_events_from_message_thoughts(message)
 
-        task_ids = [task.id for task in tasks]
-        plans = (
-            session.query(AgentPlan)
-            .filter(AgentPlan.task_id.in_(task_ids))
-            .order_by(AgentPlan.created_at.asc())
-            .all()
-        )
-        steps = (
-            session.query(AgentStep)
-            .filter(AgentStep.task_id.in_(task_ids))
-            .order_by(AgentStep.created_at.asc())
-            .all()
-        )
-        worker_calls = (
-            session.query(WorkerCall)
-            .filter(WorkerCall.task_id.in_(task_ids))
-            .order_by(WorkerCall.created_at.asc())
-            .all()
-        )
-        trace_events = (
-            session.query(TraceEvent)
-            .filter(TraceEvent.task_id.in_(task_ids))
-            .order_by(TraceEvent.created_at.asc())
-            .all()
-        )
-
-        agent_ids = self._collect_agent_ids(tasks, steps, worker_calls)
-        agents = session.query(Agent).filter(Agent.id.in_(agent_ids)).all() if agent_ids else []
-        agent_map = {agent.id: agent for agent in agents}
-        plans_by_task = self._group_by(plans, "task_id")
-        steps_by_task = self._group_by(steps, "task_id")
-        calls_by_task = self._group_by(worker_calls, "task_id")
-        trace_by_task = self._group_by(trace_events, "task_id")
-
         events: list[dict[str, Any]] = []
-        for task in tasks:
-            task_plans = plans_by_task.get(task.id, [])
-            task_steps = steps_by_task.get(task.id, [])
-            task_calls = calls_by_task.get(task.id, [])
-            task_traces = trace_by_task.get(task.id, [])
+        for task in records.tasks:
+            task_plans = records.plans_by_task.get(task.id, [])
+            task_steps = records.steps_by_task.get(task.id, [])
+            task_calls = records.worker_calls_by_task.get(task.id, [])
+            task_traces = records.trace_events_by_task.get(task.id, [])
             events.extend(
                 self._history_events_for_task(
                     task,
@@ -144,7 +114,7 @@ class ChatRuntimeEventService:
                     steps=task_steps,
                     worker_calls=task_calls,
                     trace_events=task_traces,
-                    agent_map=agent_map,
+                    agent_map=records.agent_map,
                 )
             )
 

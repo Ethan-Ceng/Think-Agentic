@@ -245,8 +245,13 @@ class TaskEngineService(BaseService):
         *,
         output_json: dict[str, Any] | None = None,
     ) -> AgentStep:
-        self._ensure_status(step, {TaskStatus.RUNNING})
-        return self.update(session, step, output_json=output_json or step.output_json or {})
+        return self._transition(
+            session,
+            step,
+            allowed={TaskStatus.RUNNING},
+            target=TaskStatus.WAITING,
+            output_json=output_json or step.output_json or {},
+        )
 
     def resume_step(self, session: Session, step: AgentStep) -> AgentStep:
         return self._transition(

@@ -14,9 +14,12 @@ from app.models.account import Account
 from app.models.app import App, AppConfig, AppDatasetJoin
 from app.models.conversation import Conversation, Message
 from app.models.end_user import EndUser
+from app.models.task import AgentTask
 from app.services.app_service import AppService
 from app.services.base_service import BaseService
 from app.services.language_model_service import LanguageModelService
+
+WAITING_TASK_STATUSES = {"waiting", "waiting_user", "waiting_approval"}
 
 
 @dataclass
@@ -70,6 +73,37 @@ class WebAppService(BaseService):
             image_urls=req.image_urls,
             status=MessageStatus.NORMAL.value,
         )
+        if (getattr(app, "agent_type", "worker") or "worker") == "planner":
+            resume_task_id = req.resume_task_id or self._latest_waiting_planner_task_id(
+                session,
+                account=account,
+                end_user=end_user,
+                conversation=conversation,
+            )
+            if resume_task_id is not None:
+                return end_user, self._web_app_planner_resume_stream(
+                    session,
+                    app=app,
+                    account=account,
+                    end_user=end_user,
+                    conversation=conversation,
+                    message=message,
+                    task_id=resume_task_id,
+                    query=req.query,
+                    image_urls=req.image_urls,
+                )
+            return end_user, self._web_app_planner_stream(
+                session,
+                app=app,
+                account=account,
+                end_user=end_user,
+                conversation=conversation,
+                message=message,
+                query=req.query,
+                image_urls=req.image_urls,
+                config=config,
+            )
+
         task_id = uuid4()
         AgentQueueManager.register_task(task_id, InvokeFrom.WEB_APP, end_user.id)
 
@@ -100,6 +134,121 @@ class WebAppService(BaseService):
                 AgentQueueManager.clear_task(task_id)
 
         return end_user, stream()
+
+    def _web_app_planner_stream(
+        self,
+        session: Session,
+        *,
+        app: App,
+        account: Account,
+        end_user: EndUser,
+        conversation: Conversation,
+        message: Message,
+        query: str,
+        image_urls: list[str],
+        config: dict,
+    ):
+        from app.services.router_agent_manager_service import RouterAgentManagerService
+
+        task_id: UUID | None = None
+        thoughts = []
+
+        def register_task(created_task_id: UUID) -> None:
+            nonlocal task_id
+            task_id = created_task_id
+            AgentQueueManager.register_task(created_task_id, InvokeFrom.WEB_APP, end_user.id)
+
+        def stream():
+            nonlocal task_id
+            router_service = RouterAgentManagerService(app_service=self.app_service)
+            try:
+                recent_history = router_service._conversation_recent_history(
+                    session,
+                    conversation.id,
+                    int(config.get("dialog_round") or 3),
+                )
+                for stream_event in router_service.stream_planner_run(
+                    session,
+                    planner_app_id=app.id,
+                    query=query,
+                    account=account,
+                    conversation=conversation,
+                    message=message,
+                    invoke_from=InvokeFrom.WEB_APP,
+                    created_by=end_user.id,
+                    recent_history=recent_history,
+                    image_urls=image_urls,
+                    on_task_created=register_task,
+                    is_stopped=AgentQueueManager.is_stopped,
+                ):
+                    thought = stream_event.thought
+                    task_id = thought.task_id
+                    thoughts.append(thought)
+                    yield self.app_service._format_agent_sse(thought, conversation.id, message.id)
+                    for runtime_event in self.app_service.chat_runtime_event_service.events_from_agent_thought(
+                        thought,
+                        conversation_id=conversation.id,
+                        message_id=message.id,
+                    ):
+                        yield self.app_service._format_runtime_event_sse(runtime_event)
+                    if thought.event in {QueueEvent.AGENT_END, QueueEvent.ERROR, QueueEvent.STOP, QueueEvent.TIMEOUT}:
+                        break
+            finally:
+                self.app_service._save_agent_result(session, account, app, conversation, message, thoughts)
+                if task_id is not None:
+                    AgentQueueManager.clear_task(task_id)
+
+        return stream()
+
+    def _web_app_planner_resume_stream(
+        self,
+        session: Session,
+        *,
+        app: App,
+        account: Account,
+        end_user: EndUser,
+        conversation: Conversation,
+        message: Message,
+        task_id: UUID,
+        query: str,
+        image_urls: list[str],
+    ):
+        from app.services.router_agent_manager_service import RouterAgentManagerService
+
+        thoughts = []
+
+        def stream():
+            AgentQueueManager.register_task(task_id, InvokeFrom.WEB_APP, end_user.id)
+            router_service = RouterAgentManagerService(app_service=self.app_service)
+            try:
+                for stream_event in router_service.resume_planner_run(
+                    session,
+                    task_id=task_id,
+                    account=account,
+                    query=query,
+                    conversation=conversation,
+                    message=message,
+                    invoke_from=InvokeFrom.WEB_APP,
+                    created_by=end_user.id,
+                    image_urls=image_urls,
+                    is_stopped=AgentQueueManager.is_stopped,
+                ):
+                    thought = stream_event.thought
+                    thoughts.append(thought)
+                    yield self.app_service._format_agent_sse(thought, conversation.id, message.id)
+                    for runtime_event in self.app_service.chat_runtime_event_service.events_from_agent_thought(
+                        thought,
+                        conversation_id=conversation.id,
+                        message_id=message.id,
+                    ):
+                        yield self.app_service._format_runtime_event_sse(runtime_event)
+                    if thought.event in {QueueEvent.AGENT_END, QueueEvent.ERROR, QueueEvent.STOP, QueueEvent.TIMEOUT}:
+                        break
+            finally:
+                self.app_service._save_agent_result(session, account, app, conversation, message, thoughts)
+                AgentQueueManager.clear_task(task_id)
+
+        return stream()
 
     def stop_web_app_chat(self, session: Session, token: str, task_id: UUID, end_user_id: UUID | None) -> None:
         app = self.get_web_app(session, token)
@@ -246,6 +395,27 @@ class WebAppService(BaseService):
             if end_user is not None and end_user.app_id == app.id and end_user.tenant_id == app.account_id:
                 return end_user
         return self.create(session, EndUser, tenant_id=app.account_id, app_id=app.id)
+
+    def _latest_waiting_planner_task_id(
+        self,
+        session: Session,
+        *,
+        account: Account,
+        end_user: EndUser,
+        conversation: Conversation,
+    ) -> UUID | None:
+        task = (
+            session.query(AgentTask)
+            .filter(
+                AgentTask.tenant_id == account.id,
+                AgentTask.conversation_id == conversation.id,
+                AgentTask.user_id == end_user.id,
+                AgentTask.status.in_(list(WAITING_TASK_STATUSES)),
+            )
+            .order_by(desc(AgentTask.updated_at), desc(AgentTask.created_at))
+            .first()
+        )
+        return task.id if task is not None else None
 
     def _get_existing_end_user(self, session: Session, app: App, end_user_id: UUID | None) -> EndUser:
         if end_user_id:

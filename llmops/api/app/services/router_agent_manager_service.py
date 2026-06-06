@@ -18,12 +18,13 @@ from app.domain.agent_runtime.planner import (
     RouterPlannerAgent,
 )
 from app.domain.agent_runtime.protocols import ArtifactRef, RouterPlan, RouterPlanStep, WorkerInvocation, WorkerResult
+from app.domain.agent_runtime.react_agent import ReActAgent
 from app.domain.agent_runtime.router_runtime import RouterRuntime
 from app.domain.agent_runtime.worker_runtime import WorkerRuntime
 from app.models.account import Account
 from app.models.agent import Agent, AgentBinding, AgentVersion
 from app.models.app import App
-from app.models.conversation import Message
+from app.models.conversation import Conversation, Message
 from app.models.task import AgentPlan, AgentStep, AgentTask
 from app.services.agent_capability_service import AgentCapabilityService
 from app.services.app_service import AppService
@@ -88,6 +89,7 @@ class RouterAgentManagerService(BaseService):
         task_engine: TaskEngineService | None = None,
         router_runtime: RouterRuntime | None = None,
         worker_runtime: WorkerRuntime | None = None,
+        react_agent: ReActAgent | None = None,
         planner_agent: RouterPlannerAgent | None = None,
         app_service: AppService | None = None,
         capability_service: AgentCapabilityService | None = None,
@@ -99,6 +101,7 @@ class RouterAgentManagerService(BaseService):
         self.router_runtime = router_runtime or RouterRuntime()
         self.app_service = app_service or AppService()
         self.worker_runtime = worker_runtime or WorkerRuntime(app_service=self.app_service)
+        self.react_agent = react_agent or ReActAgent(worker_runtime=self.worker_runtime)
         self.planner_agent = planner_agent or RouterPlannerAgent()
         self.capability_service = capability_service or AgentCapabilityService()
         self.file_service = file_service or FileService()
@@ -680,10 +683,22 @@ class RouterAgentManagerService(BaseService):
     def stream_planner_debug_run(
         self,
         session: Session,
+        **kwargs: Any,
+    ) -> Generator[PlannerDebugStreamEvent, None, None]:
+        yield from self.stream_planner_run(session, **kwargs)
+
+    def stream_planner_run(
+        self,
+        session: Session,
         *,
         planner_app_id: uuid.UUID,
         query: str,
         account: Account,
+        conversation: Conversation | None = None,
+        message: Message | None = None,
+        invoke_from: InvokeFrom = InvokeFrom.DEBUGGER,
+        created_by: uuid.UUID | None = None,
+        recent_history: list[dict[str, str]] | None = None,
         requested_worker_app_ids: list[uuid.UUID] | None = None,
         requested_worker_ids: list[uuid.UUID] | None = None,
         input_file_ids: list[str] | None = None,
@@ -695,25 +710,33 @@ class RouterAgentManagerService(BaseService):
         if (getattr(app, "agent_type", "worker") or "worker") != "planner":
             raise FailException("Only PlannerAgent apps can run planner debug")
 
+        run_created_by = created_by or account.id
+        invoke_from_value = invoke_from.value if isinstance(invoke_from, InvokeFrom) else str(invoke_from)
+        is_debug_run = invoke_from_value == InvokeFrom.DEBUGGER.value
+        stopped_message = "PlannerAgent 调试已停止" if is_debug_run else "PlannerAgent 已停止"
+        stopped_error_message = "PlannerAgent debug stopped" if is_debug_run else "PlannerAgent stopped"
         planner_agent, _ = self.create_planner_agent_from_app(
             session,
             tenant_id=account.id,
             app_id=planner_app_id,
             account=account,
         )
-        conversation = self.app_service.get_or_create_debug_conversation(session, app, account)
-        message = self.create(
-            session,
-            Message,
-            app_id=app.id,
-            conversation_id=conversation.id,
-            invoke_from=InvokeFrom.DEBUGGER.value,
-            created_by=account.id,
-            query=query,
-            image_urls=image_urls or [],
-            status=MessageStatus.NORMAL.value,
-        )
-        recent_history = self._debug_recent_history(session, app, conversation.id)
+        if conversation is None:
+            conversation = self.app_service.get_or_create_debug_conversation(session, app, account)
+        if message is None:
+            message = self.create(
+                session,
+                Message,
+                app_id=app.id,
+                conversation_id=conversation.id,
+                invoke_from=invoke_from_value,
+                created_by=run_created_by,
+                query=query,
+                image_urls=image_urls or [],
+                status=MessageStatus.NORMAL.value,
+            )
+        if recent_history is None:
+            recent_history = self._debug_recent_history(session, app, conversation.id)
         requested_worker_ids = self._requested_worker_agent_ids(
             session,
             planner_agent_id=planner_agent.id,
@@ -731,7 +754,7 @@ class RouterAgentManagerService(BaseService):
             "context": {
                 "message_id": str(message.id),
                 "conversation_id": str(conversation.id),
-                "invoke_from": InvokeFrom.DEBUGGER.value,
+                "invoke_from": invoke_from_value,
             },
         }
         task = self.task_engine.create_task(
@@ -739,7 +762,7 @@ class RouterAgentManagerService(BaseService):
             tenant_id=account.id,
             router_agent_id=planner_agent.id,
             user_input=user_input,
-            user_id=account.id,
+            user_id=run_created_by,
             conversation_id=conversation.id,
         )
         self.task_engine.start_task(session, task)
@@ -780,15 +803,15 @@ class RouterAgentManagerService(BaseService):
 
         def cancel_task() -> PlannerDebugStreamEvent:
             if task.status not in {TaskStatus.SUCCEEDED.value, TaskStatus.FAILED.value, TaskStatus.CANCELLED.value}:
-                self.task_engine.cancel_task(session, task, error_message="PlannerAgent debug stopped")
+                self.task_engine.cancel_task(session, task, error_message=stopped_error_message)
                 self.trace_service.record(
                     session,
                     tenant_id=task.tenant_id,
                     event_type="router.manager_run.cancelled",
                     task=task,
-                    payload={"reason": "debug_stop_requested"},
+                    payload={"reason": "debug_stop_requested" if is_debug_run else "stop_requested"},
                 )
-            return emit(QueueEvent.STOP, observation="PlannerAgent 调试已停止")
+            return emit(QueueEvent.STOP, observation=stopped_message)
 
         workers = self.list_bound_workers(session, tenant_id=account.id, router_agent_id=planner_agent.id)
         selected_workers = self._select_workers(workers, requested_worker_ids)
@@ -1253,9 +1276,9 @@ class RouterAgentManagerService(BaseService):
                     self.task_engine.cancel_task(
                         session,
                         run.task,
-                        error_message=worker_result.summary or "PlannerAgent debug stopped",
+                        error_message=worker_result.summary or stopped_error_message,
                     )
-                    yield emit(QueueEvent.STOP, observation=worker_result.summary or "PlannerAgent 调试已停止")
+                    yield emit(QueueEvent.STOP, observation=worker_result.summary or stopped_message)
                     return
 
                 self.trace_service.record(
@@ -1453,6 +1476,143 @@ class RouterAgentManagerService(BaseService):
             total_token_count=max(1, len(answer) // 4) if answer else 0,
         )
         yield emit(QueueEvent.AGENT_END)
+
+    def resume_planner_run(
+        self,
+        session: Session,
+        *,
+        task_id: uuid.UUID,
+        account: Account,
+        query: str,
+        conversation: Conversation | None = None,
+        message: Message | None = None,
+        invoke_from: InvokeFrom = InvokeFrom.WEB_APP,
+        created_by: uuid.UUID | None = None,
+        image_urls: list[str] | None = None,
+        is_stopped: Callable[[uuid.UUID], bool] | None = None,
+    ) -> Generator[PlannerDebugStreamEvent, None, None]:
+        run = self._load_manager_run(session, task_id=task_id, tenant_id=account.id)
+        if not self._is_waiting_task_status(run.task.status):
+            raise FailException("Planner task is not waiting for resume")
+        if conversation is not None and run.task.conversation_id != conversation.id:
+            raise FailException("Planner task does not belong to this conversation")
+
+        run_created_by = created_by or account.id
+        invoke_from_value = invoke_from.value if isinstance(invoke_from, InvokeFrom) else str(invoke_from)
+        started_at = time.perf_counter()
+        self._apply_resume_user_input(
+            session,
+            run=run,
+            query=query,
+            message=message,
+            invoke_from=invoke_from_value,
+            created_by=run_created_by,
+            image_urls=image_urls or [],
+        )
+        self.task_engine.resume_task(session, run.task)
+        for step in run.steps:
+            if self._is_waiting_task_status(step.status):
+                self.task_engine.resume_step(session, step)
+        self.trace_service.record(
+            session,
+            tenant_id=run.task.tenant_id,
+            event_type="wait.user.resumed",
+            task=run.task,
+            plan=run.plan,
+            payload={
+                "query": self._truncate(query, 1000),
+                "message_id": str(message.id) if message is not None else "",
+                "conversation_id": str(conversation.id)
+                if conversation is not None
+                else str(run.task.conversation_id or ""),
+                "invoke_from": invoke_from_value,
+            },
+        )
+
+        def emit(
+            event: QueueEvent,
+            *,
+            thought: str = "",
+            observation: str = "",
+            tool: str = "",
+            tool_input: dict[str, Any] | None = None,
+            answer: str = "",
+            total_token_count: int = 0,
+        ) -> PlannerDebugStreamEvent:
+            return PlannerDebugStreamEvent(
+                thought=AgentThought(
+                    id=uuid.uuid4(),
+                    task_id=run.task.id,
+                    event=event,
+                    thought=thought,
+                    observation=observation,
+                    tool=tool,
+                    tool_input=tool_input or {},
+                    answer=answer,
+                    total_token_count=total_token_count,
+                    latency=time.perf_counter() - started_at,
+                ),
+                conversation_id=conversation.id if conversation is not None else run.task.conversation_id,
+                message_id=message.id if message is not None else self._message_id_from_task(run.task) or uuid.uuid4(),
+            )
+
+        if is_stopped is not None and is_stopped(run.task.id):
+            self.task_engine.cancel_task(session, run.task, error_message="PlannerAgent stopped")
+            self.trace_service.record(
+                session,
+                tenant_id=run.task.tenant_id,
+                event_type="router.manager_run.cancelled",
+                task=run.task,
+                plan=run.plan,
+                payload={"reason": "stop_requested"},
+            )
+            yield emit(QueueEvent.STOP, observation="PlannerAgent 已停止")
+            return
+
+        yield emit(
+            QueueEvent.AGENT_ACTION,
+            observation="已收到补充信息，继续执行等待中的 PlannerAgent 任务。",
+            tool="planner.resume",
+            tool_input={
+                "task_id": str(run.task.id),
+                "status": run.task.status,
+                "query": query,
+                "resume_policy": "resume_same_step",
+            },
+        )
+
+        resumed_run = self.execute_manager_run_steps(session, run=run, account=account)
+        if self._is_waiting_task_status(resumed_run.task.status):
+            yield emit(
+                QueueEvent.AGENT_ACTION,
+                observation=resumed_run.task.error_message or "等待用户补充信息",
+                tool="planner.wait_user",
+                tool_input={
+                    "task_id": str(resumed_run.task.id),
+                    "status": resumed_run.task.status,
+                    "error_code": resumed_run.task.error_code,
+                    "resume_policy": "resume_same_step",
+                },
+            )
+            return
+        if resumed_run.task.status == TaskStatus.SUCCEEDED.value:
+            answer = self._task_answer(resumed_run.task)
+            yield emit(
+                QueueEvent.AGENT_MESSAGE,
+                thought=answer,
+                answer=answer,
+                total_token_count=max(1, len(answer) // 4) if answer else 0,
+            )
+            yield emit(QueueEvent.AGENT_END)
+            return
+        if resumed_run.task.status == TaskStatus.CANCELLED.value:
+            yield emit(QueueEvent.STOP, observation=resumed_run.task.error_message or "PlannerAgent 已停止")
+            return
+        yield emit(
+            QueueEvent.ERROR,
+            observation=resumed_run.task.error_message or "PlannerAgent 执行失败",
+            tool="planner.resume",
+        )
 
     def build_manager_plan(
         self,
@@ -4299,11 +4459,11 @@ class RouterAgentManagerService(BaseService):
         invocation: WorkerInvocation,
         account: Account,
     ) -> WorkerResult:
-        return self.worker_runtime.invoke(
-            invocation,
+        return self.react_agent.execute_step(
             session=session,
             worker=worker,
             account=account,
+            invocation=invocation,
         )
 
     def _input_file_refs(self, session: Session, account: Account, user_input: dict[str, Any]) -> list[dict[str, Any]]:
@@ -4316,6 +4476,93 @@ class RouterAgentManagerService(BaseService):
             seen.add(file_id)
             refs.append(self._json_ready(self.file_service.to_agent_input_ref(session, account, file_id)))
         return refs
+
+    def _load_manager_run(
+        self,
+        session: Session,
+        *,
+        task_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+    ) -> RouterManagerRunResult:
+        task = session.get(AgentTask, task_id)
+        if task is None or task.tenant_id != tenant_id:
+            raise NotFoundException("Planner task not found")
+        plans = (
+            session.query(AgentPlan)
+            .filter(AgentPlan.task_id == task.id)
+            .order_by(AgentPlan.created_at.asc())
+            .all()
+        )
+        if not plans:
+            raise NotFoundException("Planner task plan not found")
+        active_plans = [plan for plan in plans if plan.status != "superseded"]
+        plan = active_plans[-1] if active_plans else plans[-1]
+        steps = (
+            session.query(AgentStep)
+            .filter(AgentStep.plan_id == plan.id)
+            .order_by(AgentStep.created_at.asc())
+            .all()
+        )
+        return RouterManagerRunResult(task=task, plan=plan, steps=steps)
+
+    def _apply_resume_user_input(
+        self,
+        session: Session,
+        *,
+        run: RouterManagerRunResult,
+        query: str,
+        message: Message | None,
+        invoke_from: str,
+        created_by: uuid.UUID,
+        image_urls: list[str],
+    ) -> None:
+        user_input = dict(run.task.user_input or {})
+        resume_input = {
+            "query": query,
+            "message_id": str(message.id) if message is not None else "",
+            "invoke_from": invoke_from,
+            "created_by": str(created_by),
+            "image_urls": image_urls,
+        }
+        resume_inputs = user_input.get("resume_inputs") if isinstance(user_input.get("resume_inputs"), list) else []
+        user_input["resume_inputs"] = [*resume_inputs, resume_input]
+        message_ids = user_input.get("message_ids") if isinstance(user_input.get("message_ids"), list) else []
+        if message is not None and str(message.id) not in {str(item) for item in message_ids}:
+            user_input["message_ids"] = [*message_ids, str(message.id)]
+        history = self._recent_history_from_user_input(user_input)
+        if query.strip():
+            history.append({"role": "user", "content": self._truncate(query.strip(), 2000)})
+        user_input["recent_history"] = history[-20:]
+        self.update(session, run.task, user_input=user_input)
+
+        for step in run.steps:
+            if not self._is_waiting_task_status(step.status) and step.status != TaskStatus.RUNNING.value:
+                continue
+            input_json = dict(step.input_json or {})
+            input_json["user_input"] = user_input
+            input_json["resume_input"] = resume_input
+            self.update(session, step, input_json=input_json)
+
+    @staticmethod
+    def _message_id_from_task(task: AgentTask) -> uuid.UUID | None:
+        user_input = task.user_input or {}
+        candidates: list[Any] = [user_input.get("message_id")]
+        for key in ("message_ids",):
+            value = user_input.get(key)
+            if isinstance(value, list):
+                candidates.extend(value)
+        for key in ("context", "conversation"):
+            value = user_input.get(key)
+            if isinstance(value, dict):
+                candidates.append(value.get("message_id"))
+        for candidate in candidates:
+            if not candidate:
+                continue
+            try:
+                return candidate if isinstance(candidate, uuid.UUID) else uuid.UUID(str(candidate))
+            except (TypeError, ValueError):
+                continue
+        return None
 
     def _with_registered_artifacts(
         self,

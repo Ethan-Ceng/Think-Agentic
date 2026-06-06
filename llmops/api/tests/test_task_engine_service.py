@@ -151,6 +151,12 @@ def test_plan_and_step_inherit_task_context() -> None:
     assert step.timeout_seconds == 30
 
     service.start_step(session, step)
+    service.wait_step_for_user(session, step, output_json={"missing_info": ["city"]})
+
+    assert step.status == TaskStatus.WAITING
+    assert step.output_json == {"missing_info": ["city"]}
+
+    service.resume_step(session, step)
     service.succeed_step(session, step, output_json={"result": "ok"})
 
     assert step.status == TaskStatus.SUCCEEDED

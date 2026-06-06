@@ -8,12 +8,18 @@ from app.schemas.conversation import datetime_to_timestamp
 
 class WebAppChatRequest(BaseModel):
     conversation_id: UUID | None = None
+    resume_task_id: UUID | None = None
     query: str = Field(..., min_length=1)
     image_urls: list[str] = Field(default_factory=list, max_length=5)
 
     @field_validator("conversation_id", mode="before")
     @classmethod
     def normalize_empty_conversation_id(cls, value):
+        return None if value == "" else value
+
+    @field_validator("resume_task_id", mode="before")
+    @classmethod
+    def normalize_empty_resume_task_id(cls, value):
         return None if value == "" else value
 
     @field_validator("image_urls")

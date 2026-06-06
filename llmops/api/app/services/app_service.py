@@ -1850,6 +1850,22 @@ class AppService(BaseService):
     ) -> None:
         non_ping_thoughts = [thought for thought in agent_thoughts if thought.event != QueueEvent.PING]
         answer = "".join(thought.answer for thought in non_ping_thoughts if thought.event == QueueEvent.AGENT_MESSAGE)
+        if not answer:
+            wait_thought = next(
+                (
+                    thought
+                    for thought in reversed(non_ping_thoughts)
+                    if thought.event == QueueEvent.AGENT_ACTION
+                    and (
+                        thought.tool in {"planner.wait", "planner.wait_user"}
+                        or str((thought.tool_input or {}).get("status") or "") in {"waiting", "waiting_user"}
+                        or (thought.tool_input or {}).get("resume_policy") == "resume_same_step"
+                    )
+                ),
+                None,
+            )
+            if wait_thought is not None:
+                answer = wait_thought.observation or "等待用户补充信息"
         status = MessageStatus.NORMAL.value
         error = ""
         if stop_thought := next((thought for thought in non_ping_thoughts if thought.event == QueueEvent.STOP), None):
@@ -1879,8 +1895,8 @@ class AppService(BaseService):
                 app_id=app.id,
                 conversation_id=conversation.id,
                 message_id=message.id,
-                invoke_from=InvokeFrom.DEBUGGER.value,
-                created_by=account.id,
+                invoke_from=message.invoke_from,
+                created_by=message.created_by,
                 position=position,
                 event=thought.event.value,
                 thought=thought.thought,

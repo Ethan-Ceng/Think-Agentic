@@ -2,6 +2,7 @@ import json
 from dataclasses import dataclass, field
 from uuid import UUID, uuid4
 
+from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from app.core.agent import AgentQueueManager, AgentThought, QueueEvent
@@ -12,9 +13,12 @@ from app.models.account import Account
 from app.models.app import AppConfig, AppDatasetJoin
 from app.models.conversation import Conversation, Message
 from app.models.end_user import EndUser
+from app.models.task import AgentTask
 from app.services.app_service import AppService
 from app.services.base_service import BaseService
 from app.shared.response import Response
+
+WAITING_TASK_STATUSES = {"waiting", "waiting_user", "waiting_approval"}
 
 
 @dataclass
@@ -40,6 +44,9 @@ class OpenAPIService(BaseService):
             image_urls=req.image_urls,
             status=MessageStatus.NORMAL.value,
         )
+        if (getattr(app, "agent_type", "worker") or "worker") == "planner":
+            return self._planner_chat(session, app, conversation, message, req, account, end_user)
+
         task_id = uuid4()
         AgentQueueManager.register_task(task_id, InvokeFrom.SERVICE_API, account.id)
 
@@ -52,6 +59,149 @@ class OpenAPIService(BaseService):
         self.app_service._save_agent_result(session, account, app, conversation, message, thoughts)
         AgentQueueManager.clear_task(task_id)
         return Response(data=self._response_data(message, end_user.id, conversation.id, req, thoughts))
+
+    def _planner_chat(
+        self,
+        session: Session,
+        app,
+        conversation: Conversation,
+        message: Message,
+        req,
+        account: Account,
+        end_user: EndUser,
+    ):
+        resume_task_id = req.resume_task_id or self._latest_waiting_planner_task_id(
+            session,
+            account=account,
+            end_user=end_user,
+            conversation=conversation,
+        )
+        if req.stream:
+            return self._stream_planner_chat(
+                session,
+                app,
+                conversation,
+                message,
+                req,
+                account,
+                end_user,
+                resume_task_id=resume_task_id,
+            )
+
+        thoughts = list(
+            self._iter_planner_thoughts(
+                session,
+                app,
+                conversation,
+                message,
+                req,
+                account,
+                end_user,
+                resume_task_id=resume_task_id,
+            )
+        )
+        self.app_service._save_agent_result(session, account, app, conversation, message, thoughts)
+        return Response(data=self._response_data(message, end_user.id, conversation.id, req, thoughts))
+
+    def _stream_planner_chat(
+        self,
+        session: Session,
+        app,
+        conversation: Conversation,
+        message: Message,
+        req,
+        account: Account,
+        end_user: EndUser,
+        *,
+        resume_task_id: UUID | None,
+    ):
+        thoughts: list[AgentThought] = []
+        try:
+            for thought in self._iter_planner_thoughts(
+                session,
+                app,
+                conversation,
+                message,
+                req,
+                account,
+                end_user,
+                resume_task_id=resume_task_id,
+            ):
+                thoughts.append(thought)
+                yield self._format_openapi_sse(thought, end_user.id, conversation.id, message.id)
+                for runtime_event in self.app_service.chat_runtime_event_service.events_from_agent_thought(
+                    thought,
+                    conversation_id=conversation.id,
+                    message_id=message.id,
+                ):
+                    yield self.app_service._format_runtime_event_sse(runtime_event)
+                if thought.event in {QueueEvent.AGENT_END, QueueEvent.ERROR, QueueEvent.STOP, QueueEvent.TIMEOUT}:
+                    break
+        finally:
+            self.app_service._save_agent_result(session, account, app, conversation, message, thoughts)
+
+    def _iter_planner_thoughts(
+        self,
+        session: Session,
+        app,
+        conversation: Conversation,
+        message: Message,
+        req,
+        account: Account,
+        end_user: EndUser,
+        *,
+        resume_task_id: UUID | None,
+    ):
+        from app.services.router_agent_manager_service import RouterAgentManagerService
+
+        router_service = RouterAgentManagerService(app_service=self.app_service)
+        if resume_task_id is not None:
+            AgentQueueManager.register_task(resume_task_id, InvokeFrom.SERVICE_API, account.id)
+            try:
+                for stream_event in router_service.resume_planner_run(
+                    session,
+                    task_id=resume_task_id,
+                    account=account,
+                    query=req.query,
+                    conversation=conversation,
+                    message=message,
+                    invoke_from=InvokeFrom.SERVICE_API,
+                    created_by=end_user.id,
+                    image_urls=req.image_urls,
+                    is_stopped=AgentQueueManager.is_stopped,
+                ):
+                    yield stream_event.thought
+            finally:
+                AgentQueueManager.clear_task(resume_task_id)
+            return
+
+        task_id: UUID | None = None
+
+        def register_task(created_task_id: UUID) -> None:
+            nonlocal task_id
+            task_id = created_task_id
+            AgentQueueManager.register_task(created_task_id, InvokeFrom.SERVICE_API, account.id)
+
+        try:
+            recent_history = router_service._conversation_recent_history(session, conversation.id, 3)
+            for stream_event in router_service.stream_planner_run(
+                session,
+                planner_app_id=app.id,
+                query=req.query,
+                account=account,
+                conversation=conversation,
+                message=message,
+                invoke_from=InvokeFrom.SERVICE_API,
+                created_by=end_user.id,
+                recent_history=recent_history,
+                image_urls=req.image_urls,
+                on_task_created=register_task,
+                is_stopped=AgentQueueManager.is_stopped,
+            ):
+                yield stream_event.thought
+        finally:
+            if task_id is not None:
+                AgentQueueManager.clear_task(task_id)
 
     def _stream_chat(
         self,
@@ -124,6 +274,27 @@ class OpenAPIService(BaseService):
             invoke_from=InvokeFrom.SERVICE_API.value,
             created_by=end_user.id,
         )
+
+    def _latest_waiting_planner_task_id(
+        self,
+        session: Session,
+        *,
+        account: Account,
+        end_user: EndUser,
+        conversation: Conversation,
+    ) -> UUID | None:
+        task = (
+            session.query(AgentTask)
+            .filter(
+                AgentTask.tenant_id == account.id,
+                AgentTask.conversation_id == conversation.id,
+                AgentTask.user_id == end_user.id,
+                AgentTask.status.in_(list(WAITING_TASK_STATUSES)),
+            )
+            .order_by(desc(AgentTask.updated_at), desc(AgentTask.created_at))
+            .first()
+        )
+        return task.id if task is not None else None
 
     def _get_published_runtime_config(self, session: Session, app_config_id: UUID, app_id: UUID) -> dict:
         app_config = session.get(AppConfig, app_config_id)

@@ -1225,6 +1225,9 @@ def test_execute_manager_run_steps_waits_when_worker_requests_user_input() -> No
 
     assert run.task.status == TaskStatus.WAITING
     assert run.task.error_code == "waiting_user"
+    assert run.steps[0].status == TaskStatus.WAITING
+    service.task_engine.resume_task(session, run.task)
+    service.task_engine.resume_step(session, run.steps[0])
     assert run.steps[0].status == TaskStatus.RUNNING
     worker_calls = [item for item in session.added if isinstance(item, WorkerCall)]
     assert worker_calls[0].status == TaskStatus.SUCCEEDED
