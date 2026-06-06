@@ -2,6 +2,61 @@ import { type BasePaginatorRequest, type BasePaginatorResponse, type BaseRespons
 
 export type AgentType = 'worker' | 'planner'
 
+export type ChatRuntimeStatus =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'waiting'
+  | 'cancelled'
+  | 'created'
+  | 'updated'
+
+export type ChatRuntimeEventType =
+  | 'plan'
+  | 'step'
+  | 'tool'
+  | 'wait'
+  | 'error'
+  | 'done'
+  | 'message'
+  | 'title'
+
+export type ChatRuntimeStep = {
+  id: string
+  key: string
+  description: string
+  status: ChatRuntimeStatus | string
+  worker_name: string
+  worker_agent_id: string
+  result: string
+  error: string
+  attachments: Record<string, any>[]
+  dependencies: string[]
+}
+
+export type ChatRuntimeEvent = {
+  id: string
+  type: ChatRuntimeEventType | string
+  status: ChatRuntimeStatus | string
+  title: string
+  summary: string
+  task_id: string
+  conversation_id: string
+  message_id: string
+  created_at: number
+  payload: Record<string, any>
+  goal?: string
+  language?: string
+  plan_id?: string
+  step_id?: string
+  step_key?: string
+  worker_name?: string
+  worker_agent_id?: string
+  tool_name?: string
+  steps?: ChatRuntimeStep[]
+}
+
 // 获取应用信息响应结构
 export type GetAppResponse = BaseResponse<{
   id: string
@@ -121,6 +176,7 @@ export type GetDebugConversationMessagesWithPageResponse = BasePaginatorResponse
     latency: number
     created_at: number
   }[]
+  runtime_events: ChatRuntimeEvent[]
   created_at: number
 }>
 

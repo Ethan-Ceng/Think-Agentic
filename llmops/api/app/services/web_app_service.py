@@ -87,6 +87,12 @@ class WebAppService(BaseService):
                 ):
                     thoughts.append(thought)
                     yield self.app_service._format_agent_sse(thought, conversation.id, message.id)
+                    for runtime_event in self.app_service.chat_runtime_event_service.events_from_agent_thought(
+                        thought,
+                        conversation_id=conversation.id,
+                        message_id=message.id,
+                    ):
+                        yield self.app_service._format_runtime_event_sse(runtime_event)
                     if thought.event in {QueueEvent.AGENT_END, QueueEvent.ERROR, QueueEvent.STOP, QueueEvent.TIMEOUT}:
                         break
             finally:

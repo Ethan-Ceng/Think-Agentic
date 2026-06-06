@@ -1,4 +1,5 @@
 import { type BasePaginatorRequest, type BasePaginatorResponse } from '@/models/base'
+import type { ChatRuntimeEvent } from '@/models/app'
 
 // 获取指定会话消息列表请求结构
 export type GetConversationMessagesWithPageRequest = BasePaginatorRequest & {
@@ -25,5 +26,6 @@ export type GetConversationMessagesWithPageResponse = BasePaginatorResponse<{
     latency: number
     created_at: number
   }[]
+  runtime_events: ChatRuntimeEvent[]
   created_at: number
 }>

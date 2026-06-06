@@ -25,6 +25,7 @@ import { QueueEvent } from '@/config'
 import { uploadImage } from '@/services/upload-file'
 import AudioRecorder from 'js-audio-recorder'
 import type { WebAppChatRequest } from '@/models/web-app'
+import type { ChatRuntimeEvent } from '@/models/app'
 
 // 1.定义页面所需数据
 const route = useRoute()
@@ -224,6 +225,7 @@ const handleSubmit = async () => {
     total_token_count: 0,
     latency: 0,
     agent_thoughts: [],
+    runtime_events: [],
     created_at: 0,
   })
 
@@ -248,6 +250,7 @@ const handleSubmit = async () => {
     const data = event_response?.data
     const event_id = data?.id
     let agent_thoughts = messages.value[0].agent_thoughts
+    let runtime_events = messages.value[0].runtime_events || []
 
     // 11.8 初始化数据检测与赋值
     if (message_id.value === '' && data?.message_id) {
@@ -255,6 +258,21 @@ const handleSubmit = async () => {
       message_id.value = data?.message_id
       messages.value[0].id = data?.message_id
       messages.value[0].conversation_id = data?.conversation_id
+    }
+
+    if (event === 'runtime_event') {
+      const runtimeEvent = data as ChatRuntimeEvent
+      if (runtimeEvent?.id) {
+        const runtime_event_idx = runtime_events.findIndex((item) => item?.id === runtimeEvent.id)
+        if (runtime_event_idx === -1) {
+          runtime_events.push(runtimeEvent)
+        } else {
+          runtime_events[runtime_event_idx] = runtimeEvent
+        }
+        messages.value[0].runtime_events = runtime_events
+      }
+      scroller.value.scrollToBottom()
+      return
     }
 
     // 11.9 循环处理得到的事件，记录除ping之外的事件
@@ -641,6 +659,8 @@ onUnmounted(() => {
                   :message_id="item.id"
                   :enable_text_to_speech="web_app?.app_config?.text_to_speech?.enable"
                   :agent_thoughts="item.agent_thoughts"
+                  :runtime_events="item.runtime_events || []"
+                  runtime_mode="public"
                   :answer="item.answer"
                   :app="{ name: web_app.name, icon: web_app.icon }"
                   :suggested_questions="item.id === message_id ? suggested_questions : []"

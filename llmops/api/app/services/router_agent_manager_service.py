@@ -926,6 +926,10 @@ class RouterAgentManagerService(BaseService):
                     {
                         "step_id": step.step_id,
                         "worker_id": step.worker_id,
+                        "worker_name": next(
+                            (worker.name for worker in selected_workers if str(worker.id) == str(step.worker_id)),
+                            "",
+                        ),
                         "task": step.task,
                         "dependencies": step.dependencies,
                     }
@@ -1219,7 +1223,16 @@ class RouterAgentManagerService(BaseService):
                     QueueEvent.AGENT_ACTION,
                     observation=worker_result.summary or "等待用户补充信息",
                     tool=worker.name,
-                    tool_input={"step_key": step.step_key, "status": worker_result.status},
+                    tool_input={
+                        "step_key": step.step_key,
+                        "status": worker_result.status,
+                        "worker_agent_id": str(worker.id),
+                        "worker_name": worker.name,
+                        "reason_code": plan_feedback.get("reason_code") or "missing_info",
+                        "missing_info": plan_feedback.get("missing_info", []),
+                        "plan_feedback": plan_feedback,
+                        "resume_policy": "resume_same_step",
+                    },
                 )
                 return
             terminal_status = self._worker_terminal_status(worker_result)
@@ -1378,11 +1391,32 @@ class RouterAgentManagerService(BaseService):
                 yield emit(QueueEvent.AGENT_END)
                 return
             if plan_update.applied and plan_update.run is not None:
+                updated_plan_json = plan_update.run.plan.plan_json or {}
                 yield emit(
                     QueueEvent.AGENT_ACTION,
                     observation="PlannerAgent updated the remaining plan from worker feedback.",
                     tool="planner.plan_update",
-                    tool_input=(plan_update.run.plan.plan_json or {}).get("plan_update", {}),
+                    tool_input={
+                        **(updated_plan_json.get("plan_update") or {}),
+                        "steps": [
+                            {
+                                "step_id": item.get("step_id") or item.get("step_key") or "",
+                                "worker_id": item.get("worker_id") or "",
+                                "worker_name": next(
+                                    (
+                                        worker.name
+                                        for worker in selected_workers
+                                        if str(worker.id) == str(item.get("worker_id") or "")
+                                    ),
+                                    "",
+                                ),
+                                "task": item.get("task") or "",
+                                "dependencies": item.get("dependencies") or [],
+                            }
+                            for item in updated_plan_json.get("steps", [])
+                            if isinstance(item, dict)
+                        ],
+                    },
                 )
                 run = execute_replanned_run(plan_update.run)
                 answer = self._task_answer(run.task)

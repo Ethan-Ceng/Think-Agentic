@@ -35,6 +35,7 @@ from app.models.workflow import Workflow
 from app.services.agent_adapter_service import LegacyAppWorkerAdapter, WorkerAgentDescriptor
 from app.services.base_service import BaseService
 from app.services.capability_adapter_service import ToolCapabilityAdapter
+from app.services.chat_runtime_event_service import RUNTIME_EVENT_SSE_NAME, ChatRuntimeEventService
 from app.services.dataset_service import DatasetService
 from app.services.language_model_service import LanguageModelService
 from app.services.storage_service import StorageService
@@ -67,6 +68,7 @@ class AppService(BaseService):
     capability_adapter: ToolCapabilityAdapter = field(default_factory=ToolCapabilityAdapter)
     worker_agent_adapter: LegacyAppWorkerAdapter = field(default_factory=LegacyAppWorkerAdapter)
     storage_service: StorageService = field(default_factory=StorageService)
+    chat_runtime_event_service: ChatRuntimeEventService = field(default_factory=ChatRuntimeEventService)
 
     def auto_create_app(self, session: Session, name: str, description: str, account_id: UUID) -> App:
         account = session.get(Account, account_id)
@@ -382,6 +384,12 @@ class AppService(BaseService):
             for thought in self._run_debug_agent(session, task_id, conversation, message, config, req, account):
                 agent_thoughts.append(thought)
                 yield self._format_agent_sse(thought, conversation.id, message.id)
+                for runtime_event in self.chat_runtime_event_service.events_from_agent_thought(
+                    thought,
+                    conversation_id=conversation.id,
+                    message_id=message.id,
+                ):
+                    yield self._format_runtime_event_sse(runtime_event)
                 if thought.event in {QueueEvent.AGENT_END, QueueEvent.ERROR, QueueEvent.STOP, QueueEvent.TIMEOUT}:
                     break
         finally:
@@ -417,6 +425,12 @@ class AppService(BaseService):
                 message_id = stream_event.message_id
                 agent_thoughts.append(thought)
                 yield self._format_agent_sse(thought, stream_event.conversation_id, stream_event.message_id)
+                for runtime_event in self.chat_runtime_event_service.events_from_agent_thought(
+                    thought,
+                    conversation_id=stream_event.conversation_id,
+                    message_id=stream_event.message_id,
+                ):
+                    yield self._format_runtime_event_sse(runtime_event)
                 if thought.event in {QueueEvent.AGENT_END, QueueEvent.ERROR, QueueEvent.STOP, QueueEvent.TIMEOUT}:
                     break
         finally:
@@ -1820,6 +1834,10 @@ class AppService(BaseService):
             "task_id": str(thought.task_id),
         }
         return f"event: {thought.event.value}\ndata:{json.dumps(data, ensure_ascii=False)}\n\n"
+
+    @staticmethod
+    def _format_runtime_event_sse(event: dict[str, Any]) -> str:
+        return f"event: {RUNTIME_EVENT_SSE_NAME}\ndata:{json.dumps(event, ensure_ascii=False, default=str)}\n\n"
 
     def _save_agent_result(
         self,

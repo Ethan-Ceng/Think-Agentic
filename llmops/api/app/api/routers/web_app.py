@@ -69,7 +69,17 @@ def get_conversation_messages(
     )
     response = success_json(
         {
-            "list": [MessageResponse.from_message(message).model_dump() for message in messages],
+            "list": [
+                {
+                    **MessageResponse.from_message(message).model_dump(),
+                    "runtime_events": svc.app_service.chat_runtime_event_service.runtime_events_for_message(
+                        session,
+                        message,
+                        account_id=end_user.tenant_id,
+                    ),
+                }
+                for message in messages
+            ],
             "paginator": {
                 "total_page": total_page,
                 "total_record": total_record,

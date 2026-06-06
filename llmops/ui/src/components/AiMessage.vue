@@ -4,6 +4,8 @@ import MarkdownIt from 'markdown-it'
 import DotFlashing from '@/components/DotFlashing.vue'
 import { useAudioPlayer } from '@/hooks/use-audio'
 import AgentThought from './AgentThought.vue'
+import ChatRuntimePanel from './ChatRuntimePanel.vue'
+import type { ChatRuntimeEvent } from '@/models/app'
 import 'github-markdown-css'
 
 const { textToAudioLoading, isPlaying, startAudioStream, stopAudioStream } = useAudioPlayer()
@@ -29,6 +31,12 @@ const props = defineProps({
     default: () => [],
     required: true,
   },
+  runtime_events: {
+    type: Array as PropType<ChatRuntimeEvent[]>,
+    default: () => [],
+    required: false,
+  },
+  runtime_mode: { type: String as PropType<'debug' | 'public'>, default: 'debug', required: false },
   suggested_questions: { type: Array as PropType<string[]>, default: () => [], required: false },
   message_class: { type: String, default: 'bg-gray-100!', required: false },
 })
@@ -57,7 +65,13 @@ const compiledMarkdown = computed(() => {
       <!-- 应用名称 -->
       <div class="text-gray-700 font-bold">{{ props.app?.name }}</div>
       <!-- 推理步骤 -->
-      <agent-thought :agent_thoughts="props.agent_thoughts" :loading="props.loading" />
+      <chat-runtime-panel
+        v-if="props.runtime_events.length > 0"
+        :runtime_events="props.runtime_events"
+        :loading="props.loading"
+        :mode="props.runtime_mode"
+      />
+      <agent-thought v-else :agent_thoughts="props.agent_thoughts" :loading="props.loading" />
       <!-- AI消息 -->
       <div
         v-if="props.loading && props.answer.trim() === ''"

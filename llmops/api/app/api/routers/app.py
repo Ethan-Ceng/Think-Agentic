@@ -472,7 +472,17 @@ def get_debug_conversation_messages(
     )
     return success_json(
         {
-            "list": [MessageResponse.from_message(message).model_dump() for message in messages],
+            "list": [
+                {
+                    **MessageResponse.from_message(message).model_dump(),
+                    "runtime_events": svc.chat_runtime_event_service.runtime_events_for_message(
+                        session,
+                        message,
+                        account_id=current_user.id,
+                    ),
+                }
+                for message in messages
+            ],
             "total_page": total_page,
             "total_record": total_record,
             "current_page": req.page,
@@ -504,7 +514,17 @@ def get_debug_conversation_messages_legacy_path(
     )
     return success_json(
         {
-            "list": [MessageResponse.from_message(message).model_dump() for message in messages],
+            "list": [
+                {
+                    **MessageResponse.from_message(message).model_dump(),
+                    "runtime_events": svc.chat_runtime_event_service.runtime_events_for_message(
+                        session,
+                        message,
+                        account_id=current_user.id,
+                    ),
+                }
+                for message in messages
+            ],
             "total_page": total_page,
             "total_record": total_record,
             "current_page": current_page,

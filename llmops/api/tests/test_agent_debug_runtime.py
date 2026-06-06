@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
@@ -6,14 +7,19 @@ from fastapi.testclient import TestClient
 
 from app.api.deps import get_app_service, get_current_account, get_db_session
 from app.app_factory import create_app
-from app.core.agent import AgentQueueManager
+from app.core.agent import AgentQueueManager, AgentThought, QueueEvent
 from app.core.config import Settings
-from app.core.conversation import InvokeFrom
+from app.core.conversation import InvokeFrom, MessageStatus
 from app.core.exceptions import FailException
 from app.core.language_model.chat_runtime import ChatCompletionResult, ChatCompletionRuntime, ChatToolCall
 from app.core.language_model.entities import BaseLanguageModel, ModelFeature
 from app.models.account import Account
+from app.models.agent import Agent
+from app.models.conversation import Message, MessageAgentThought
+from app.models.task import AgentPlan, AgentStep, AgentTask, WorkerCall
+from app.models.trace import TraceEvent
 from app.services.app_service import AppService
+from app.services.chat_runtime_event_service import ChatRuntimeEventService
 
 
 def test_agent_queue_manager_respects_task_owner() -> None:
@@ -29,6 +35,307 @@ def test_agent_queue_manager_respects_task_owner() -> None:
 
     assert AgentQueueManager.is_stopped(task_id) is True
     AgentQueueManager.clear_task(task_id)
+
+
+def test_chat_runtime_event_service_converts_realtime_plan_and_wait_events() -> None:
+    service = ChatRuntimeEventService()
+    task_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+    message_id = uuid.uuid4()
+    worker_id = uuid.uuid4()
+
+    plan_events = service.events_from_agent_thought(
+        AgentThought(
+            id=uuid.uuid4(),
+            task_id=task_id,
+            event=QueueEvent.AGENT_ACTION,
+            observation="计划生成完成",
+            tool="planner.plan",
+            tool_input={
+                "source": "llm_planner_v1",
+                "steps": [
+                    {
+                        "step_id": "step_1",
+                        "worker_id": str(worker_id),
+                        "worker_name": "Research",
+                        "task": "收集资料",
+                        "dependencies": [],
+                    }
+                ],
+            },
+        ),
+        conversation_id=conversation_id,
+        message_id=message_id,
+    )
+
+    assert plan_events[0]["type"] == "plan"
+    assert plan_events[0]["status"] == "created"
+    assert plan_events[0]["steps"][0]["worker_name"] == "Research"
+    assert plan_events[0]["steps"][0]["description"] == "收集资料"
+
+    wait_events = service.events_from_agent_thought(
+        AgentThought(
+            id=uuid.uuid4(),
+            task_id=task_id,
+            event=QueueEvent.AGENT_ACTION,
+            observation="需要补充行业范围",
+            tool="Research",
+            tool_input={
+                "step_key": "step_1",
+                "status": "waiting_user",
+                "worker_agent_id": str(worker_id),
+                "worker_name": "Research",
+                "missing_info": ["行业范围"],
+                "reason_code": "missing_info",
+                "resume_policy": "resume_same_step",
+            },
+        ),
+        conversation_id=conversation_id,
+        message_id=message_id,
+    )
+
+    assert [event["type"] for event in wait_events] == ["step", "wait"]
+    assert wait_events[0]["status"] == "waiting"
+    assert wait_events[1]["payload"]["missing_info"] == ["行业范围"]
+    assert wait_events[1]["payload"]["resume_policy"] == "resume_same_step"
+
+
+def test_chat_runtime_event_service_replays_history_events_for_message() -> None:
+    class FakeQuery:
+        def __init__(self, items) -> None:  # noqa: ANN001
+            self.items = list(items)
+
+        def filter(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            return self
+
+        def order_by(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            return self
+
+        def all(self):
+            return self.items
+
+    class FakeSession:
+        def __init__(self, mapping) -> None:  # noqa: ANN001
+            self.mapping = mapping
+
+        def query(self, model):  # noqa: ANN001
+            return FakeQuery(self.mapping.get(model, []))
+
+    now = datetime.now()
+    app_id = uuid.uuid4()
+    account_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+    message_id = uuid.uuid4()
+    router_id = uuid.uuid4()
+    worker_id = uuid.uuid4()
+    task_id = uuid.uuid4()
+    plan_id = uuid.uuid4()
+    step_id = uuid.uuid4()
+    worker_call_id = uuid.uuid4()
+
+    message = Message(
+        id=message_id,
+        app_id=app_id,
+        conversation_id=conversation_id,
+        invoke_from=InvokeFrom.DEBUGGER.value,
+        created_by=account_id,
+        query="分析市场",
+        image_urls=[],
+        message=[],
+        answer="",
+        status=MessageStatus.NORMAL.value,
+        error="",
+        created_at=now,
+        updated_at=now,
+    )
+    task = AgentTask(
+        id=task_id,
+        tenant_id=account_id,
+        conversation_id=conversation_id,
+        router_agent_id=router_id,
+        user_id=account_id,
+        status="waiting",
+        user_input={"query": "分析市场", "context": {"message_id": str(message_id)}},
+        final_result={},
+        error_code="waiting_user",
+        error_message="需要补充行业范围",
+        version=1,
+        created_at=now,
+        updated_at=now,
+    )
+    plan = AgentPlan(
+        id=plan_id,
+        tenant_id=account_id,
+        task_id=task_id,
+        router_agent_id=router_id,
+        schema_version="router_plan_v1",
+        plan_json={
+            "user_intent": "分析市场",
+            "steps": [{"step_id": "step_1", "worker_id": str(worker_id), "task": "收集资料"}],
+        },
+        risk_level="low",
+        status="running",
+        created_at=now,
+        updated_at=now,
+    )
+    step = AgentStep(
+        id=step_id,
+        tenant_id=account_id,
+        task_id=task_id,
+        plan_id=plan_id,
+        step_key="step_1",
+        worker_agent_id=worker_id,
+        dependencies=[],
+        execution_mode="sync",
+        status="waiting",
+        input_json={"task": "收集资料"},
+        output_json={"summary": "需要补充行业范围"},
+        retry_count=0,
+        timeout_seconds=120,
+        created_at=now,
+        updated_at=now,
+    )
+    worker_call = WorkerCall(
+        id=worker_call_id,
+        tenant_id=account_id,
+        task_id=task_id,
+        step_id=step_id,
+        worker_agent_id=worker_id,
+        invocation_json={"task": {"description": "收集资料"}},
+        result_json={"summary": "需要补充行业范围"},
+        status="waiting",
+        token_count=0,
+        cost=0,
+        latency=0,
+        created_at=now,
+        updated_at=now,
+    )
+    trace_event = TraceEvent(
+        id=uuid.uuid4(),
+        tenant_id=account_id,
+        trace_id="trace-1",
+        task_id=task_id,
+        plan_id=plan_id,
+        step_id=step_id,
+        worker_call_id=worker_call_id,
+        event_type="wait.user.requested",
+        payload={
+            "summary": "需要补充行业范围",
+            "missing_info": ["行业范围"],
+            "reason_code": "missing_info",
+            "resume_policy": "resume_same_step",
+        },
+        created_at=now,
+        updated_at=now,
+    )
+    router = Agent(
+        id=router_id,
+        tenant_id=account_id,
+        created_by=account_id,
+        name="Planner",
+        runtime_type="router",
+        product_category="planner",
+        status="published",
+    )
+    worker = Agent(
+        id=worker_id,
+        tenant_id=account_id,
+        created_by=account_id,
+        name="Research",
+        runtime_type="worker",
+        product_category="custom",
+        status="published",
+    )
+    session = FakeSession(
+        {
+            AgentTask: [task],
+            AgentPlan: [plan],
+            AgentStep: [step],
+            WorkerCall: [worker_call],
+            TraceEvent: [trace_event],
+            Agent: [router, worker],
+        }
+    )
+
+    events = ChatRuntimeEventService().runtime_events_for_message(session, message, account_id=account_id)
+
+    assert [event["type"] for event in events] == ["plan", "step", "tool", "wait"]
+    assert events[0]["steps"][0]["worker_name"] == "Research"
+    assert events[1]["status"] == "waiting"
+    assert events[3]["payload"]["missing_info"] == ["行业范围"]
+
+
+def test_chat_runtime_event_service_replays_saved_message_thoughts_without_agent_task() -> None:
+    now = datetime.now()
+    app_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+    message_id = uuid.uuid4()
+    end_user_id = uuid.uuid4()
+
+    action = MessageAgentThought(
+        id=uuid.uuid4(),
+        app_id=app_id,
+        conversation_id=conversation_id,
+        message_id=message_id,
+        invoke_from=InvokeFrom.WEB_APP.value,
+        created_by=end_user_id,
+        position=1,
+        event=QueueEvent.AGENT_ACTION.value,
+        thought="",
+        observation="查询当前时间",
+        tool="current_time",
+        tool_input={"timezone": "Asia/Hong_Kong"},
+        message=[],
+        answer="",
+        total_token_count=0,
+        total_price=0,
+        latency=0.1,
+        created_at=now,
+        updated_at=now,
+    )
+    done = MessageAgentThought(
+        id=uuid.uuid4(),
+        app_id=app_id,
+        conversation_id=conversation_id,
+        message_id=message_id,
+        invoke_from=InvokeFrom.WEB_APP.value,
+        created_by=end_user_id,
+        position=2,
+        event=QueueEvent.AGENT_END.value,
+        thought="",
+        observation="",
+        tool="",
+        tool_input={},
+        message=[],
+        answer="",
+        total_token_count=0,
+        total_price=0,
+        latency=0.2,
+        created_at=now,
+        updated_at=now,
+    )
+    message = Message(
+        id=message_id,
+        app_id=app_id,
+        conversation_id=conversation_id,
+        invoke_from=InvokeFrom.WEB_APP.value,
+        created_by=end_user_id,
+        query="几点了",
+        image_urls=[],
+        message=[],
+        answer="现在是 12:00",
+        status=MessageStatus.NORMAL.value,
+        error="",
+        created_at=now,
+        updated_at=now,
+    )
+    message.agent_thoughts = [action, done]
+
+    events = ChatRuntimeEventService().runtime_events_from_message_thoughts(message)
+
+    assert [event["type"] for event in events] == ["tool", "done"]
+    assert events[0]["title"] == "current_time 调用完成"
+    assert events[0]["payload"]["function_args"] == {"timezone": "Asia/Hong_Kong"}
 
 
 def test_chat_runtime_builds_multimodal_messages() -> None:

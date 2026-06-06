@@ -29,6 +29,7 @@ class MessageResponse(BaseModel):
     total_token_count: int = 0
     latency: float = 0.0
     agent_thoughts: list[dict] = Field(default_factory=list)
+    runtime_events: list[dict] = Field(default_factory=list)
     created_at: int = 0
 
     @classmethod
