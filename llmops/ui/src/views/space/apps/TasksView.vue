@@ -10,13 +10,12 @@ import type {
   AgentPlanItem,
   AgentStepItem,
   AgentTaskDetail,
-  AgentTaskRuntimeMetrics,
   AgentTaskSummary,
   TraceEventItem,
   WorkerCallItem,
 } from '@/models/agent-task'
 import { dryRunPlanner } from '@/services/app'
-import { getAppAgentTaskDetail, getAppAgentTaskMetrics, getAppAgentTasksWithPage } from '@/services/agent-task'
+import { getAppAgentTaskDetail, getAppAgentTasksWithPage } from '@/services/agent-task'
 import JsonDrawer from './tasks/components/JsonDrawer.vue'
 import TaskStatusTag from './tasks/components/TaskStatusTag.vue'
 
@@ -25,10 +24,8 @@ const router = useRouter()
 
 const loading = ref(false)
 const detailLoading = ref(false)
-const metricsLoading = ref(false)
 const records = ref<AgentTaskSummary[]>([])
 const recordDetail = ref<AgentTaskDetail | null>(null)
-const runtimeMetrics = ref<AgentTaskRuntimeMetrics | null>(null)
 const userOptions = ref<AgentConversationUserOption[]>([])
 const selectedUserId = ref('all')
 const searchWord = ref('')
@@ -58,14 +55,6 @@ const associatedTasks = computed<AgentTaskSummary[]>(() => recordDetail.value?.a
 const traceEvents = computed<TraceEventItem[]>(() => recordDetail.value?.trace_events || [])
 const waitEvents = computed<TraceEventItem[]>(() => traceEvents.value.filter((event) => isWaitEvent(event)))
 const currentWaitEvent = computed<TraceEventItem | null>(() => waitEvents.value[waitEvents.value.length - 1] || null)
-const metricOverview = computed(() => runtimeMetrics.value?.overview || {})
-const metricPlanner = computed(() => runtimeMetrics.value?.planner || {})
-const metricWorker = computed(() => runtimeMetrics.value?.worker || {})
-const metricStep = computed(() => runtimeMetrics.value?.step || {})
-const metricTrace = computed(() => runtimeMetrics.value?.trace || {})
-const metricWait = computed(() => runtimeMetrics.value?.wait || {})
-const metricWorkerRows = computed(() => (runtimeMetrics.value?.worker?.by_worker || []).slice(0, 10))
-const metricErrorRows = computed(() => (runtimeMetrics.value?.errors || []).slice(0, 10))
 
 const loadRecords = async (page = paginator.value.current_page) => {
   if (!appId.value) return
@@ -105,33 +94,14 @@ const loadDetail = async () => {
   }
 }
 
-const loadMetrics = async () => {
-  if (!appId.value) return
-  metricsLoading.value = true
-  try {
-    const now = Math.floor(Date.now() / 1000)
-    const res = await getAppAgentTaskMetrics(appId.value, {
-      from_ts: now - 30 * 24 * 60 * 60,
-      to_ts: now,
-      user_id: selectedUserId.value,
-      group_by: 'day',
-    })
-    runtimeMetrics.value = res.data
-  } finally {
-    metricsLoading.value = false
-  }
-}
-
 const refresh = async () => {
   await loadRecords()
   await loadDetail()
-  await loadMetrics()
 }
 
 const resetAndLoad = async () => {
   paginator.value.current_page = 1
   await loadRecords(1)
-  await loadMetrics()
 }
 
 const openRecord = async (record: AgentTaskSummary) => {
@@ -683,18 +653,6 @@ const runPlannerDryRun = async () => {
   }
 }
 
-function formatPercent(value?: number) {
-  return `${Math.round(Number(value || 0) * 100)}%`
-}
-
-function formatNumber(value?: number) {
-  return new Intl.NumberFormat('zh-CN').format(Number(value || 0))
-}
-
-function formatCost(value?: number) {
-  return `$${Number(value || 0).toFixed(4)}`
-}
-
 function formatDate(timestamp: number) {
   if (!timestamp) return '-'
   return new Intl.DateTimeFormat('zh-CN', {
@@ -738,14 +696,12 @@ watch(
   async () => {
     await loadRecords(1)
     await loadDetail()
-    await loadMetrics()
   },
 )
 
 onMounted(async () => {
   await loadRecords(1)
   await loadDetail()
-  await loadMetrics()
 })
 </script>
 
@@ -1471,178 +1427,6 @@ onMounted(async () => {
                       </div>
                     </div>
                   </section>
-                </div>
-              </el-tab-pane>
-
-              <el-tab-pane label="运行分析" name="metrics">
-                <div v-loading="metricsLoading" class="space-y-4 pb-4">
-                  <div class="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-                    <div class="bg-slate-50 p-3">
-                      <div class="text-xs text-slate-500">任务数</div>
-                      <div class="mt-1 text-lg font-semibold text-slate-900">
-                        {{ formatNumber(metricOverview.task_count) }}
-                      </div>
-                    </div>
-                    <div class="bg-slate-50 p-3">
-                      <div class="text-xs text-slate-500">成功率</div>
-                      <div class="mt-1 text-lg font-semibold text-slate-900">
-                        {{ formatPercent(metricOverview.success_rate) }}
-                      </div>
-                    </div>
-                    <div class="bg-slate-50 p-3">
-                      <div class="text-xs text-slate-500">等待数</div>
-                      <div class="mt-1 text-lg font-semibold text-slate-900">
-                        {{ formatNumber(metricOverview.waiting_count) }}
-                      </div>
-                    </div>
-                    <div class="bg-slate-50 p-3">
-                      <div class="text-xs text-slate-500">平均耗时</div>
-                      <div class="mt-1 text-lg font-semibold text-slate-900">
-                        {{ formatSeconds(metricOverview.avg_latency) }}
-                      </div>
-                    </div>
-                    <div class="bg-slate-50 p-3">
-                      <div class="text-xs text-slate-500">Token</div>
-                      <div class="mt-1 text-lg font-semibold text-slate-900">
-                        {{ formatNumber(metricOverview.total_token_count) }}
-                      </div>
-                    </div>
-                    <div class="bg-slate-50 p-3">
-                      <div class="text-xs text-slate-500">成本</div>
-                      <div class="mt-1 text-lg font-semibold text-slate-900">
-                        {{ formatCost(metricOverview.total_cost) }}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div class="grid grid-cols-1 gap-3 xl:grid-cols-3">
-                    <section class="border border-slate-200 p-3">
-                      <div class="mb-3 text-sm font-medium text-slate-900">Planner</div>
-                      <div class="space-y-2 text-sm text-slate-700">
-                        <div class="flex justify-between gap-3">
-                          <span>首计划成功率</span>
-                          <span class="font-medium">{{ formatPercent(metricPlanner.first_plan_success_rate) }}</span>
-                        </div>
-                        <div class="flex justify-between gap-3">
-                          <span>Replan Rate</span>
-                          <span class="font-medium">{{ formatPercent(metricPlanner.replan_rate) }}</span>
-                        </div>
-                        <div class="flex justify-between gap-3">
-                          <span>Plan Update Rate</span>
-                          <span class="font-medium">{{ formatPercent(metricPlanner.plan_update_rate) }}</span>
-                        </div>
-                        <div class="flex justify-between gap-3">
-                          <span>自动修复成功率</span>
-                          <span class="font-medium">{{ formatPercent(metricPlanner.auto_fix_success_rate) }}</span>
-                        </div>
-                        <div class="flex justify-between gap-3">
-                          <span>计划膨胀率</span>
-                          <span class="font-medium">{{ metricPlanner.avg_plan_inflation_ratio || 0 }}</span>
-                        </div>
-                      </div>
-                    </section>
-
-                    <section class="border border-slate-200 p-3">
-                      <div class="mb-3 text-sm font-medium text-slate-900">Worker</div>
-                      <div class="space-y-2 text-sm text-slate-700">
-                        <div class="flex justify-between gap-3">
-                          <span>调用数</span>
-                          <span class="font-medium">{{ formatNumber(metricWorker.worker_call_count) }}</span>
-                        </div>
-                        <div class="flex justify-between gap-3">
-                          <span>成功率</span>
-                          <span class="font-medium">{{ formatPercent(metricWorker.worker_success_rate) }}</span>
-                        </div>
-                        <div class="flex justify-between gap-3">
-                          <span>等待数</span>
-                          <span class="font-medium">{{ formatNumber(metricWorker.worker_waiting_count) }}</span>
-                        </div>
-                        <div class="flex justify-between gap-3">
-                          <span>平均耗时</span>
-                          <span class="font-medium">{{ formatSeconds(metricWorker.avg_worker_latency) }}</span>
-                        </div>
-                      </div>
-                    </section>
-
-                    <section class="border border-slate-200 p-3">
-                      <div class="mb-3 text-sm font-medium text-slate-900">Trace</div>
-                      <div class="space-y-2 text-sm text-slate-700">
-                        <div class="flex justify-between gap-3">
-                          <span>事件数</span>
-                          <span class="font-medium">{{ formatNumber(metricTrace.trace_event_count) }}</span>
-                        </div>
-                        <div class="flex justify-between gap-3">
-                          <span>工具事件</span>
-                          <span class="font-medium">{{ formatNumber(metricTrace.tool_event_count) }}</span>
-                        </div>
-                        <div class="flex justify-between gap-3">
-                          <span>Preflight 失败</span>
-                          <span class="font-medium">{{ formatNumber(metricTrace.preflight_failed_count) }}</span>
-                        </div>
-                        <div class="flex justify-between gap-3">
-                          <span>Step 成功率</span>
-                          <span class="font-medium">{{ formatPercent(metricStep.step_success_rate) }}</span>
-                        </div>
-                      </div>
-                    </section>
-                  </div>
-
-                  <section class="border border-slate-200 p-3">
-                    <div class="mb-3 text-sm font-medium text-slate-900">Worker 排行</div>
-                    <el-table :data="metricWorkerRows" stripe size="small">
-                      <el-table-column label="Worker" min-width="180">
-                        <template #default="{ row }">{{ row.worker_name || row.worker_agent_id }}</template>
-                      </el-table-column>
-                      <el-table-column label="调用" width="80">
-                        <template #default="{ row }">{{ row.call_count }}</template>
-                      </el-table-column>
-                      <el-table-column label="成功率" width="90">
-                        <template #default="{ row }">{{ formatPercent(row.success_rate) }}</template>
-                      </el-table-column>
-                      <el-table-column label="等待" width="80">
-                        <template #default="{ row }">{{ row.waiting_count }}</template>
-                      </el-table-column>
-                      <el-table-column label="Plan Update" width="120">
-                        <template #default="{ row }">{{ row.plan_update_count }}</template>
-                      </el-table-column>
-                      <el-table-column label="平均耗时" width="100">
-                        <template #default="{ row }">{{ formatSeconds(row.avg_latency) }}</template>
-                      </el-table-column>
-                    </el-table>
-                    <el-empty v-if="!metricWorkerRows.length" description="暂无 Worker 调用数据" />
-                  </section>
-
-                  <div class="grid grid-cols-1 gap-3 xl:grid-cols-2">
-                    <section class="border border-slate-200 p-3">
-                      <div class="mb-3 text-sm font-medium text-slate-900">等待信息</div>
-                      <div v-if="metricWait.missing_info?.length" class="flex flex-wrap gap-1">
-                        <el-tag
-                          v-for="item in metricWait.missing_info"
-                          :key="`metric-missing-${item.field}`"
-                          size="small"
-                          type="warning"
-                        >
-                          {{ item.field }} · {{ item.count }}
-                        </el-tag>
-                      </div>
-                      <el-empty v-else description="暂无等待字段" />
-                    </section>
-
-                    <section class="border border-slate-200 p-3">
-                      <div class="mb-3 text-sm font-medium text-slate-900">错误排行</div>
-                      <div v-if="metricErrorRows.length" class="space-y-2">
-                        <div
-                          v-for="item in metricErrorRows"
-                          :key="`metric-error-${item.error_code}`"
-                          class="flex justify-between gap-3 text-sm text-slate-700"
-                        >
-                          <span class="break-all">{{ item.error_code }}</span>
-                          <span class="font-medium">{{ item.count }}</span>
-                        </div>
-                      </div>
-                      <el-empty v-else description="暂无错误" />
-                    </section>
-                  </div>
                 </div>
               </el-tab-pane>
 

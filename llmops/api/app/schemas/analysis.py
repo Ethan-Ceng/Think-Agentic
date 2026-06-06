@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class TrendData(BaseModel):
@@ -21,3 +21,13 @@ class AppAnalysisResponse(BaseModel):
     avg_of_conversation_messages: IndicatorData
     token_output_rate: IndicatorData
     cost_consumption: IndicatorData
+
+
+class GetAppAgentRuntimeAnalysisRequest(BaseModel):
+    from_ts: int | None = Field(None, ge=0)
+    to_ts: int | None = Field(None, ge=0)
+    status: str = "all"
+    user_id: str = "all"
+    router_agent_id: str = "all"
+    worker_agent_id: str = "all"
+    group_by: str = "day"

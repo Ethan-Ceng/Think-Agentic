@@ -84,3 +84,35 @@ def test_analysis_route_uses_service() -> None:
 
     assert response.status_code == 200
     assert response.json()["data"]["total_messages"]["data"] == 0
+
+
+def test_agent_runtime_analysis_route_uses_analysis_service() -> None:
+    account = Account(id=uuid.uuid4(), name="tester", email="tester@example.test")
+
+    class FakeAnalysisService:
+        def get_app_agent_runtime_analysis(self, session, app_id, current_user, **kwargs):  # noqa: ANN001
+            assert current_user.id == account.id
+            assert kwargs["group_by"] == "day"
+            return {
+                "scope": {"app_id": str(app_id)},
+                "overview": {"task_count": 1, "success_rate": 1},
+                "planner": {},
+                "worker": {"by_worker": []},
+                "step": {},
+                "trace": {},
+                "wait": {"by_type": [], "missing_info": []},
+                "errors": [],
+                "series": [],
+            }
+
+    app = create_app(Settings(app_env="test", debug=False))
+    app.dependency_overrides[get_current_account] = lambda: account
+    app.dependency_overrides[get_db_session] = lambda: None
+    app.dependency_overrides[get_analysis_service] = lambda: FakeAnalysisService()
+    app.dependency_overrides[get_builtin_app_service] = lambda: None
+
+    with TestClient(app) as client:
+        response = client.get(f"/analysis/app/{uuid.uuid4()}/agent-runtime")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["overview"]["task_count"] == 1

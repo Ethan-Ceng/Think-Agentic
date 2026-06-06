@@ -15,7 +15,7 @@
 
   恢复到测试库可以用：
 
-  docker cp .\docs\backups\llmops-你的时间戳.dump llmops-db:/tmp/llmops-test.dump
+  docker cp .\docs\backups\llmops-20260605-161900.dump llmops-db:/tmp/llmops-test.dump
   docker exec llmops-db createdb -U postgres llmops_test
   docker exec llmops-db pg_restore -U postgres -d llmops_test --clean --if-exists /tmp/llmops-test.dump
 ```

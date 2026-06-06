@@ -9,6 +9,7 @@ import { GridComponent, TooltipComponent } from 'echarts/components'
 import moment from 'moment'
 import { useGetAppAnalysis } from '@/hooks/use-analysis'
 import OverviewIndicator from '@/components/OverviewIndicator.vue'
+import AgentRuntimeMetricsPanel from './components/AgentRuntimeMetricsPanel.vue'
 
 use([GridComponent, LineChart, CanvasRenderer, TooltipComponent])
 
@@ -254,6 +255,14 @@ onMounted(() => {
           </div>
         </div>
       </div>
+    </div>
+
+    <div class="mt-5 flex flex-col gap-5">
+      <div class="flex items-baseline gap-1">
+        <div class="text-base text-gray-700 font-semibold">Agent 运行指标</div>
+        <div class="text-xs text-gray-500">(最近30天)</div>
+      </div>
+      <agent-runtime-metrics-panel :app-id="String(route.params?.app_id)" :days="30" />
     </div>
   </div>
 </template>

@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.models.account import Account
 from app.models.conversation import Message
+from app.services.agent_task_service import AgentTaskService
 from app.services.app_service import AppService
 from app.services.base_service import BaseService
 
@@ -14,6 +15,7 @@ from app.services.base_service import BaseService
 @dataclass
 class AnalysisService(BaseService):
     app_service: AppService = field(default_factory=AppService)
+    agent_task_service: AgentTaskService = field(default_factory=AgentTaskService)
 
     def get_app_analysis(self, session: Session, app_id: UUID, account: Account) -> dict[str, Any]:
         app = self.app_service.get_app(session, app_id, account)
@@ -37,6 +39,33 @@ class AnalysisService(BaseService):
             "cost_consumption",
         ]
         return {**trend, **{field: {"data": current[field], "pop": pop[field]} for field in fields}}
+
+    def get_app_agent_runtime_analysis(
+        self,
+        session: Session,
+        app_id: UUID,
+        account: Account,
+        *,
+        from_ts: int | None = None,
+        to_ts: int | None = None,
+        status: str = "all",
+        user_id: str = "all",
+        router_agent_id: str = "all",
+        worker_agent_id: str = "all",
+        group_by: str = "day",
+    ) -> dict[str, Any]:
+        return self.agent_task_service.get_app_task_runtime_metrics(
+            session,
+            app_id=app_id,
+            account=account,
+            from_ts=from_ts,
+            to_ts=to_ts,
+            status=status,
+            user_id=user_id,
+            router_agent_id=router_agent_id,
+            worker_agent_id=worker_agent_id,
+            group_by=group_by,
+        )
 
     @staticmethod
     def get_messages_by_time_range(
