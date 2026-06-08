@@ -8,6 +8,9 @@ export type SessionStatus = 'pending' | 'running' | 'waiting' | 'completed'
 export type ExecutionStatus = 'pending' | 'running' | 'completed' | 'failed'
 export type ToolEventStatus = 'calling' | 'called'
 export type MCPTransport = 'stdio' | 'sse' | 'streamable_http'
+export type ToolRiskLevel = 'low' | 'medium' | 'high'
+export type ToolExecutorType = 'builtin' | 'mcp' | 'a2a' | 'api'
+export type ToolSourceType = 'builtin' | 'mcp' | 'a2a' | 'api'
 
 export type ToolFunctionResult = {
   success?: boolean
@@ -77,6 +80,127 @@ export type A2AServersData = {
 
 export type CreateA2AServerParams = {
   base_url: string
+}
+
+export type ToolBinding = {
+  enabled: boolean
+  risk_level: ToolRiskLevel
+  params?: Record<string, unknown>
+}
+
+export type RuntimeToolPolicy = {
+  allowed_executor_types: ToolExecutorType[]
+  max_tool_iterations: number
+}
+
+export type ToolDescriptor = {
+  tool_id: string
+  function_name: string
+  provider_id: string
+  provider_label: string
+  group: string
+  executor_type: ToolExecutorType
+  label: string
+  description: string
+  schema: Record<string, unknown>
+  category: string
+  risk_level: ToolRiskLevel
+  requires_sandbox: boolean
+  requires_browser: boolean
+  requires_credentials: boolean
+  enabled_by_default: boolean
+  enabled: boolean
+}
+
+export type ToolRegistration = {
+  registration_id: string
+  provider_id: string
+  provider_label: string
+  source_type: ToolSourceType
+  executor_type: ToolExecutorType
+  group: string
+  category: string
+  description: string
+  enabled: boolean
+  builtin: boolean
+  editable: boolean
+  requires_sandbox: boolean
+  requires_browser: boolean
+  requires_credentials: boolean
+  config: Record<string, unknown>
+}
+
+export type ToolListData = {
+  tools: ToolDescriptor[]
+  registrations: ToolRegistration[]
+  runtime_policy: RuntimeToolPolicy
+}
+
+export type UpdateToolBindingsParams = {
+  bindings: Record<string, ToolBinding>
+  runtime_policy: RuntimeToolPolicy
+}
+
+export type ToolRegistrationListData = {
+  registrations: ToolRegistration[]
+}
+
+export type ToolRegistrationTestParams = {
+  function_name?: string | null
+  arguments?: Record<string, unknown>
+}
+
+export type ToolRegistrationTestData = {
+  registration: ToolRegistration
+  tools: ToolDescriptor[]
+  selected_tool?: ToolDescriptor | null
+  result?: ToolFunctionResult | null
+}
+
+export type CreateToolRegistrationParams = {
+  provider_id: string
+  provider_label: string
+  source_type: ToolSourceType
+  executor_type: ToolExecutorType
+  group: string
+  category: string
+  description?: string
+  enabled?: boolean
+  requires_sandbox?: boolean
+  requires_browser?: boolean
+  requires_credentials?: boolean
+  config?: Record<string, unknown>
+}
+
+export type UpdateToolRegistrationParams = Partial<Omit<CreateToolRegistrationParams, 'provider_id'>>
+
+export type ToolCapabilitySummary = {
+  schema_version: string
+  executor_types: ToolExecutorType[]
+  input_modalities: string[]
+  output_modalities: string[]
+  semantic_tags: string[]
+  tool_names: string[]
+  constraints: Record<string, unknown>
+  generated_at: number
+}
+
+export type ToolPreflightCheck = {
+  rule_id: string
+  passed: boolean
+  error_code?: string | null
+  user_message: string
+}
+
+export type ToolPreflightResponse = {
+  status: 'pass' | 'warning' | 'blocked'
+  checks: ToolPreflightCheck[]
+  capability_snapshot: ToolCapabilitySummary
+}
+
+export type ToolPreflightParams = {
+  message: string
+  input_modalities?: string[]
 }
 
 export type FileInfo = {

@@ -10,6 +10,8 @@ from typing import Dict, Optional, List, Any
 
 from pydantic import BaseModel, Field, ConfigDict, model_validator
 
+from app.schemas.tool_config import ToolConfig
+
 
 class LLMConfig(BaseModel):
     """LLM提供商配置"""
@@ -83,5 +85,6 @@ class AppConfig(BaseModel):
     agent_config: AgentConfig = Field(default_factory=AgentConfig)
     mcp_config: MCPConfig = Field(default_factory=MCPConfig)
     a2a_config: A2AConfig = Field(default_factory=A2AConfig)
+    tool_config: ToolConfig = Field(default_factory=ToolConfig)
 
     model_config = ConfigDict(extra="allow")

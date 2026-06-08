@@ -1,12 +1,27 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { Languages, LayoutGrid, Loader2, Plus, Settings, Trash, Wrench } from 'lucide-vue-next'
+import { ClipboardCheck, Languages, LayoutGrid, Loader2, Pencil, Play, Plus, RotateCcw, Settings, ShieldAlert, Trash, Wrench } from 'lucide-vue-next'
 import { useSettingsModal } from '@/composables/useSettingsModal'
 import { useToast } from '@/composables/useToast'
 import { configApi } from '@/lib/api/config'
-import type { AgentConfig, LLMConfig, ListA2AServerItem, ListMCPServerItem } from '@/lib/api/types'
+import { toolsApi } from '@/lib/api/tools'
+import type {
+  AgentConfig,
+  LLMConfig,
+  ListA2AServerItem,
+  ListMCPServerItem,
+  RuntimeToolPolicy,
+  ToolDescriptor,
+  ToolExecutorType,
+  ToolListData,
+  ToolPreflightResponse,
+  ToolRegistration,
+  ToolRegistrationTestData,
+  ToolRiskLevel,
+  ToolSourceType,
+} from '@/lib/api/types'
 
-type SettingTab = 'common' | 'llm' | 'a2a' | 'mcp'
+type SettingTab = 'common' | 'llm' | 'tools' | 'a2a' | 'mcp'
 
 const toast = useToast()
 const settingsModal = useSettingsModal()
@@ -16,12 +31,20 @@ const agentConfig = ref<AgentConfig>({})
 const llmConfig = ref<LLMConfig>({})
 const mcpServers = ref<ListMCPServerItem[]>([])
 const a2aServers = ref<ListA2AServerItem[]>([])
+const tools = ref<ToolDescriptor[]>([])
+const toolRegistrations = ref<ToolRegistration[]>([])
+const runtimePolicy = ref<RuntimeToolPolicy>({
+  allowed_executor_types: ['builtin', 'mcp', 'a2a', 'api'],
+  max_tool_iterations: 100,
+})
 
 const loadingConfig = ref(false)
 const loadingMCP = ref(false)
 const loadingA2A = ref(false)
+const loadingTools = ref(false)
 const saving = ref(false)
 const fetching = ref(false)
+const checkingPreflight = ref(false)
 
 const mcpDialogOpen = ref(false)
 const mcpConfigText = ref('')
@@ -29,15 +52,123 @@ const addingMCP = ref(false)
 const a2aDialogOpen = ref(false)
 const a2aBaseUrl = ref('')
 const addingA2A = ref(false)
+const registrationDialogOpen = ref(false)
+const addingRegistration = ref(false)
+const editingRegistrationId = ref<string | null>(null)
+const registrationForm = ref({
+  provider_id: '',
+  provider_label: '',
+  source_type: 'api' as ToolSourceType,
+  executor_type: 'api' as ToolExecutorType,
+  group: 'custom',
+  category: '自定义',
+  description: '',
+  enabled: true,
+  requires_sandbox: false,
+  requires_browser: false,
+  requires_credentials: false,
+  base_url: '',
+  timeout: 60,
+  headers_text: '',
+  openapi_schema_text: '',
+  allow_private_network: false,
+})
+const testDialogOpen = ref(false)
+const testingRegistration = ref<ToolRegistration | null>(null)
+const testingToolName = ref('')
+const testArgumentsText = ref('{}')
+const testingTool = ref(false)
+const testResult = ref<ToolRegistrationTestData | null>(null)
+const preflightMessage = ref('')
+const preflightResult = ref<ToolPreflightResponse | null>(null)
 
 const tabs = [
   { key: 'common' as const, icon: Settings, title: '通用配置' },
   { key: 'llm' as const, icon: Languages, title: '模型提供商' },
+  { key: 'tools' as const, icon: ShieldAlert, title: '工具管理' },
   { key: 'a2a' as const, icon: LayoutGrid, title: 'A2A Agent' },
   { key: 'mcp' as const, icon: Wrench, title: 'MCP 服务器' },
 ]
 
-const showSave = computed(() => activeTab.value === 'common' || activeTab.value === 'llm')
+const showSave = computed(() => activeTab.value === 'common' || activeTab.value === 'llm' || activeTab.value === 'tools')
+
+const executorOptions: Array<{ value: ToolExecutorType; label: string }> = [
+  { value: 'builtin', label: '内置' },
+  { value: 'mcp', label: 'MCP' },
+  { value: 'a2a', label: 'A2A' },
+  { value: 'api', label: 'API' },
+]
+
+const sourceTypeOptions: Array<{ value: ToolSourceType; label: string }> = [
+  { value: 'api', label: 'API' },
+  { value: 'mcp', label: 'MCP' },
+  { value: 'a2a', label: 'A2A' },
+]
+
+const groupLabels: Record<string, string> = {
+  file: '文件',
+  shell: 'Shell',
+  browser: '浏览器',
+  search: '搜索',
+  message: '用户消息',
+  a2a: 'A2A Agent',
+  mcp: 'MCP',
+  custom: '自定义',
+}
+
+const groupOrder = ['file', 'shell', 'browser', 'search', 'message', 'a2a', 'mcp', 'custom']
+
+const groupedTools = computed(() => {
+  const groups = new Map<string, ToolDescriptor[]>()
+  for (const tool of tools.value) {
+    const group = tool.group || 'other'
+    groups.set(group, [...(groups.get(group) ?? []), tool])
+  }
+  return Array.from(groups.entries())
+    .sort(([left], [right]) => {
+      const leftIndex = groupOrder.indexOf(left)
+      const rightIndex = groupOrder.indexOf(right)
+      return (leftIndex === -1 ? 999 : leftIndex) - (rightIndex === -1 ? 999 : rightIndex)
+    })
+    .map(([key, items]) => ({
+      key,
+      title: groupLabels[key] ?? key,
+      tools: items,
+    }))
+})
+
+const toolSummary = computed(() => {
+  const enabled = tools.value.filter((tool) => tool.enabled)
+  return {
+    enabledCount: enabled.length,
+    totalCount: tools.value.length,
+    highRiskCount: enabled.filter((tool) => tool.risk_level === 'high').length,
+    credentialsCount: enabled.filter((tool) => tool.requires_credentials).length,
+    sandboxRequired: enabled.some((tool) => tool.requires_sandbox),
+    browserRequired: enabled.some((tool) => tool.requires_browser),
+  }
+})
+
+const visiblePreflightChecks = computed(() => {
+  return preflightResult.value?.checks.filter((check) => !check.passed || check.user_message !== '未检测到该能力需求。') ?? []
+})
+
+function registrationToolCount(registrationId: string) {
+  return tools.value.filter((tool) => tool.provider_id === registrationId).length
+}
+
+const registrationDialogTitle = computed(() =>
+  editingRegistrationId.value ? '编辑工具源' : '新增工具源',
+)
+
+const registrationSubmitText = computed(() =>
+  editingRegistrationId.value ? '保存' : '新增',
+)
+
+const testingTools = computed(() => {
+  if (!testingRegistration.value) return []
+  return tools.value.filter((tool) => tool.provider_id === testingRegistration.value?.provider_id)
+})
 
 const mcpPlaceholder = `{
   "mcpServers": {
@@ -51,6 +182,16 @@ const mcpPlaceholder = `{
     }
   }
 }`
+
+function applyToolListData(data: ToolListData | null | undefined) {
+  tools.value = data?.tools ?? []
+  toolRegistrations.value = data?.registrations ?? []
+  runtimePolicy.value = data?.runtime_policy ?? runtimePolicy.value
+}
+
+async function refreshToolList() {
+  applyToolListData(await toolsApi.listTools())
+}
 
 function fetchAllConfigs() {
   if (fetching.value) return
@@ -89,7 +230,18 @@ function fetchAllConfigs() {
       loadingA2A.value = false
     })
 
-  void Promise.allSettled([configTask, mcpTask, a2aTask]).finally(() => {
+  loadingTools.value = true
+  const toolsTask = toolsApi
+    .listTools()
+    .then((data) => {
+      applyToolListData(data)
+    })
+    .catch((err) => console.error('[Settings] 获取工具列表失败:', err))
+    .finally(() => {
+      loadingTools.value = false
+    })
+
+  void Promise.allSettled([configTask, mcpTask, a2aTask, toolsTask]).finally(() => {
     fetching.value = false
   })
 }
@@ -113,12 +265,346 @@ async function handleSave() {
     } else if (activeTab.value === 'llm') {
       await configApi.updateLLMConfig(llmConfig.value)
       toast.success('模型提供商配置保存成功')
+    } else if (activeTab.value === 'tools') {
+      await saveToolConfig()
+      toast.success('工具配置保存成功')
     }
   } catch (err) {
     toast.error(err instanceof Error ? err.message : '保存失败')
   } finally {
     saving.value = false
   }
+}
+
+function buildToolBindings() {
+  return Object.fromEntries(
+    tools.value.map((tool) => [
+      tool.tool_id,
+      {
+        enabled: tool.enabled,
+        risk_level: tool.risk_level,
+        params: {},
+      },
+    ]),
+  )
+}
+
+async function saveToolConfig() {
+  const data = await toolsApi.updateBindings({
+    bindings: buildToolBindings(),
+    runtime_policy: runtimePolicy.value,
+  })
+  applyToolListData(data)
+}
+
+async function resetTools() {
+  saving.value = true
+  try {
+    const data = await toolsApi.resetDefaults()
+    applyToolListData(data)
+    preflightResult.value = null
+    toast.success('工具配置已重置')
+  } catch (err) {
+    toast.error(err instanceof Error ? err.message : '重置失败')
+  } finally {
+    saving.value = false
+  }
+}
+
+function handleToolSwitch(toolId: string, value: string | number | boolean) {
+  const enabled = Boolean(value)
+  tools.value = tools.value.map((tool) => (tool.tool_id === toolId ? { ...tool, enabled } : tool))
+}
+
+function handleExecutorSwitch(executorType: ToolExecutorType, value: string | number | boolean) {
+  const enabled = Boolean(value)
+  const next = new Set(runtimePolicy.value.allowed_executor_types)
+  if (enabled) {
+    next.add(executorType)
+  } else {
+    next.delete(executorType)
+  }
+  runtimePolicy.value = {
+    ...runtimePolicy.value,
+    allowed_executor_types: Array.from(next),
+  }
+}
+
+function resetRegistrationForm() {
+  registrationForm.value = {
+    provider_id: '',
+    provider_label: '',
+    source_type: 'api',
+    executor_type: 'api',
+    group: 'custom',
+    category: '自定义',
+    description: '',
+    enabled: true,
+    requires_sandbox: false,
+    requires_browser: false,
+    requires_credentials: false,
+    base_url: '',
+    timeout: 60,
+    headers_text: '',
+    openapi_schema_text: '',
+    allow_private_network: false,
+  }
+}
+
+function stringifyConfigValue(value: unknown) {
+  if (value == null) return ''
+  if (typeof value === 'string') return value
+  return JSON.stringify(value, null, 2)
+}
+
+function openRegistrationDialog() {
+  resetRegistrationForm()
+  editingRegistrationId.value = null
+  registrationDialogOpen.value = true
+}
+
+function openEditRegistrationDialog(registration: ToolRegistration) {
+  const config = registration.config ?? {}
+  registrationForm.value = {
+    provider_id: registration.provider_id,
+    provider_label: registration.provider_label,
+    source_type: registration.source_type,
+    executor_type: registration.executor_type,
+    group: registration.group,
+    category: registration.category,
+    description: registration.description,
+    enabled: registration.enabled,
+    requires_sandbox: registration.requires_sandbox,
+    requires_browser: registration.requires_browser,
+    requires_credentials: registration.requires_credentials,
+    base_url: typeof config.base_url === 'string' ? config.base_url : '',
+    timeout: typeof config.timeout === 'number' ? config.timeout : 60,
+    headers_text: stringifyConfigValue(config.headers),
+    openapi_schema_text: stringifyConfigValue(config.openapi_schema ?? config.schema),
+    allow_private_network: Boolean(config.allow_private_network),
+  }
+  editingRegistrationId.value = registration.registration_id
+  registrationDialogOpen.value = true
+}
+
+function handleRegistrationSourceChange(value: string | number | boolean) {
+  const nextType = String(value) as ToolSourceType
+  registrationForm.value = {
+    ...registrationForm.value,
+    source_type: nextType,
+    executor_type: nextType === 'api' ? 'api' : nextType,
+    group: nextType === 'api' ? 'custom' : nextType,
+    category: nextType === 'api' ? '自定义' : nextType.toUpperCase(),
+  }
+}
+
+function parseJsonObject(text: string, label: string) {
+  const content = text.trim()
+  if (!content) return {}
+  const parsed = JSON.parse(content)
+  if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') {
+    throw new Error(`${label} 必须是 JSON 对象`)
+  }
+  return parsed as Record<string, unknown>
+}
+
+function buildRegistrationConfig() {
+  if (registrationForm.value.source_type !== 'api') return {}
+
+  const openapiSchema = registrationForm.value.openapi_schema_text.trim()
+  if (!openapiSchema) {
+    throw new Error('请填写 OpenAPI Schema')
+  }
+
+  const config: Record<string, unknown> = {
+    openapi_schema: openapiSchema,
+    timeout: registrationForm.value.timeout,
+    allow_private_network: registrationForm.value.allow_private_network,
+  }
+  const baseUrl = registrationForm.value.base_url.trim()
+  if (baseUrl) {
+    config.base_url = baseUrl
+  }
+  const headers = parseJsonObject(registrationForm.value.headers_text, 'Headers')
+  if (Object.keys(headers).length > 0) {
+    config.headers = headers
+  }
+  return config
+}
+
+async function addToolRegistration() {
+  const providerId = registrationForm.value.provider_id.trim()
+  const providerLabel = registrationForm.value.provider_label.trim()
+  if (!providerId || !providerLabel) {
+    toast.error('请填写工具源 ID 和名称')
+    return
+  }
+
+  let config: Record<string, unknown>
+  try {
+    config = buildRegistrationConfig()
+  } catch (err) {
+    toast.error(err instanceof Error ? err.message : '工具源配置格式错误')
+    return
+  }
+
+  addingRegistration.value = true
+  try {
+    const payload = {
+      provider_id: providerId,
+      provider_label: providerLabel,
+      source_type: registrationForm.value.source_type,
+      executor_type: registrationForm.value.executor_type,
+      group: registrationForm.value.group.trim() || 'custom',
+      category: registrationForm.value.category.trim() || '自定义',
+      description: registrationForm.value.description.trim(),
+      enabled: registrationForm.value.enabled,
+      requires_sandbox: registrationForm.value.requires_sandbox,
+      requires_browser: registrationForm.value.requires_browser,
+      requires_credentials: registrationForm.value.requires_credentials,
+      config,
+    }
+    const wasEditing = Boolean(editingRegistrationId.value)
+    if (editingRegistrationId.value) {
+      await toolsApi.updateRegistration(editingRegistrationId.value, payload)
+    } else {
+      await toolsApi.createRegistration(payload)
+    }
+    await refreshToolList()
+    registrationDialogOpen.value = false
+    editingRegistrationId.value = null
+    toast.success(wasEditing ? '工具源已保存' : '工具源注册成功')
+  } catch (err) {
+    toast.error(err instanceof Error ? err.message : '工具源保存失败')
+  } finally {
+    addingRegistration.value = false
+  }
+}
+
+async function toggleToolRegistration(registrationId: string, enabled: boolean) {
+  const previous = toolRegistrations.value
+  toolRegistrations.value = toolRegistrations.value.map((registration) =>
+    registration.registration_id === registrationId ? { ...registration, enabled } : registration,
+  )
+  try {
+    const data = await toolsApi.updateRegistration(registrationId, { enabled })
+    toolRegistrations.value = data?.registrations ?? toolRegistrations.value
+    await refreshToolList()
+    toast.success(`工具源已${enabled ? '启用' : '禁用'}`)
+  } catch {
+    toolRegistrations.value = previous
+    toast.error('工具源状态更新失败')
+  }
+}
+
+function handleToolRegistrationSwitch(registrationId: string, value: string | number | boolean) {
+  void toggleToolRegistration(registrationId, Boolean(value))
+}
+
+async function deleteToolRegistration(registrationId: string) {
+  const previous = toolRegistrations.value
+  toolRegistrations.value = toolRegistrations.value.filter(
+    (registration) => registration.registration_id !== registrationId,
+  )
+  try {
+    const data = await toolsApi.deleteRegistration(registrationId)
+    toolRegistrations.value = data?.registrations ?? toolRegistrations.value
+    await refreshToolList()
+    toast.success('工具源已删除')
+  } catch {
+    toolRegistrations.value = previous
+    toast.error('工具源删除失败')
+  }
+}
+
+function openTestRegistrationDialog(registration: ToolRegistration) {
+  testingRegistration.value = registration
+  testResult.value = null
+  const firstTool = tools.value.find((tool) => tool.provider_id === registration.provider_id)
+  testingToolName.value = firstTool?.function_name ?? ''
+  testArgumentsText.value = '{}'
+  testDialogOpen.value = true
+}
+
+async function runToolRegistrationTest() {
+  if (!testingRegistration.value) return
+
+  let args: Record<string, unknown> = {}
+  if (testingToolName.value) {
+    try {
+      args = parseJsonObject(testArgumentsText.value, 'Arguments')
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '测试参数格式错误')
+      return
+    }
+  }
+
+  testingTool.value = true
+  try {
+    testResult.value = await toolsApi.testRegistration(testingRegistration.value.registration_id, {
+      function_name: testingToolName.value || null,
+      arguments: args,
+    })
+    await refreshToolList()
+    const result = testResult.value.result
+    if (result && result.success === false) {
+      toast.error(result.message || '工具测试失败')
+    } else {
+      toast.success(result ? '工具测试完成' : '工具源解析完成')
+    }
+  } catch (err) {
+    toast.error(err instanceof Error ? err.message : '工具源测试失败')
+  } finally {
+    testingTool.value = false
+  }
+}
+
+async function runPreflight() {
+  const message = preflightMessage.value.trim()
+  if (!message) {
+    toast.error('请输入任务描述')
+    return
+  }
+
+  checkingPreflight.value = true
+  try {
+    preflightResult.value = await toolsApi.preflight({ message })
+  } catch (err) {
+    toast.error(err instanceof Error ? err.message : '检测失败')
+  } finally {
+    checkingPreflight.value = false
+  }
+}
+
+function riskTagType(risk: ToolRiskLevel) {
+  if (risk === 'high') return 'danger'
+  if (risk === 'medium') return 'warning'
+  return 'success'
+}
+
+function riskLabel(risk: ToolRiskLevel) {
+  if (risk === 'high') return '高危'
+  if (risk === 'medium') return '中等'
+  return '低风险'
+}
+
+function sourceTypeLabel(sourceType: ToolSourceType) {
+  if (sourceType === 'builtin') return '内置'
+  if (sourceType === 'mcp') return 'MCP'
+  if (sourceType === 'a2a') return 'A2A'
+  return 'API'
+}
+
+function preflightStatusType(status: ToolPreflightResponse['status']) {
+  if (status === 'blocked') return 'danger'
+  if (status === 'warning') return 'warning'
+  return 'success'
+}
+
+function preflightStatusLabel(status: ToolPreflightResponse['status']) {
+  if (status === 'blocked') return '阻断'
+  if (status === 'warning') return '警告'
+  return '通过'
 }
 
 async function toggleMCP(serverName: string, enabled: boolean) {
@@ -303,6 +789,198 @@ async function addA2A() {
           </ElFormItem>
         </ElForm>
 
+        <section v-else-if="activeTab === 'tools'" class="settings-list tools-settings">
+          <header>
+            <div>
+              <h3>工具管理</h3>
+              <p>控制 Agent 可见和可调用的工具。</p>
+            </div>
+            <ElButton size="small" :loading="saving" @click="resetTools">
+              <RotateCcw :size="14" />
+              重置默认
+            </ElButton>
+          </header>
+
+          <div v-if="loadingTools" class="center-state">
+            <Loader2 :size="22" class="spin" />
+          </div>
+
+          <template v-else>
+            <div class="tool-summary-grid">
+              <div class="tool-summary-item">
+                <span>启用工具</span>
+                <strong>{{ toolSummary.enabledCount }} / {{ toolSummary.totalCount }}</strong>
+              </div>
+              <div class="tool-summary-item">
+                <span>高危工具</span>
+                <strong>{{ toolSummary.highRiskCount }}</strong>
+              </div>
+              <div class="tool-summary-item">
+                <span>需要凭证</span>
+                <strong>{{ toolSummary.credentialsCount }}</strong>
+              </div>
+              <div class="tool-summary-item">
+                <span>执行环境</span>
+                <strong>{{ toolSummary.browserRequired ? '浏览器' : toolSummary.sandboxRequired ? '沙箱' : '基础' }}</strong>
+              </div>
+            </div>
+
+            <section class="settings-card tool-registration-card">
+              <div class="settings-card-title">
+                <strong>工具源注册</strong>
+                <ElButton type="primary" size="small" @click="openRegistrationDialog">
+                  <Plus :size="14" />
+                  新增
+                </ElButton>
+              </div>
+              <div class="tool-registration-list">
+                <article
+                  v-for="registration in toolRegistrations"
+                  :key="registration.registration_id"
+                  class="tool-registration-row"
+                >
+                  <div class="tool-registration-main">
+                    <div class="tool-row-heading">
+                      <strong>{{ registration.provider_label }}</strong>
+                      <code>{{ registration.provider_id }}</code>
+                    </div>
+                    <p>{{ registration.description || '未配置描述' }}</p>
+                    <div class="badge-row">
+                      <ElTag size="small" effect="plain">{{ sourceTypeLabel(registration.source_type) }}</ElTag>
+                      <ElTag size="small" effect="plain">{{ registration.executor_type }}</ElTag>
+                      <ElTag
+                        v-if="registrationToolCount(registration.registration_id) > 0"
+                        size="small"
+                        effect="plain"
+                      >
+                        {{ registrationToolCount(registration.registration_id) }} 工具
+                      </ElTag>
+                      <ElTag v-if="registration.builtin" size="small" effect="plain" type="info">内置</ElTag>
+                      <ElTag v-if="registration.requires_sandbox" size="small" effect="plain">沙箱</ElTag>
+                      <ElTag v-if="registration.requires_browser" size="small" effect="plain">浏览器</ElTag>
+                      <ElTag v-if="registration.requires_credentials" size="small" effect="plain">凭证</ElTag>
+                    </div>
+                  </div>
+                  <div class="tool-registration-controls">
+                    <ElButton
+                      v-if="registration.editable && registration.source_type === 'api'"
+                      text
+                      size="small"
+                      @click="openTestRegistrationDialog(registration)"
+                    >
+                      <Play :size="14" />
+                    </ElButton>
+                    <ElButton
+                      v-if="registration.editable"
+                      text
+                      size="small"
+                      @click="openEditRegistrationDialog(registration)"
+                    >
+                      <Pencil :size="14" />
+                    </ElButton>
+                    <ElButton
+                      v-if="registration.editable"
+                      text
+                      type="danger"
+                      size="small"
+                      @click="deleteToolRegistration(registration.registration_id)"
+                    >
+                      <Trash :size="14" />
+                    </ElButton>
+                    <ElSwitch
+                      :model-value="registration.enabled"
+                      :disabled="!registration.editable"
+                      inline-prompt
+                      active-text="开"
+                      inactive-text="关"
+                      @change="handleToolRegistrationSwitch(registration.registration_id, $event)"
+                    />
+                  </div>
+                </article>
+              </div>
+            </section>
+
+            <section class="settings-card tool-policy-card">
+              <div class="settings-card-title">
+                <strong>运行时策略</strong>
+              </div>
+              <div class="tool-policy-grid">
+                <label v-for="option in executorOptions" :key="option.value" class="tool-policy-switch">
+                  <span>{{ option.label }}</span>
+                  <ElSwitch
+                    :model-value="runtimePolicy.allowed_executor_types.includes(option.value)"
+                    inline-prompt
+                    active-text="开"
+                    inactive-text="关"
+                    @change="handleExecutorSwitch(option.value, $event)"
+                  />
+                </label>
+                <label class="tool-policy-number">
+                  <span>最大工具迭代</span>
+                  <ElInputNumber v-model="runtimePolicy.max_tool_iterations" :min="1" :max="1000" :step="1" controls-position="right" />
+                </label>
+              </div>
+            </section>
+
+            <section v-for="group in groupedTools" :key="group.key" class="tool-group">
+              <h4>{{ group.title }}</h4>
+              <article v-for="tool in group.tools" :key="tool.tool_id" class="tool-row">
+                <div class="tool-row-main">
+                  <div class="tool-row-heading">
+                    <strong>{{ tool.label }}</strong>
+                    <code>{{ tool.function_name }}</code>
+                  </div>
+                  <p>{{ tool.description }}</p>
+                  <div class="badge-row">
+                    <ElTag size="small" effect="plain" :type="riskTagType(tool.risk_level)">{{ riskLabel(tool.risk_level) }}</ElTag>
+                    <ElTag size="small" effect="plain">{{ tool.executor_type }}</ElTag>
+                    <ElTag v-if="tool.requires_sandbox" size="small" effect="plain">沙箱</ElTag>
+                    <ElTag v-if="tool.requires_browser" size="small" effect="plain">浏览器</ElTag>
+                  </div>
+                </div>
+                <div class="tool-row-controls">
+                  <ElSwitch
+                    :model-value="tool.enabled"
+                    inline-prompt
+                    active-text="开"
+                    inactive-text="关"
+                    @change="handleToolSwitch(tool.tool_id, $event)"
+                  />
+                </div>
+              </article>
+            </section>
+
+            <section class="settings-card tool-preflight-card">
+              <div class="settings-card-title">
+                <strong>Preflight</strong>
+              </div>
+              <div class="tool-preflight-input">
+                <ElInput
+                  v-model="preflightMessage"
+                  type="textarea"
+                  resize="vertical"
+                  :autosize="{ minRows: 3, maxRows: 6 }"
+                  placeholder="输入任务描述"
+                />
+                <ElButton type="primary" :loading="checkingPreflight" @click="runPreflight">
+                  <ClipboardCheck :size="14" />
+                  检测
+                </ElButton>
+              </div>
+              <div v-if="preflightResult" class="tool-preflight-result">
+                <ElTag size="small" effect="light" :type="preflightStatusType(preflightResult.status)">
+                  {{ preflightStatusLabel(preflightResult.status) }}
+                </ElTag>
+                <div class="tool-preflight-checks">
+                  <p v-for="check in visiblePreflightChecks" :key="check.rule_id" :class="{ failed: !check.passed }">
+                    {{ check.user_message }}
+                  </p>
+                </div>
+              </div>
+            </section>
+          </template>
+        </section>
+
         <section v-else-if="activeTab === 'a2a'" class="settings-list">
           <header>
             <div>
@@ -392,6 +1070,155 @@ async function addA2A() {
       <ElButton v-if="showSave" type="primary" :loading="saving" @click="handleSave">
         保存
       </ElButton>
+    </template>
+  </ElDialog>
+
+  <ElDialog
+    v-model="registrationDialogOpen"
+    width="min(720px, calc(100vw - 24px))"
+    append-to-body
+    align-center
+    class="settings-sub-dialog"
+    :show-close="!addingRegistration"
+    :close-on-click-modal="!addingRegistration"
+    :close-on-press-escape="!addingRegistration"
+    :title="registrationDialogTitle"
+  >
+    <ElForm label-position="top" class="settings-form compact">
+      <ElFormItem label="工具源 ID">
+        <ElInput
+          v-model="registrationForm.provider_id"
+          placeholder="api.weather"
+          clearable
+          :disabled="Boolean(editingRegistrationId)"
+        />
+      </ElFormItem>
+      <ElFormItem label="工具源名称">
+        <ElInput v-model="registrationForm.provider_label" placeholder="天气 API" clearable />
+      </ElFormItem>
+      <ElFormItem label="来源类型">
+        <ElSelect
+          :model-value="registrationForm.source_type"
+          @change="handleRegistrationSourceChange"
+        >
+          <ElOption
+            v-for="option in sourceTypeOptions"
+            :key="option.value"
+            :label="option.label"
+            :value="option.value"
+          />
+        </ElSelect>
+      </ElFormItem>
+      <template v-if="registrationForm.source_type === 'api'">
+        <ElFormItem label="Base URL">
+          <ElInput v-model="registrationForm.base_url" placeholder="https://api.example.com" clearable />
+        </ElFormItem>
+        <ElFormItem label="超时时间">
+          <ElInputNumber v-model="registrationForm.timeout" :min="1" :max="600" :step="1" controls-position="right" />
+        </ElFormItem>
+        <ElFormItem label="Headers JSON">
+          <ElInput
+            v-model="registrationForm.headers_text"
+            type="textarea"
+            resize="vertical"
+            :autosize="{ minRows: 2, maxRows: 5 }"
+            placeholder='{"Authorization": "env:MY_API_TOKEN"}'
+          />
+        </ElFormItem>
+        <ElFormItem label="OpenAPI Schema">
+          <ElInput
+            v-model="registrationForm.openapi_schema_text"
+            type="textarea"
+            resize="vertical"
+            :autosize="{ minRows: 8, maxRows: 16 }"
+            placeholder='{"openapi":"3.0.0","paths":{}}'
+          />
+        </ElFormItem>
+      </template>
+      <ElFormItem label="分组">
+        <ElInput v-model="registrationForm.group" placeholder="custom" clearable />
+      </ElFormItem>
+      <ElFormItem label="分类">
+        <ElInput v-model="registrationForm.category" placeholder="自定义" clearable />
+      </ElFormItem>
+      <ElFormItem label="描述">
+        <ElInput
+          v-model="registrationForm.description"
+          type="textarea"
+          resize="vertical"
+          :autosize="{ minRows: 2, maxRows: 4 }"
+          placeholder="描述这个工具源提供的能力"
+        />
+      </ElFormItem>
+      <div class="tool-registration-flags">
+        <ElCheckbox v-model="registrationForm.requires_sandbox">需要沙箱</ElCheckbox>
+        <ElCheckbox v-model="registrationForm.requires_browser">需要浏览器</ElCheckbox>
+        <ElCheckbox v-model="registrationForm.requires_credentials">需要凭证</ElCheckbox>
+        <ElCheckbox
+          v-if="registrationForm.source_type === 'api'"
+          v-model="registrationForm.allow_private_network"
+        >
+          允许内网地址
+        </ElCheckbox>
+      </div>
+    </ElForm>
+    <template #footer>
+      <ElButton :disabled="addingRegistration" @click="registrationDialogOpen = false">取消</ElButton>
+      <ElButton type="primary" :loading="addingRegistration" @click="addToolRegistration">
+        {{ registrationSubmitText }}
+      </ElButton>
+    </template>
+  </ElDialog>
+
+  <ElDialog
+    v-model="testDialogOpen"
+    width="min(680px, calc(100vw - 24px))"
+    append-to-body
+    align-center
+    class="settings-sub-dialog"
+    :show-close="!testingTool"
+    :close-on-click-modal="!testingTool"
+    :close-on-press-escape="!testingTool"
+    title="测试工具源"
+  >
+    <ElForm label-position="top" class="settings-form compact">
+      <ElFormItem label="工具函数">
+        <ElSelect v-model="testingToolName" clearable placeholder="只解析 OpenAPI Schema">
+          <ElOption
+            v-for="tool in testingTools"
+            :key="tool.function_name"
+            :label="`${tool.label} (${tool.function_name})`"
+            :value="tool.function_name"
+          />
+        </ElSelect>
+      </ElFormItem>
+      <ElFormItem v-if="testingToolName" label="测试参数 JSON">
+        <ElInput
+          v-model="testArgumentsText"
+          type="textarea"
+          resize="vertical"
+          :autosize="{ minRows: 4, maxRows: 10 }"
+          placeholder='{"city": "Hong Kong"}'
+        />
+      </ElFormItem>
+      <div v-if="testResult" class="tool-test-result">
+        <div class="badge-row">
+          <ElTag size="small" effect="plain">{{ testResult.tools.length }} 工具</ElTag>
+          <ElTag
+            v-if="testResult.result"
+            size="small"
+            effect="plain"
+            :type="testResult.result.success === false ? 'danger' : 'success'"
+          >
+            {{ testResult.result.success === false ? '失败' : '成功' }}
+          </ElTag>
+        </div>
+        <pre>{{ JSON.stringify(testResult.result ?? testResult.tools.map((tool) => tool.function_name), null, 2) }}</pre>
+      </div>
+    </ElForm>
+    <template #footer>
+      <ElButton :disabled="testingTool" @click="testDialogOpen = false">取消</ElButton>
+      <ElButton type="primary" :loading="testingTool" @click="runToolRegistrationTest">测试</ElButton>
     </template>
   </ElDialog>
 

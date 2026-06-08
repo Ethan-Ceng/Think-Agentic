@@ -41,6 +41,7 @@ def get_agent_service(
         agent_config=app_config.agent_config,
         mcp_config=app_config.mcp_config,
         a2a_config=app_config.a2a_config,
+        tool_config=app_config.tool_config,
         sandbox_cls=sandbox_cls,
         task_cls=task_cls,
         json_parser=get_json_parser(),

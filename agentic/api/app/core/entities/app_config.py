@@ -11,6 +11,8 @@ from typing import Dict, Optional, List, Any
 
 from pydantic import BaseModel, HttpUrl, Field, ConfigDict, model_validator
 
+from app.core.entities.tool_config import ToolConfig
+
 
 class LLMConfig(BaseModel):
     """LLM提供商配置"""
@@ -96,6 +98,7 @@ class AppConfig(BaseModel):
     agent_config: AgentConfig  # Agent通用配置
     mcp_config: MCPConfig  # MCP服务配置
     a2a_config: A2AConfig  # A2A服务配置
+    tool_config: ToolConfig = Field(default_factory=ToolConfig)  # 工具管理配置
 
     # Pydantic配置，允许传递额外的字段初始化
     model_config = ConfigDict(extra="allow")

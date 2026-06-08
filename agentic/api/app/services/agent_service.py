@@ -19,6 +19,7 @@ from app.core.sandbox.base import Sandbox
 from app.core.search.base import SearchEngine
 from app.core.task.base import Task
 from app.core.entities.app_config import AgentConfig, MCPConfig, A2AConfig
+from app.core.entities.tool_config import ToolConfig
 from app.core.entities.event import BaseEvent, ErrorEvent, MessageEvent, Event, DoneEvent, WaitEvent
 from app.core.entities.session import Session, SessionStatus
 from app.repositories.uow import IUnitOfWork
@@ -38,6 +39,7 @@ class AgentService:
             agent_config: AgentConfig,
             mcp_config: MCPConfig,
             a2a_config: A2AConfig,
+            tool_config: ToolConfig,
             sandbox_cls: Type[Sandbox],
             task_cls: Type[Task],
             json_parser: JSONParser,
@@ -51,6 +53,7 @@ class AgentService:
         self._agent_config = agent_config
         self._mcp_config = mcp_config
         self._a2a_config = a2a_config
+        self._tool_config = tool_config
         self._sandbox_cls = sandbox_cls
         self._task_cls = task_cls
         self._json_parser = json_parser
@@ -97,6 +100,7 @@ class AgentService:
             agent_config=self._agent_config,
             mcp_config=self._mcp_config,
             a2a_config=self._a2a_config,
+            tool_config=self._tool_config,
             session_id=session.id,
             file_storage=self._file_storage,
             json_parser=self._json_parser,

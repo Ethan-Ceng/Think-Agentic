@@ -14,6 +14,7 @@ from app.core.llm.base import LLM
 from app.core.sandbox.base import Sandbox
 from app.core.search.base import SearchEngine
 from app.core.entities.app_config import AgentConfig
+from app.core.entities.tool_config import ToolConfig
 from app.core.entities.event import BaseEvent, PlanEvent, PlanEventStatus, TitleEvent, MessageEvent
 from app.core.entities.event import DoneEvent
 from app.core.entities.message import Message
@@ -22,12 +23,8 @@ from app.core.entities.session import SessionStatus
 from app.core.agent.planner import PlannerAgent
 from app.core.agent.react import ReActAgent
 from app.core.tools.a2a import A2ATool
-from app.core.tools.browser import BrowserTool
-from app.core.tools.file import FileTool
+from app.core.tools.factory import ToolFactory
 from app.core.tools.mcp import MCPTool
-from app.core.tools.message import MessageTool
-from app.core.tools.search import SearchTool
-from app.core.tools.shell import ShellTool
 from .base import BaseFlow, FlowStatus
 from ...repositories.uow import IUnitOfWork
 
@@ -42,6 +39,7 @@ class PlannerReActFlow(BaseFlow):
             uow_factory: Callable[[], IUnitOfWork],  # uow模块
             llm: LLM,  # 大语言模型
             agent_config: AgentConfig,  # 智能体配置
+            tool_config: ToolConfig,  # 工具管理配置
             session_id: str,  # 会话id
             json_parser: JSONParser,  # JSON解析器
             browser: Browser,  # 浏览器
@@ -59,15 +57,16 @@ class PlannerReActFlow(BaseFlow):
         self.plan: Optional[Plan] = None
 
         # 2.初始化Agent预设工具列表
-        tools = [
-            FileTool(sandbox=sandbox),
-            ShellTool(sandbox=sandbox),
-            BrowserTool(browser=browser),
-            SearchTool(search_engine=search_engine),
-            MessageTool(),
-            mcp_tool,
-            a2a_tool,
-        ]
+        tools = ToolFactory(tool_config=tool_config).build(
+            sandbox=sandbox,
+            browser=browser,
+            search_engine=search_engine,
+            mcp_tool=mcp_tool,
+            a2a_tool=a2a_tool,
+        )
+        react_agent_config = agent_config.model_copy(
+            update={"max_iterations": tool_config.runtime_policy.max_tool_iterations}
+        )
 
         # 3.创建规划Agent
         self.planner = PlannerAgent(
@@ -84,7 +83,7 @@ class PlannerReActFlow(BaseFlow):
         self.react = ReActAgent(
             uow_factory=uow_factory,
             session_id=session_id,
-            agent_config=agent_config,
+            agent_config=react_agent_config,
             llm=llm,
             json_parser=json_parser,
             tools=tools,

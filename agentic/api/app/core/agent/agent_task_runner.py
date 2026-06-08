@@ -22,6 +22,7 @@ from app.core.sandbox.base import Sandbox
 from app.core.search.base import SearchEngine
 from app.core.task.base import TaskRunner, Task
 from app.core.entities.app_config import AgentConfig, MCPConfig, A2AConfig
+from app.core.entities.tool_config import ToolConfig
 from app.core.entities.event import ErrorEvent, Event, MessageEvent, BaseEvent, ToolEvent, ToolEventStatus, \
     BrowserToolContent, SearchToolContent, ShellToolContent, FileToolContent, MCPToolContent, A2AToolContent, \
     TitleEvent, WaitEvent, DoneEvent
@@ -49,6 +50,7 @@ class AgentTaskRunner(TaskRunner):
             agent_config: AgentConfig,  # 智能体配置
             mcp_config: MCPConfig,  # mcp配置
             a2a_config: A2AConfig,  # a2a配置
+            tool_config: ToolConfig,  # 工具管理配置
             session_id: str,  # 会话id
             file_storage: FileStorage,  # 文件存储桶
             json_parser: JSONParser,  # json解析器
@@ -71,6 +73,7 @@ class AgentTaskRunner(TaskRunner):
             uow_factory=uow_factory,
             llm=llm,
             agent_config=agent_config,
+            tool_config=tool_config,
             session_id=session_id,
             json_parser=json_parser,
             browser=browser,

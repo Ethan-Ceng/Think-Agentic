@@ -20,6 +20,7 @@ from app.schemas.app_config import (
     A2AServerConfig,
 )
 from app.core.config import get_settings
+from app.schemas.tool_config import ToolConfig
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +137,18 @@ class AppConfigService:
                     s.enabled = enabled
                     break
             self._save(cfg)
+
+    # ---------- Tools ----------
+    async def get_tool_config(self) -> ToolConfig:
+        async with self._lock:
+            return self._load().tool_config
+
+    async def update_tool_config(self, new_config: ToolConfig) -> ToolConfig:
+        async with self._lock:
+            cfg = self._load()
+            cfg.tool_config = new_config
+            self._save(cfg)
+            return cfg.tool_config
 
 
 _app_config_service: Optional[AppConfigService] = None
