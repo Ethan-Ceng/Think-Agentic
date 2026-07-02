@@ -9,19 +9,23 @@ mooc-manus/
 ├── api/              # 后端 API 服务（FastAPI）
 ├── web/              # 前端服务（Vue 3 + Vite）
 ├── sandbox/          # 沙箱服务（Ubuntu + Chrome + VNC）
-├── nginx/            # Nginx 网关配置
-│   ├── nginx.conf
-│   └── conf.d/
-│       └── default.conf
-├── docker-compose.yml
-├── .env              # 环境变量配置（需自行创建）
+├── docker/           # Docker 部署文件
+│   ├── docker-compose.yml
+│   ├── docker-compose.dev.yml
+│   ├── init.sql
+│   └── nginx/
+│       ├── nginx.conf
+│       └── conf.d/
+│           └── default.conf
+├── .env              # 环境变量配置
 └── README.md
 ```
 
 ## 快速部署
 ```shell
 
-docker compose up -d --build
+cd docker
+docker compose --env-file ../.env -f docker-compose.yml up -d --build
 
 
 ```
@@ -62,7 +66,8 @@ docker compose up -d --build
 3. **启动所有服务**
 
    ```bash
-   docker compose up -d --build
+   cd docker
+   docker compose --env-file ../.env -f docker-compose.yml up -d --build
    ```
 
 4. **访问系统**
@@ -109,39 +114,40 @@ docker compose up -d --build
 
 ```bash
 # 启动所有服务（后台运行）
-docker compose up -d --build
+cd docker
+docker compose --env-file ../.env -f docker-compose.yml up -d --build
 
 # 查看所有服务状态
-docker compose ps
+docker compose --env-file ../.env -f docker-compose.yml ps
 
 # 查看服务日志
-docker compose logs -f              # 所有服务
-docker compose logs -f manus-api    # 仅 API 服务
-docker compose logs -f manus-web    # 仅 Web 前端服务
+docker compose --env-file ../.env -f docker-compose.yml logs -f              # 所有服务
+docker compose --env-file ../.env -f docker-compose.yml logs -f manus-api    # 仅 API 服务
+docker compose --env-file ../.env -f docker-compose.yml logs -f manus-web    # 仅 Web 前端服务
 
 # 重启单个服务
-docker compose restart manus-api
+docker compose --env-file ../.env -f docker-compose.yml restart manus-api
 
 # 停止所有服务
-docker compose down
+docker compose --env-file ../.env -f docker-compose.yml down
 
 # 停止并清除数据卷（谨慎操作）
-docker compose down -v
+docker compose --env-file ../.env -f docker-compose.yml down -v
 ```
 
 ### 启用 HTTPS
 
-1. 将 SSL 证书放入 `nginx/ssl/` 目录：
+1. 将 SSL 证书放入 `docker/nginx/ssl/` 目录：
    - `fullchain.pem`（证书链）
    - `privkey.pem`（私钥）
 
-2. 修改 `nginx/conf.d/default.conf`，取消 SSL server 块注释
+2. 修改 `docker/nginx/conf.d/default.conf`，取消 SSL server 块注释
 
-3. 修改 `docker-compose.yml`，取消 443 端口映射注释
+3. 修改 `docker/docker-compose.yml`，取消 443 端口映射注释
 
 4. 重启 Nginx：
    ```bash
-   docker compose restart manus-nginx
+   docker compose --env-file ../.env -f docker-compose.yml restart manus-nginx
    ```
 
 ## 本地开发
@@ -150,13 +156,14 @@ docker compose down -v
 
 ```bash
 # 只启动本地开发需要的 Redis/PostgreSQL，并暴露到 127.0.0.1
-docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d manus-redis manus-postgres
+cd docker
+docker compose --env-file ../.env -f docker-compose.yml -f docker-compose.dev.yml up -d manus-redis manus-postgres
 
 # 首次需要沙箱镜像时构建一次；API 动态创建沙箱容器时会使用该镜像
-docker compose build manus-sandbox
+docker compose --env-file ../.env -f docker-compose.yml build manus-sandbox
 
 # API
-cd api
+cd ../api
 cp .env.example .env
 uv run alembic upgrade head
 uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload

@@ -32,6 +32,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-manus}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/10-init.sql:ro
     networks:
       - manus-network
     healthcheck:
@@ -44,7 +45,7 @@ services:
 
   manus-sandbox:
     build:
-      context: ./sandbox
+      context: ../sandbox
       dockerfile: Dockerfile
       args:
         APT_MIRROR: ${APT_MIRROR:-http://mirrors.tuna.tsinghua.edu.cn/ubuntu}
@@ -59,15 +60,17 @@ services:
 
   manus-api:
     build:
-      context: ./api
+      context: ../api
       dockerfile: Dockerfile
     container_name: manus-api
     restart: unless-stopped
     env_file:
-      - .env
+      - ../.env
+    environment:
+      RUN_MIGRATIONS_ON_STARTUP: ${RUN_MIGRATIONS_ON_STARTUP:-true}
     # 如需动态创建沙箱容器，取消以下注释以挂载 Docker Socket
     volumes:
-      - ./api:/app
+      - ../api:/app
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       manus-redis:
@@ -87,7 +90,7 @@ services:
 
   manus-web:
     build:
-      context: ./web
+      context: ../web
       dockerfile: Dockerfile
       args:
         VITE_API_BASE_URL: /api
@@ -111,7 +114,11 @@ services:
     container_name: manus-nginx
     restart: unless-stopped
     ports:
-      - "${NGINX_PORT:-8088}:80"
+      - target: 80
+        published: "${NGINX_PORT:-8088}"
+        protocol: tcp
+        mode: host
+        host_ip: 0.0.0.0
       # 如需启用 HTTPS，取消以下注释
       # - "443:443"
     volumes:
