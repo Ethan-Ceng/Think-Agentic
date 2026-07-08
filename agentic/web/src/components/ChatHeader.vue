@@ -2,6 +2,7 @@
 import { RouterLink } from 'vue-router'
 import { PanelLeftOpen } from 'lucide-vue-next'
 import SettingsButton from '@/components/SettingsButton.vue'
+import UserMenu from '@/components/UserMenu.vue'
 import { useSidebar } from '@/composables/useSidebar'
 
 const sidebar = useSidebar()
@@ -22,6 +23,9 @@ const sidebar = useSidebar()
       <RouterLink class="brand-mark" to="/" aria-label="MoocManus 首页">MoocManus</RouterLink>
     </div>
 
-    <SettingsButton />
+    <div class="header-actions">
+      <SettingsButton />
+      <UserMenu />
+    </div>
   </header>
 </template>

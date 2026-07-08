@@ -1,16 +1,20 @@
 <script setup lang="ts">
-import { defineAsyncComponent, onBeforeUnmount, onMounted, ref } from 'vue'
-import { RouterView } from 'vue-router'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { RouterView, useRoute } from 'vue-router'
 import LeftPanel from '@/components/LeftPanel.vue'
 import { useSettingsModal } from '@/composables/useSettingsModal'
 import { provideSidebar } from '@/composables/useSidebar'
+import { useAuthStore } from '@/stores/auth'
 import { useSessionsStore } from '@/stores/sessions'
 
 const sidebarOpen = ref(true)
+const route = useRoute()
+const authStore = useAuthStore()
 const sessionsStore = useSessionsStore()
 const settingsModal = useSettingsModal()
 const settingsOpen = settingsModal.open
 const SettingsModal = defineAsyncComponent(() => import('@/components/SettingsModal.vue'))
+const authRoute = computed(() => route.name === 'auth')
 
 provideSidebar({
   open: sidebarOpen,
@@ -25,20 +29,35 @@ provideSidebar({
   },
 })
 
-onMounted(() => {
+onMounted(async () => {
   if (window.innerWidth <= 900) {
     sidebarOpen.value = false
   }
-  sessionsStore.start()
+  await authStore.initialize()
+  if (authStore.isAuthenticated) {
+    sessionsStore.start()
+  }
 })
 
 onBeforeUnmount(() => {
   sessionsStore.stop()
 })
+
+watch(
+  () => authStore.isAuthenticated,
+  (authenticated) => {
+    if (authenticated) {
+      sessionsStore.start()
+    } else {
+      sessionsStore.stop()
+    }
+  },
+)
 </script>
 
 <template>
-  <div class="app-shell" :class="{ 'sidebar-collapsed': !sidebarOpen }">
+  <RouterView v-if="authRoute" />
+  <div v-else class="app-shell" :class="{ 'sidebar-collapsed': !sidebarOpen }">
     <LeftPanel />
     <button
       v-if="sidebarOpen"

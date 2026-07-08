@@ -4,6 +4,34 @@ export type ApiResponse<T = unknown> = {
   data: T | null
 }
 
+export type UserInfo = {
+  id: string
+  email: string
+  name: string
+  avatar: string
+  status: string
+  last_login_at?: string | null
+  created_at?: string
+}
+
+export type AuthData = {
+  access_token: string
+  token_type: 'bearer'
+  user: UserInfo
+}
+
+export type LoginParams = {
+  email: string
+  password: string
+}
+
+export type RegisterParams = {
+  email: string
+  password: string
+  name?: string
+  avatar?: string
+}
+
 export type SessionStatus = 'pending' | 'running' | 'waiting' | 'completed'
 export type ExecutionStatus = 'pending' | 'running' | 'completed' | 'failed'
 export type ToolEventStatus = 'calling' | 'called'

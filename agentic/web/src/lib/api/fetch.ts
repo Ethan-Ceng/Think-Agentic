@@ -1,4 +1,5 @@
 import type { ApiResponse } from './types'
+import { getAuthToken } from './auth-token'
 
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api'
 
@@ -102,6 +103,10 @@ export async function request<T = unknown>(
   const mergedHeaders: HeadersInit = {
     'Content-Type': 'application/json',
     ...headers,
+  }
+  const token = getAuthToken()
+  if (token) {
+    ;(mergedHeaders as Record<string, string>).Authorization = `Bearer ${token}`
   }
 
   if (fetchOptions.body instanceof FormData) {
@@ -223,6 +228,10 @@ export async function createSSEStream(
     'Content-Type': 'application/json',
     Accept: 'text/event-stream',
     ...headers,
+  }
+  const token = getAuthToken()
+  if (token) {
+    ;(mergedHeaders as Record<string, string>).Authorization = `Bearer ${token}`
   }
 
   const controller = new AbortController()

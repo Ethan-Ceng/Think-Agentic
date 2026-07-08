@@ -102,6 +102,7 @@ class AgentService:
             a2a_config=self._a2a_config,
             tool_config=self._tool_config,
             session_id=session.id,
+            user_id=session.user_id,
             file_storage=self._file_storage,
             json_parser=self._json_parser,
             browser=browser,
@@ -134,6 +135,7 @@ class AgentService:
     async def chat(
             self,
             session_id: str,
+            user_id: str,
             message: Optional[str] = None,
             attachments: Optional[List[str]] = None,
             latest_event_id: Optional[str] = None,
@@ -144,7 +146,7 @@ class AgentService:
         try:
             # 1.检查会话是否存在
             async with self._uow:
-                session = await self._uow.session.get_by_id(session_id)
+                session = await self._uow.session.get_by_id_for_user(session_id, user_id)
             if not session:
                 logger.error(f"尝试与不存在的任务会话[{session_id}]对话")
                 raise NotFoundError("任务会话不存在, 请核实后重试")
@@ -172,7 +174,7 @@ class AgentService:
 
                 # bugfix:从文件数据库中查询数据并更新attachments实际内容, 并返回人类消息事件
                 async with self._uow:
-                    db_attachments = [await self._uow.file.get_by_id(id) for id in attachments]
+                    db_attachments = [await self._uow.file.get_by_id_for_user(id, user_id) for id in attachments]
 
                 # 7.创建一个人类消息事件
                 message_event = MessageEvent(
@@ -253,11 +255,11 @@ class AgentService:
                 # 事件循环已关闭（如应用正在关闭），无法创建后台任务
                 logger.warning(f"会话[{session_id}]无法创建后台任务更新未读消息计数")
 
-    async def stop_session(self, session_id: str) -> None:
+    async def stop_session(self, session_id: str, user_id: str) -> None:
         """根据传递的会话id停止指定会话"""
         # 1.查找会话是否存在
         async with self._uow:
-            session = await self._uow.session.get_by_id(session_id)
+            session = await self._uow.session.get_by_id_for_user(session_id, user_id)
         if not session:
             logger.error(f"尝试停止不存在的会话[{session_id}]")
             raise NotFoundError("任务会话不存在, 请核实后重试")

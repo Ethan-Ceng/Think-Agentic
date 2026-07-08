@@ -53,6 +53,17 @@ class DBSessionRepository(SessionRepository):
         # 2.将数据循环遍历成Session
         return [record.to_domain() for record in records]
 
+    async def get_all_by_user(self, user_id: str) -> List[Session]:
+        """获取指定用户的会话列表"""
+        stmt = (
+            select(SessionModel)
+            .where(SessionModel.user_id == user_id)
+            .order_by(SessionModel.latest_message_at.desc())
+        )
+        result = await self.db_session.execute(stmt)
+        records = result.scalars().all()
+        return [record.to_domain() for record in records]
+
     async def get_by_id(self, session_id: str) -> Optional[Session]:
         """根据id查询会话"""
         # 1.根据id查询会话是否存在
@@ -63,12 +74,30 @@ class DBSessionRepository(SessionRepository):
         # 2.判断会话记录是否存在并返回
         return record.to_domain() if record is not None else None
 
+    async def get_by_id_for_user(self, session_id: str, user_id: str) -> Optional[Session]:
+        """根据id和用户查询会话"""
+        stmt = select(SessionModel).where(
+            SessionModel.id == session_id,
+            SessionModel.user_id == user_id,
+        )
+        result = await self.db_session.execute(stmt)
+        record = result.scalar_one_or_none()
+        return record.to_domain() if record is not None else None
+
     async def delete_by_id(self, session_id: str) -> None:
         """根据传递的id删除会话"""
         # 1.构建删除语句
         stmt = delete(SessionModel).where(SessionModel.id == session_id)
 
         # 2.执行sql无需检查是否删除
+        await self.db_session.execute(stmt)
+
+    async def delete_by_id_for_user(self, session_id: str, user_id: str) -> None:
+        """根据传递的id和用户删除会话"""
+        stmt = delete(SessionModel).where(
+            SessionModel.id == session_id,
+            SessionModel.user_id == user_id,
+        )
         await self.db_session.execute(stmt)
 
     async def update_title(self, session_id: str, title: str) -> None:

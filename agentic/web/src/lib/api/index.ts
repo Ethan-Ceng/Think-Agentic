@@ -1,5 +1,6 @@
 export * from './types'
 export * from './fetch'
+export * from './auth'
 export * from './session'
 export * from './file'
 export * from './config'

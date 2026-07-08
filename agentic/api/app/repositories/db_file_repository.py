@@ -47,3 +47,13 @@ class DBFileRepository(FileRepository):
 
         # 2.判断文件记录是否存在返回不同的值
         return record.to_domain() if record is not None else None
+
+    async def get_by_id_for_user(self, file_id: str, user_id: str) -> Optional[File]:
+        """根据传递的文件id和用户id获取文件信息"""
+        stmt = select(FileModel).where(
+            FileModel.id == file_id,
+            FileModel.user_id == user_id,
+        )
+        result = await self.db_session.execute(stmt)
+        record = result.scalar_one_or_none()
+        return record.to_domain() if record is not None else None

@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Loader2, WifiOff, X } from 'lucide-vue-next'
 import VNCViewer from '@/components/VNCViewer.vue'
 import { API_BASE_URL } from '@/lib/api/fetch'
+import { getAuthToken } from '@/lib/api/auth-token'
 import type { VNCStatus } from '@/types/vnc'
 
 const props = defineProps<{
@@ -33,7 +34,8 @@ const vncUrl = computed(() => {
   }
 
   const protocol = isHttps ? 'wss:' : 'ws:'
-  return `${protocol}//${host}${pathname}/sessions/${props.sessionId}/vnc`
+  const token = encodeURIComponent(getAuthToken())
+  return `${protocol}//${host}${pathname}/sessions/${props.sessionId}/vnc?token=${token}`
 })
 
 const hasError = computed(() => status.value === 'error' || status.value === 'disconnected')

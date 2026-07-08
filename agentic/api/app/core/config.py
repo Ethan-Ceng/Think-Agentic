@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     app_config_filepath: str = "config.yaml"
     run_migrations_on_startup: bool = False
+    auth_secret_key: str = "change-me-in-production"
+    auth_access_token_ttl_seconds: int = 60 * 60 * 24 * 7
+    auth_registration_enabled: bool = True
 
     sqlalchemy_database_uri: str = "postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/manus"
 

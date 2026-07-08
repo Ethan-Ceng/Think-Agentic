@@ -14,8 +14,13 @@ from app.dependencies.infrastructure import (
 from app.dependencies.uow import get_uow
 from app.extensions.storage import Storage, get_storage
 from app.services.agent_service import AgentService
+from app.services.auth_service import AuthService
 from app.services.file_service import FileService
 from app.services.session_service import SessionService
+
+
+def get_auth_service() -> AuthService:
+    return AuthService(uow_factory=get_uow)
 
 
 def get_session_service() -> SessionService:

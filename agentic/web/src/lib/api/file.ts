@@ -1,4 +1,5 @@
 import { API_BASE_URL, get, post } from './fetch'
+import { getAuthToken } from './auth-token'
 import type { FileInfo, FileUploadParams } from './types'
 
 export const fileApi = {
@@ -18,7 +19,10 @@ export const fileApi = {
   },
 
   downloadFile: async (fileId: string): Promise<Blob> => {
-    const response = await fetch(`${API_BASE_URL}/files/${fileId}/download`)
+    const token = getAuthToken()
+    const response = await fetch(`${API_BASE_URL}/files/${fileId}/download`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
 
     if (!response.ok) {
       throw new Error(`下载失败: ${response.statusText}`)

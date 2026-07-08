@@ -25,12 +25,24 @@ class SessionRepository(Protocol):
         """获取所有会话列表信息"""
         ...
 
+    async def get_all_by_user(self, user_id: str) -> List[Session]:
+        """获取指定用户的会话列表信息"""
+        ...
+
     async def get_by_id(self, session_id: str) -> Optional[Session]:
         """根据传递的会话id查询会话"""
         ...
 
+    async def get_by_id_for_user(self, session_id: str, user_id: str) -> Optional[Session]:
+        """根据会话id和用户id查询会话"""
+        ...
+
     async def delete_by_id(self, session_id: str) -> None:
         """根据传递的会话id删除会话"""
+        ...
+
+    async def delete_by_id_for_user(self, session_id: str, user_id: str) -> None:
+        """根据传递的会话id和用户id删除会话"""
         ...
 
     async def update_title(self, session_id: str, title: str) -> None:

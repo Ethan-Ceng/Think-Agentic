@@ -52,6 +52,7 @@ class AgentTaskRunner(TaskRunner):
             a2a_config: A2AConfig,  # a2a配置
             tool_config: ToolConfig,  # 工具管理配置
             session_id: str,  # 会话id
+            user_id: str,  # 用户id
             file_storage: FileStorage,  # 文件存储桶
             json_parser: JSONParser,  # json解析器
             browser: Browser,  # 浏览器
@@ -62,6 +63,7 @@ class AgentTaskRunner(TaskRunner):
         self._uow_factory = uow_factory
         self._uow = uow_factory()
         self._session_id = session_id
+        self._user_id = user_id
         self._sandbox = sandbox
         self._mcp_config = mcp_config
         self._mcp_tool = MCPTool()
@@ -112,7 +114,7 @@ class AgentTaskRunner(TaskRunner):
         """根据文件id将文件同步到沙箱中"""
         try:
             # 1.调用文件存储下载文件信息
-            file_data, file = await self._file_storage.download_file(file_id)
+            file_data, file = await self._file_storage.download_file(file_id, user_id=self._user_id)
 
             # 2.组装沙箱文件路径
             filepath = f"/home/ubuntu/upload/{file.filename}"
@@ -198,7 +200,7 @@ class AgentTaskRunner(TaskRunner):
             )
 
             # 5.上传文件到文件存储桶
-            file = await self._file_storage.upload_file(upload_file)
+            file = await self._file_storage.upload_file(upload_file, user_id=self._user_id)
             file.filepath = filepath
 
             # 6.往会话中新增一个文件信息
@@ -239,7 +241,7 @@ class AgentTaskRunner(TaskRunner):
             filename=f"{str(uuid.uuid4())}.png",
             # bugfix:添加size尺寸
             size=self._get_stream_size(io.BytesIO(screenshot)),
-        ))
+        ), user_id=self._user_id)
 
         # 3.获取setting并组装完整URL
         settings = get_settings()

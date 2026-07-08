@@ -10,7 +10,8 @@ from typing import Optional
 from fastapi import APIRouter, Depends, UploadFile, File, Form
 from starlette.responses import StreamingResponse
 
-from app.dependencies import get_file_service
+from app.dependencies import get_current_user, get_file_service
+from app.core.entities.user import User
 from app.services.file_service import FileService
 from app.schemas import Response
 from app.schemas.exceptions import NotFoundError
@@ -40,11 +41,12 @@ def file_response_data(file_model) -> dict:
 async def upload_file(
     file: UploadFile = File(...),
     session_id: Optional[str] = Form(None),
+    current_user: User = Depends(get_current_user),
     service: FileService = Depends(get_file_service),
 ) -> Response:
     """上传文件到 COS 或本地存储"""
     try:
-        file_model = await service.upload_file(upload_file=file)
+        file_model = await service.upload_file(upload_file=file, user_id=current_user.id)
         return Response.success(
             msg="上传文件成功",
             data={
@@ -60,10 +62,11 @@ async def upload_file(
 @router.get("/{file_id}", summary="获取文件信息")
 async def get_file_info(
     file_id: str,
+    current_user: User = Depends(get_current_user),
     service: FileService = Depends(get_file_service),
 ) -> Response:
     """获取文件信息"""
-    file_model = await service.get_file_info(file_id)
+    file_model = await service.get_file_info(file_id, current_user.id)
     if not file_model:
         raise NotFoundError(f"文件不存在: {file_id}")
     return Response.success(
@@ -75,10 +78,11 @@ async def get_file_info(
 @router.get("/{file_id}/download", summary="下载文件")
 async def download_file(
     file_id: str,
+    current_user: User = Depends(get_current_user),
     service: FileService = Depends(get_file_service),
 ) -> StreamingResponse:
     """下载文件"""
-    file_stream, file_model = await service.download_file(file_id)
+    file_stream, file_model = await service.download_file(file_id, current_user.id)
     encoded_filename = urllib.parse.quote(file_model.filename)
     return StreamingResponse(
         content=file_stream,

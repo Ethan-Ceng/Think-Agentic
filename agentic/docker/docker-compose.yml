@@ -114,11 +114,7 @@ services:
     container_name: manus-nginx
     restart: unless-stopped
     ports:
-      - target: 80
-        published: "${NGINX_PORT:-8088}"
-        protocol: tcp
-        mode: host
-        host_ip: 0.0.0.0
+      - "127.0.0.1:${NGINX_PORT:-8088}:80"
       # 如需启用 HTTPS，取消以下注释
       # - "443:443"
     volumes:

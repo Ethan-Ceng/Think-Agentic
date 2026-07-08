@@ -52,6 +52,7 @@ declare module 'vue' {
     ThinkingIndicator: typeof import('./components/chat/ThinkingIndicator.vue')['default']
     ToolCallCard: typeof import('./components/chat/ToolCallCard.vue')['default']
     ToolPreviewPanel: typeof import('./components/chat/ToolPreviewPanel.vue')['default']
+    UserMenu: typeof import('./components/UserMenu.vue')['default']
     VNCOverlay: typeof import('./components/VNCOverlay.vue')['default']
     VNCViewer: typeof import('./components/VNCViewer.vue')['default']
   }

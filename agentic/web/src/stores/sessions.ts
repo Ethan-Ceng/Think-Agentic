@@ -126,6 +126,14 @@ export const useSessionsStore = defineStore('sessions', () => {
     }
   }
 
+  function clear(): void {
+    sessions.value = []
+    error.value = null
+    loading.value = false
+    initialFetched = false
+    sseReceived = false
+  }
+
   async function deleteSession(sessionId: string): Promise<boolean> {
     try {
       await sessionApi.deleteSession(sessionId)
@@ -143,6 +151,7 @@ export const useSessionsStore = defineStore('sessions', () => {
     refresh,
     start,
     stop,
+    clear,
     deleteSession,
   }
 })

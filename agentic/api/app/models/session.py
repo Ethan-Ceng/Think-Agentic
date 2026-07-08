@@ -44,6 +44,7 @@ class SessionModel(Base):
         primary_key=True,
         default=lambda: str(uuid.uuid4()),
     )
+    user_id: Mapped[str] = mapped_column(String(255), nullable=False)
     sandbox_id: Mapped[str] = mapped_column(String(255), nullable=True)
     task_id: Mapped[str] = mapped_column(String(255), nullable=True)
     title: Mapped[str] = mapped_column(

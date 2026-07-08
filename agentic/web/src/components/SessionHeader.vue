@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { Download, FileSearch, FileText, PanelLeftOpen, X } from 'lucide-vue-next'
 import SettingsButton from '@/components/SettingsButton.vue'
+import UserMenu from '@/components/UserMenu.vue'
 import { useSidebar } from '@/composables/useSidebar'
 import { useToast } from '@/composables/useToast'
 import { fileApi } from '@/lib/api/file'
@@ -98,6 +99,7 @@ function handleFileClick(file: SessionFile) {
     <h1>{{ title || '未命名任务' }}</h1>
     <div class="session-header-actions">
       <SettingsButton />
+      <UserMenu />
       <button class="icon-button subtle" type="button" title="查看任务文件" @click="openState = true">
         <FileSearch :size="18" />
       </button>

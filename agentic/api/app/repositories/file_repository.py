@@ -20,3 +20,7 @@ class FileRepository(Protocol):
     async def get_by_id(self, file_id: str) -> Optional[File]:
         """根据传递的文件id获取文件信息"""
         ...
+
+    async def get_by_id_for_user(self, file_id: str, user_id: str) -> Optional[File]:
+        """根据文件id和用户id获取文件信息"""
+        ...

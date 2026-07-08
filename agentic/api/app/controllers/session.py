@@ -30,9 +30,12 @@ from app.schemas.session import (
     GetSessionFilesResponse,
 )
 from app.dependencies import (
+    get_current_user,
     get_session_service,
     get_agent_service,
 )
+from app.dependencies.auth import get_user_from_token
+from app.core.entities.user import User
 from app.services.session_service import SessionService
 from app.services.agent_service import AgentService
 
@@ -47,10 +50,11 @@ SESSION_SLEEP_INTERVAL = 5
 
 @router.post("", summary="创建新会话")
 async def create_session(
+    current_user: User = Depends(get_current_user),
     session_service: SessionService = Depends(get_session_service),
 ) -> Response[CreateSessionResponse]:
     """创建新会话"""
-    session = await session_service.create_session()
+    session = await session_service.create_session(current_user.id)
     return Response.success(
         msg="创建任务会话成功",
         data=CreateSessionResponse(session_id=session.id),
@@ -59,13 +63,14 @@ async def create_session(
 
 @router.post("/stream", summary="SSE流式获取会话列表")
 async def stream_sessions(
+    current_user: User = Depends(get_current_user),
     session_service: SessionService = Depends(get_session_service),
 ) -> EventSourceResponse:
     """SSE流式推送会话列表"""
 
     async def event_generator() -> AsyncGenerator[ServerSentEvent, None]:
         while True:
-            sessions = await session_service.get_all_sessions()
+            sessions = await session_service.get_all_sessions(current_user.id)
             session_items = [
                 ListSessionItem(
                     session_id=s.id,
@@ -88,10 +93,11 @@ async def stream_sessions(
 
 @router.get("", summary="获取会话列表")
 async def get_sessions(
+    current_user: User = Depends(get_current_user),
     session_service: SessionService = Depends(get_session_service),
 ) -> Response[ListSessionResponse]:
     """获取会话列表"""
-    sessions = await session_service.get_all_sessions()
+    sessions = await session_service.get_all_sessions(current_user.id)
     session_items = [
         ListSessionItem(
             session_id=s.id,
@@ -112,11 +118,12 @@ async def get_sessions(
 @router.get("/{session_id}", summary="获取会话详情")
 async def get_session(
     session_id: str,
+    current_user: User = Depends(get_current_user),
     session_service: SessionService = Depends(get_session_service),
 ) -> Response[GetSessionResponse]:
     """获取会话详情"""
     try:
-        session = await session_service.get_session(session_id)
+        session = await session_service.get_session(session_id, current_user.id)
         if not session:
             raise NotFoundError("该会话不存在，请核实后重试")
 
@@ -141,30 +148,33 @@ async def get_session(
 @router.post("/{session_id}/clear-unread-message-count", summary="清除未读消息数")
 async def clear_unread_message_count(
     session_id: str,
+    current_user: User = Depends(get_current_user),
     session_service: SessionService = Depends(get_session_service),
 ) -> Response[Optional[Dict]]:
     """清除未读消息数"""
-    await session_service.clear_unread_message_count(session_id)
+    await session_service.clear_unread_message_count(session_id, current_user.id)
     return Response.success(msg="清除未读消息数成功")
 
 
 @router.post("/{session_id}/delete", summary="删除会话")
 async def delete_session(
     session_id: str,
+    current_user: User = Depends(get_current_user),
     session_service: SessionService = Depends(get_session_service),
 ) -> Response[Optional[Dict]]:
     """删除会话"""
-    await session_service.delete_session(session_id)
+    await session_service.delete_session(session_id, current_user.id)
     return Response.success(msg="删除任务会话成功")
 
 
 @router.post("/{session_id}/stop", summary="停止会话")
 async def stop_session(
     session_id: str,
+    current_user: User = Depends(get_current_user),
     agent_service: AgentService = Depends(get_agent_service),
 ) -> Response[Optional[Dict]]:
     """停止会话"""
-    await agent_service.stop_session(session_id)
+    await agent_service.stop_session(session_id, current_user.id)
     return Response.success(msg="停止任务会话成功")
 
 
@@ -174,6 +184,7 @@ async def stop_session(
 async def chat(
     session_id: str,
     request: ChatRequest,
+    current_user: User = Depends(get_current_user),
     agent_service: AgentService = Depends(get_agent_service),
 ) -> EventSourceResponse:
     """聊天（SSE流式响应） - 接入真实 Agent 流程"""
@@ -181,6 +192,7 @@ async def chat(
     async def event_generator() -> AsyncGenerator[ServerSentEvent, None]:
         async for event in agent_service.chat(
             session_id=session_id,
+            user_id=current_user.id,
             message=request.message,
             attachments=request.attachments,
             latest_event_id=request.event_id,
@@ -201,10 +213,11 @@ async def chat(
 @router.get("/{session_id}/files", summary="获取会话文件列表")
 async def get_session_files(
     session_id: str,
+    current_user: User = Depends(get_current_user),
     session_service: SessionService = Depends(get_session_service),
 ) -> Response[GetSessionFilesResponse]:
     """获取会话文件列表"""
-    files = await session_service.get_session_files(session_id)
+    files = await session_service.get_session_files(session_id, current_user.id)
     return Response.success(
         msg="获取会话文件列表成功",
         data={"files": [f.model_dump(mode="json") if hasattr(f, "model_dump") else f for f in files]},
@@ -215,10 +228,11 @@ async def get_session_files(
 async def read_file(
     session_id: str,
     request: FileReadRequest,
+    current_user: User = Depends(get_current_user),
     session_service: SessionService = Depends(get_session_service),
 ) -> Response[FileReadResponse]:
     """读取沙箱文件"""
-    result = await session_service.read_file(session_id, request.target_path)
+    result = await session_service.read_file(session_id, current_user.id, request.target_path)
     return Response.success(msg="读取文件成功", data=result)
 
 
@@ -226,10 +240,11 @@ async def read_file(
 async def read_shell(
     session_id: str,
     request: ShellReadRequest,
+    current_user: User = Depends(get_current_user),
     session_service: SessionService = Depends(get_session_service),
 ) -> Response[ShellReadResponse]:
     """读取Shell输出"""
-    result = await session_service.read_shell_output(session_id, request.target_session_id)
+    result = await session_service.read_shell_output(session_id, current_user.id, request.target_session_id)
     return Response.success(msg="读取Shell输出成功", data=result)
 
 
@@ -247,12 +262,22 @@ async def vnc_proxy(
     selected_protocol = "binary" if "binary" in protocols else None
 
     logger.info(f"为会话[{session_id}]开启WebSocket连接")
+    token = websocket.query_params.get("token")
+    if not token:
+        await websocket.close(code=1008)
+        return
+    try:
+        current_user = await get_user_from_token(token)
+    except Exception:
+        await websocket.close(code=1008)
+        return
+
     await websocket.accept(subprotocol=selected_protocol)
 
     # 2. 获取 VNC URL（通过独立 service）
     session_service = get_session_service()
     try:
-        sandbox_vnc_url = await session_service.get_vnc_url(session_id)
+        sandbox_vnc_url = await session_service.get_vnc_url(session_id, current_user.id)
         logger.info(f"连接 VNC: {sandbox_vnc_url}")
 
         async with websockets.connect(sandbox_vnc_url, subprotocols=["binary"]) as sandbox_ws:
