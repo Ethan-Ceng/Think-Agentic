@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { authApi } from '@/lib/api/auth'
 import { clearAuthToken, getAuthToken, setAuthToken } from '@/lib/api/auth-token'
+import { ApiError } from '@/lib/api/fetch'
 import type { LoginParams, RegisterParams, UserInfo } from '@/lib/api/types'
 
 export const useAuthStore = defineStore('auth', () => {
@@ -10,7 +11,7 @@ export const useAuthStore = defineStore('auth', () => {
   const initialized = ref(false)
   const loading = ref(false)
 
-  const isAuthenticated = computed(() => Boolean(token.value && user.value))
+  const isAuthenticated = computed(() => Boolean(token.value))
 
   function applyAuth(accessToken: string, nextUser: UserInfo): void {
     token.value = accessToken
@@ -25,10 +26,14 @@ export const useAuthStore = defineStore('auth', () => {
     if (!token.value) return
     try {
       user.value = await authApi.me()
-    } catch {
-      token.value = ''
+    } catch (error) {
+      if (error instanceof ApiError && [401, 403].includes(error.code)) {
+        token.value = ''
+        user.value = null
+        clearAuthToken()
+        return
+      }
       user.value = null
-      clearAuthToken()
     }
   }
 
