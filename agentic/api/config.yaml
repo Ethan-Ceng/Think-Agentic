@@ -31,3 +31,15 @@ mcp_config:
         Authorization: Bearer jina_133c673d569840d3b1e379a526eee6d4VKMVBI9J5HYE2xd4ys7i6ehZUNb6
 a2a_config:
   a2a_servers: []
+tool_config:
+  schema_version: tool_config_v1
+  mode: default_allow
+  bindings: {}
+  registrations: {}
+  runtime_policy:
+    allowed_executor_types:
+    - builtin
+    - mcp
+    - a2a
+    - api
+    max_tool_iterations: 100
