@@ -7,6 +7,7 @@ from .base import Base
 from .session import SessionModel, SessionStatus
 from .file import FileModel
 from .user import UserModel
+from .config import ConfigModel
 
 __all__ = [
     "Base",
@@ -14,4 +15,5 @@ __all__ = [
     "SessionStatus",
     "FileModel",
     "UserModel",
+    "ConfigModel",
 ]

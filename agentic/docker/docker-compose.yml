@@ -1,5 +1,6 @@
 services:
-  # ==================== 基础设施 ====================
+  # Deployment stack: API/Web/Nginx all run in Docker.
+  # For local development, use docker-compose.dev.yml instead.
 
   manus-redis:
     image: redis:7-alpine
@@ -41,8 +42,6 @@ services:
       timeout: 5s
       retries: 5
 
-  # ==================== 沙箱服务 ====================
-
   manus-sandbox:
     build:
       context: ../sandbox
@@ -50,13 +49,18 @@ services:
       args:
         APT_MIRROR: ${APT_MIRROR:-http://mirrors.tuna.tsinghua.edu.cn/ubuntu}
         APT_PORTS_MIRROR: ${APT_PORTS_MIRROR:-http://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports}
-    image: manus-sandbox
+    image: ${SANDBOX_IMAGE:-manus-sandbox}
     container_name: manus-sandbox
     restart: "no"
+    environment:
+      SERVER_TIMEOUT_MINUTES: ${SANDBOX_TTL_MINUTES:-60}
+      SERVICE_TIMEOUT_MINUTES: ${SANDBOX_TTL_MINUTES:-60}
+      CHROME_ARGS: ${SANDBOX_CHROME_ARGS:-}
+      HTTPS_PROXY: ${SANDBOX_HTTPS_PROXY:-}
+      HTTP_PROXY: ${SANDBOX_HTTP_PROXY:-}
+      NO_PROXY: ${SANDBOX_NO_PROXY:-}
     networks:
       - manus-network
-
-  # ==================== 后端 API ====================
 
   manus-api:
     build:
@@ -68,15 +72,16 @@ services:
       - ../.env
     environment:
       RUN_MIGRATIONS_ON_STARTUP: ${RUN_MIGRATIONS_ON_STARTUP:-true}
-    # 如需动态创建沙箱容器，取消以下注释以挂载 Docker Socket
     volumes:
-      - ../api:/app
-      - /var/run/docker.sock:/var/run/docker.sock
+      - ../api/config.yaml:/app/config.yaml
+      - api_storage:/app/storage
     depends_on:
       manus-redis:
         condition: service_healthy
       manus-postgres:
         condition: service_healthy
+      manus-sandbox:
+        condition: service_started
     networks:
       - manus-network
     healthcheck:
@@ -85,8 +90,6 @@ services:
       timeout: 10s
       retries: 5
       start_period: 20s
-
-  # ==================== 前端 Web ====================
 
   manus-web:
     build:
@@ -107,20 +110,17 @@ services:
       timeout: 5s
       retries: 5
 
-  # ==================== Nginx 网关 ====================
-
   manus-nginx:
     image: nginx:alpine
     container_name: manus-nginx
     restart: unless-stopped
     ports:
-      - "127.0.0.1:${NGINX_PORT:-8088}:80"
-      # 如需启用 HTTPS，取消以下注释
+      - "${NGINX_BIND:-0.0.0.0}:${NGINX_PORT:-8088}:80"
+      # Enable HTTPS after adding certs under ./nginx/ssl.
       # - "443:443"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
-      # SSL 证书挂载（如需启用 HTTPS，取消以下注释）
       # - ./nginx/ssl:/etc/nginx/ssl:ro
     depends_on:
       manus-web:
@@ -130,14 +130,14 @@ services:
     networks:
       - manus-network
 
-# ==================== 数据卷 ====================
 volumes:
   redis_data:
     driver: local
   postgres_data:
     driver: local
+  api_storage:
+    driver: local
 
-# ==================== 网络 ====================
 networks:
   manus-network:
     name: manus-network

@@ -3,7 +3,6 @@
 from fastapi import Depends
 
 from app.dependencies.infrastructure import (
-    get_app_config,
     get_file_storage,
     get_json_parser,
     get_llm,
@@ -17,10 +16,15 @@ from app.services.agent_service import AgentService
 from app.services.auth_service import AuthService
 from app.services.file_service import FileService
 from app.services.session_service import SessionService
+from app.services.user_config_service import UserConfigService
 
 
 def get_auth_service() -> AuthService:
     return AuthService(uow_factory=get_uow)
+
+
+def get_user_config_service() -> UserConfigService:
+    return UserConfigService(uow_factory=get_uow)
 
 
 def get_session_service() -> SessionService:
@@ -39,14 +43,10 @@ def get_file_service(
 def get_agent_service(
     storage: Storage = Depends(get_storage),
 ) -> AgentService:
-    app_config = get_app_config()
     return AgentService(
         uow_factory=get_uow,
-        llm=get_llm(app_config.llm_config),
-        agent_config=app_config.agent_config,
-        mcp_config=app_config.mcp_config,
-        a2a_config=app_config.a2a_config,
-        tool_config=app_config.tool_config,
+        user_config_service=get_user_config_service(),
+        llm_factory=get_llm,
         sandbox_cls=sandbox_cls,
         task_cls=task_cls,
         json_parser=get_json_parser(),

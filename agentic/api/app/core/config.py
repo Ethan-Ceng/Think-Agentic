@@ -1,8 +1,12 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+API_ROOT = Path(__file__).resolve().parents[2]
 
 
 class Settings(BaseSettings):
@@ -31,17 +35,17 @@ class Settings(BaseSettings):
     cos_domain: str = ""
 
     sandbox_address: str | None = None
-    sandbox_image: str | None = None
-    sandbox_name_prefix: str | None = None
+    sandbox_image: str | None = "manus-sandbox"
+    sandbox_name_prefix: str | None = "manus-sandbox"
     sandbox_ttl_minutes: int | None = 60
-    sandbox_network: str | None = None
+    sandbox_network: str | None = "manus-network"
     sandbox_chrome_args: str | None = ""
     sandbox_https_proxy: str | None = None
     sandbox_http_proxy: str | None = None
     sandbox_no_proxy: str | None = None
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=API_ROOT / ".env",
         env_file_encoding="utf-8",
         extra="ignore",
     )

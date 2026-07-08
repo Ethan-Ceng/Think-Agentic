@@ -1,8 +1,88 @@
 services:
+  # Local development stack: only infrastructure is started by default.
+  # Run API and Web on the host for fast reload.
+
   manus-redis:
+    image: redis:7-alpine
+    container_name: manus-redis
+    restart: "no"
+    command: >
+      redis-server
+      --bind 0.0.0.0
+      --protected-mode no
+      --appendonly yes
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
     ports:
       - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_dev_data:/data
+    networks:
+      - manus-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   manus-postgres:
+    image: postgres:16-alpine
+    container_name: manus-postgres
+    restart: "no"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-manus}
     ports:
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_dev_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/10-init.sql:ro
+    networks:
+      - manus-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-manus}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Build this image for host-run API dynamic sandboxes:
+  # docker compose --env-file ../.env -f docker-compose.dev.yml build manus-sandbox
+  manus-sandbox:
+    profiles:
+      - sandbox
+    build:
+      context: ../sandbox
+      dockerfile: Dockerfile
+      args:
+        APT_MIRROR: ${APT_MIRROR:-http://mirrors.tuna.tsinghua.edu.cn/ubuntu}
+        APT_PORTS_MIRROR: ${APT_PORTS_MIRROR:-http://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports}
+    image: ${SANDBOX_IMAGE:-manus-sandbox}
+    container_name: manus-sandbox
+    restart: "no"
+    environment:
+      SERVER_TIMEOUT_MINUTES: ${SANDBOX_TTL_MINUTES:-60}
+      SERVICE_TIMEOUT_MINUTES: ${SANDBOX_TTL_MINUTES:-60}
+      CHROME_ARGS: ${SANDBOX_CHROME_ARGS:-}
+      HTTPS_PROXY: ${SANDBOX_HTTPS_PROXY:-}
+      HTTP_PROXY: ${SANDBOX_HTTP_PROXY:-}
+      NO_PROXY: ${SANDBOX_NO_PROXY:-}
+    ports:
+      - "127.0.0.1:${SANDBOX_API_PORT:-8080}:8080"
+      - "127.0.0.1:${SANDBOX_CDP_PORT:-9222}:9222"
+      - "127.0.0.1:${SANDBOX_VNC_PORT:-5901}:5901"
+    networks:
+      - manus-network
+
+volumes:
+  redis_dev_data:
+    name: manus_redis_dev_data
+    driver: local
+  postgres_dev_data:
+    name: manus_postgres_dev_data
+    driver: local
+
+networks:
+  manus-network:
+    name: manus-network
+    driver: bridge

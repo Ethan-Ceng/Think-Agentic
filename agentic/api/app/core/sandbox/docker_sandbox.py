@@ -167,8 +167,8 @@ class DockerSandbox(Sandbox):
         settings = get_settings()
 
         # 2.构建容器的名字
-        image = settings.sandbox_image
-        name_prefix = settings.sandbox_name_prefix
+        image = settings.sandbox_image or "manus-sandbox"
+        name_prefix = settings.sandbox_name_prefix or "manus-sandbox"
         container_name = f"{name_prefix}-{str(uuid.uuid4())[:8]}"
         docker_client = None
 

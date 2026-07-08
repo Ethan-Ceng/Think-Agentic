@@ -48,6 +48,8 @@ WEATHER_OPENAPI = {
     },
 }
 
+USER_ID = "user-1"
+
 
 def test_tool_registry_lists_builtin_metadata() -> None:
     registry = ToolRegistry()
@@ -132,10 +134,12 @@ def test_tool_config_service_manages_custom_registrations() -> None:
         def __init__(self) -> None:
             self.config = ToolConfig()
 
-        async def get_tool_config(self) -> ToolConfig:
+        async def get_tool_config(self, user_id: str) -> ToolConfig:
+            assert user_id == USER_ID
             return self.config
 
-        async def update_tool_config(self, new_config: ToolConfig) -> ToolConfig:
+        async def update_tool_config(self, user_id: str, new_config: ToolConfig) -> ToolConfig:
+            assert user_id == USER_ID
             self.config = new_config
             return self.config
 
@@ -143,6 +147,7 @@ def test_tool_config_service_manages_custom_registrations() -> None:
         service = ToolConfigService(FakeAppConfigService())
 
         created = await service.create_registration(
+            USER_ID,
             ToolRegistrationCreate(
                 provider_id="api.weather",
                 provider_label="Weather API",
@@ -161,6 +166,7 @@ def test_tool_config_service_manages_custom_registrations() -> None:
         assert custom.enabled is True
 
         updated = await service.update_registration(
+            USER_ID,
             "api.weather",
             ToolRegistrationUpdate(enabled=False),
         )
@@ -171,7 +177,7 @@ def test_tool_config_service_manages_custom_registrations() -> None:
         )
         assert custom.enabled is False
 
-        deleted = await service.delete_registration("api.weather")
+        deleted = await service.delete_registration(USER_ID, "api.weather")
         assert all(
             registration.registration_id != "api.weather"
             for registration in deleted.registrations
@@ -324,16 +330,19 @@ def test_tool_config_service_tests_api_registration_schema() -> None:
                 }
             )
 
-        async def get_tool_config(self) -> ToolConfig:
+        async def get_tool_config(self, user_id: str) -> ToolConfig:
+            assert user_id == USER_ID
             return self.config
 
-        async def update_tool_config(self, new_config: ToolConfig) -> ToolConfig:
+        async def update_tool_config(self, user_id: str, new_config: ToolConfig) -> ToolConfig:
+            assert user_id == USER_ID
             self.config = new_config
             return self.config
 
     async def run() -> None:
         service = ToolConfigService(FakeAppConfigService())
         response = await service.test_registration(
+            USER_ID,
             "api.weather",
             ToolRegistrationTestRequest(),
         )

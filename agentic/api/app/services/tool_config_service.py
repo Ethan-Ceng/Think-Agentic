@@ -20,7 +20,8 @@ from app.schemas.tool_config import (
     ToolRegistrationUpdate,
 )
 from app.schemas.exceptions import BadRequestError, NotFoundError
-from app.services.app_config_service import AppConfigService, get_app_config_service
+from app.dependencies.uow import get_uow
+from app.services.user_config_service import UserConfigService
 from app.services.tool_capability_service import ToolCapabilityService
 from app.services.tool_preflight_service import ToolPreflightService
 
@@ -30,28 +31,28 @@ class ToolConfigService:
 
     def __init__(
         self,
-        app_config_service: AppConfigService,
+        user_config_service: UserConfigService,
         registry: ToolRegistry | None = None,
     ) -> None:
-        self.app_config_service = app_config_service
+        self.user_config_service = user_config_service
         self.registry = registry or ToolRegistry()
         self.capability_service = ToolCapabilityService(self.registry)
         self.preflight_service = ToolPreflightService(self.capability_service)
 
-    async def list_tools(self) -> ToolListResponse:
-        tool_config = await self.get_tool_config()
+    async def list_tools(self, user_id: str) -> ToolListResponse:
+        tool_config = await self.get_tool_config(user_id)
         return ToolListResponse(
             tools=self.registry.apply_config(tool_config),
-            registrations=self.registry.list_registrations(tool_config),
+            registrations=self._redact_registrations(self.registry.list_registrations(tool_config)),
             runtime_policy=tool_config.runtime_policy,
         )
 
-    async def get_tool_config(self) -> ToolConfig:
-        config = await self.app_config_service.get_tool_config()
+    async def get_tool_config(self, user_id: str) -> ToolConfig:
+        config = await self.user_config_service.get_tool_config(user_id)
         return ToolConfig.model_validate(config.model_dump(mode="json"))
 
-    async def update_bindings(self, update: ToolBindingsUpdate) -> ToolListResponse:
-        current = await self.get_tool_config()
+    async def update_bindings(self, user_id: str, update: ToolBindingsUpdate) -> ToolListResponse:
+        current = await self.get_tool_config(user_id)
         merged_bindings = dict(current.bindings)
         merged_bindings.update(update.bindings)
         updated = ToolConfig(
@@ -61,35 +62,37 @@ class ToolConfigService:
             registrations=current.registrations,
             runtime_policy=update.runtime_policy,
         )
-        await self.app_config_service.update_tool_config(updated)
-        return await self.list_tools()
+        await self.user_config_service.update_tool_config(user_id, updated)
+        return await self.list_tools(user_id)
 
-    async def reset_defaults(self) -> ToolListResponse:
-        current = await self.get_tool_config()
+    async def reset_defaults(self, user_id: str) -> ToolListResponse:
+        current = await self.get_tool_config(user_id)
         bindings = {
             tool_id: ToolBinding.model_validate(binding.model_dump(mode="json"))
             for tool_id, binding in self.registry.default_bindings(current).items()
         }
-        await self.app_config_service.update_tool_config(
+        await self.user_config_service.update_tool_config(
+            user_id,
             ToolConfig(
                 bindings=bindings,
                 registrations=current.registrations,
                 runtime_policy=RuntimeToolPolicy(),
             )
         )
-        return await self.list_tools()
+        return await self.list_tools(user_id)
 
-    async def list_registrations(self) -> ToolRegistrationListResponse:
-        tool_config = await self.get_tool_config()
+    async def list_registrations(self, user_id: str) -> ToolRegistrationListResponse:
+        tool_config = await self.get_tool_config(user_id)
         return ToolRegistrationListResponse(
-            registrations=self.registry.list_registrations(tool_config)
+            registrations=self._redact_registrations(self.registry.list_registrations(tool_config))
         )
 
     async def create_registration(
         self,
+        user_id: str,
         request: ToolRegistrationCreate,
     ) -> ToolRegistrationListResponse:
-        current = await self.get_tool_config()
+        current = await self.get_tool_config(user_id)
         registration_id = request.provider_id
         if self._is_builtin_registration(registration_id):
             raise BadRequestError("内置工具源不能被覆盖")
@@ -124,15 +127,16 @@ class ToolConfigService:
                 "runtime_policy": runtime_policy,
             }
         )
-        await self.app_config_service.update_tool_config(updated)
-        return await self.list_registrations()
+        await self.user_config_service.update_tool_config(user_id, updated)
+        return await self.list_registrations(user_id)
 
     async def update_registration(
         self,
+        user_id: str,
         registration_id: str,
         request: ToolRegistrationUpdate,
     ) -> ToolRegistrationListResponse:
-        current = await self.get_tool_config()
+        current = await self.get_tool_config(user_id)
         if self._is_builtin_registration(registration_id):
             raise BadRequestError("内置工具源不能编辑")
         registration = current.registrations.get(registration_id)
@@ -140,6 +144,11 @@ class ToolConfigService:
             raise NotFoundError("工具源不存在")
 
         patch = request.model_dump(exclude_unset=True)
+        if "config" in patch and patch["config"] is not None:
+            patch["config"] = UserConfigService.restore_redacted_data(
+                patch["config"],
+                registration.config,
+            )
         updated_registration = registration.model_copy(update=patch)
         self._validate_registration(updated_registration)
         updated_registrations = dict(current.registrations)
@@ -149,7 +158,8 @@ class ToolConfigService:
             if updated_registration.enabled
             else current.runtime_policy
         )
-        await self.app_config_service.update_tool_config(
+        await self.user_config_service.update_tool_config(
+            user_id,
             current.model_copy(
                 update={
                     "registrations": updated_registrations,
@@ -157,10 +167,10 @@ class ToolConfigService:
                 }
             )
         )
-        return await self.list_registrations()
+        return await self.list_registrations(user_id)
 
-    async def delete_registration(self, registration_id: str) -> ToolRegistrationListResponse:
-        current = await self.get_tool_config()
+    async def delete_registration(self, user_id: str, registration_id: str) -> ToolRegistrationListResponse:
+        current = await self.get_tool_config(user_id)
         if self._is_builtin_registration(registration_id):
             raise BadRequestError("内置工具源不能删除")
         if registration_id not in current.registrations:
@@ -168,17 +178,19 @@ class ToolConfigService:
 
         updated_registrations = dict(current.registrations)
         updated_registrations.pop(registration_id, None)
-        await self.app_config_service.update_tool_config(
+        await self.user_config_service.update_tool_config(
+            user_id,
             current.model_copy(update={"registrations": updated_registrations})
         )
-        return await self.list_registrations()
+        return await self.list_registrations(user_id)
 
     async def test_registration(
         self,
+        user_id: str,
         registration_id: str,
         request: ToolRegistrationTestRequest,
     ) -> ToolRegistrationTestResponse:
-        current = await self.get_tool_config()
+        current = await self.get_tool_config(user_id)
         registration = current.registrations.get(registration_id)
         if not registration:
             raise NotFoundError("Tool registration not found")
@@ -216,7 +228,7 @@ class ToolConfigService:
             result = tool_result.model_dump(mode="json")
 
         return ToolRegistrationTestResponse(
-            registration=test_registration,
+            registration=self._redact_registration(test_registration),
             tools=tools,
             selected_tool=selected_tool,
             result=result,
@@ -251,13 +263,23 @@ class ToolConfigService:
             }
         )
 
-    async def capability_summary(self) -> ToolCapabilitySummary:
-        tool_config = await self.get_tool_config()
+    async def capability_summary(self, user_id: str) -> ToolCapabilitySummary:
+        tool_config = await self.get_tool_config(user_id)
         return self.capability_service.build_summary(tool_config)
 
-    async def preflight(self, message: str) -> ToolPreflightResponse:
-        tool_config = await self.get_tool_config()
+    async def preflight(self, user_id: str, message: str) -> ToolPreflightResponse:
+        tool_config = await self.get_tool_config(user_id)
         return self.preflight_service.check(message=message, tool_config=tool_config)
+
+    @classmethod
+    def _redact_registration(cls, registration: ToolRegistration) -> ToolRegistration:
+        return registration.model_copy(
+            update={"config": UserConfigService.redact_sensitive_data(registration.config)}
+        )
+
+    @classmethod
+    def _redact_registrations(cls, registrations: list[ToolRegistration]) -> list[ToolRegistration]:
+        return [cls._redact_registration(registration) for registration in registrations]
 
 
 _tool_config_service: Optional[ToolConfigService] = None
@@ -266,5 +288,5 @@ _tool_config_service: Optional[ToolConfigService] = None
 def get_tool_config_service() -> ToolConfigService:
     global _tool_config_service
     if _tool_config_service is None:
-        _tool_config_service = ToolConfigService(get_app_config_service())
+        _tool_config_service = ToolConfigService(UserConfigService(get_uow))
     return _tool_config_service

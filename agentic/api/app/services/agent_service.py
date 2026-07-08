@@ -18,13 +18,12 @@ from app.core.llm.base import LLM
 from app.core.sandbox.base import Sandbox
 from app.core.search.base import SearchEngine
 from app.core.task.base import Task
-from app.core.entities.app_config import AgentConfig, MCPConfig, A2AConfig
-from app.core.entities.tool_config import ToolConfig
 from app.core.entities.event import BaseEvent, ErrorEvent, MessageEvent, Event, DoneEvent, WaitEvent
 from app.core.entities.session import Session, SessionStatus
 from app.repositories.uow import IUnitOfWork
 from app.schemas.exceptions import NotFoundError
 from app.core.agent.agent_task_runner import AgentTaskRunner
+from app.services.user_config_service import UserConfigService
 
 logger = logging.getLogger(__name__)
 
@@ -35,11 +34,8 @@ class AgentService:
     def __init__(
             self,
             uow_factory: Callable[[], IUnitOfWork],
-            llm: LLM,
-            agent_config: AgentConfig,
-            mcp_config: MCPConfig,
-            a2a_config: A2AConfig,
-            tool_config: ToolConfig,
+            user_config_service: UserConfigService,
+            llm_factory: Callable[..., LLM],
             sandbox_cls: Type[Sandbox],
             task_cls: Type[Task],
             json_parser: JSONParser,
@@ -49,11 +45,8 @@ class AgentService:
         """构造函数，完成Agent服务初始化"""
         self._uow_factory = uow_factory
         self._uow = uow_factory()
-        self._llm = llm
-        self._agent_config = agent_config
-        self._mcp_config = mcp_config
-        self._a2a_config = a2a_config
-        self._tool_config = tool_config
+        self._user_config_service = user_config_service
+        self._llm_factory = llm_factory
         self._sandbox_cls = sandbox_cls
         self._task_cls = task_cls
         self._json_parser = json_parser
@@ -93,14 +86,18 @@ class AgentService:
             logger.error(f"获取沙箱[{sandbox.id}]中的浏览器实例失败")
             raise RuntimeError(f"获取沙箱[{sandbox.id}]中的浏览器实例失败")
 
+        # 5.读取当前用户的运行时配置
+        app_config = await self._user_config_service.get_app_config(session.user_id)
+        llm = self._llm_factory(app_config.llm_config)
+
         # 5.创建AgentTaskRunner
         task_runner = AgentTaskRunner(
             uow_factory=self._uow_factory,
-            llm=self._llm,
-            agent_config=self._agent_config,
-            mcp_config=self._mcp_config,
-            a2a_config=self._a2a_config,
-            tool_config=self._tool_config,
+            llm=llm,
+            agent_config=app_config.agent_config,
+            mcp_config=app_config.mcp_config,
+            a2a_config=app_config.a2a_config,
+            tool_config=app_config.tool_config,
             session_id=session.id,
             user_id=session.user_id,
             file_storage=self._file_storage,

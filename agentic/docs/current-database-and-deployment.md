@@ -106,7 +106,7 @@ agentic/api/app/services/tool_config_service.py
 config.yaml
 ```
 
-在 Docker API 容器中，当前 `agentic/docker/docker-compose.yml` 将 `../api` 挂载为 `/app`，因此配置文件和本地文件存储会落在 API 目录下。
+在 Docker API 容器中，当前 `agentic/docker/docker-compose.yml` 不再挂载整个 `../api` 源码目录。部署栈只将 `../api/config.yaml` 挂载到 `/app/config.yaml`，并用 `api_storage` volume 持久化 `/app/storage`。
 
 这意味着：
 
@@ -131,8 +131,8 @@ agentic/api/app/extensions/file_storage.py
 
 部署影响：
 
-- Docker 完整部署中，`../api:/app` 会让本地 fallback 文件落到 `agentic/api/storage/files`。
-- 如果后续取消 API bind mount，应单独增加文件存储 volume，否则容器重建可能丢本地文件。
+- Docker 完整部署中，本地 fallback 文件落到 `api_storage` volume 下的 `/app/storage/files`。
+- `api/config.yaml` 仍通过单文件 bind mount 暴露，便于部署后调整 LLM、MCP、A2A 和工具配置。
 - 登录隔离后，文件路径或对象存储 key 应包含 `user_id`、`workspace_id` 或 `agent_id` 维度，避免不同用户文件混放。
 
 ## 7. 当前 Redis 角色
@@ -196,7 +196,7 @@ agentic/docker/nginx/
 已修正的部署点：
 
 - compose 文件位于 `agentic/docker`，构建上下文已改为 `../api`、`../web`、`../sandbox`。
-- API bind mount 已改为 `../api:/app`。
+- API 不再挂载整个 `../api` 源码目录；部署只挂载 `../api/config.yaml:/app/config.yaml` 和 `api_storage:/app/storage`。
 - Nginx 配置挂载已改为 `./nginx/...`。
 - PostgreSQL 首次初始化 SQL 已放到 `./init.sql`，并挂载到 `/docker-entrypoint-initdb.d/10-init.sql`。
 - 完整 Docker 部署中 `manus-api` 默认设置 `RUN_MIGRATIONS_ON_STARTUP=true`，新库启动时会自动跑 Alembic 迁移。
@@ -229,7 +229,7 @@ http://localhost:8088/api/status
 
 ```powershell
 cd agentic\docker
-docker compose --env-file ../.env -f docker-compose.yml -f docker-compose.dev.yml up -d manus-redis manus-postgres
+docker compose --env-file ../.env -f docker-compose.dev.yml up -d
 ```
 
 然后本机启动 API：

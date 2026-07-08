@@ -1,0 +1,26 @@
+llm_config:
+  base_url: https://api.deepseek.com
+  api_key: sk-81eda5e663584109a44d859ceb4d2732
+  model_name: deepseek-v4-pro
+  temperature: 0.7
+  max_tokens: 8192
+agent_config:
+  max_iterations: 100
+  max_retries: 3
+  max_search_results: 10
+mcp_config:
+  mcpServers: {}
+a2a_config:
+  a2a_servers: []
+tool_config:
+  schema_version: tool_config_v1
+  mode: default_allow
+  bindings: {}
+  registrations: {}
+  runtime_policy:
+    allowed_executor_types:
+    - builtin
+    - mcp
+    - a2a
+    - api
+    max_tool_iterations: 100

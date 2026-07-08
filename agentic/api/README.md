@@ -86,11 +86,11 @@ SANDBOX_IMAGE=manus-sandbox
 SANDBOX_NETWORK=manus-network
 ```
 
-根目录可只启动本地开发需要的中间件：
+在 `agentic/docker` 目录只启动本地开发需要的中间件：
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d manus-redis manus-postgres
-docker compose build manus-sandbox
+docker compose --env-file ../.env -f docker-compose.dev.yml up -d
+docker compose --env-file ../.env -f docker-compose.dev.yml build manus-sandbox
 ```
 
 ### 启动服务

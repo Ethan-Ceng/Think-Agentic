@@ -50,6 +50,7 @@ docker compose --env-file ../.env -f docker-compose.yml up -d --build
    # 可选修改
    POSTGRES_PASSWORD=postgres                   # 数据库密码
    NGINX_PORT=8088                              # 对外访问端口
+   NGINX_BIND=0.0.0.0                            # 监听地址，本机访问可改为 127.0.0.1
    ```
 
 2. **配置 AI 模型**
@@ -154,13 +155,15 @@ docker compose --env-file ../.env -f docker-compose.yml down -v
 
 如需只用 Docker 启动中间件，在本机调试 API 和 Web 前端：
 
+`docker-compose.dev.yml` 是独立的本地开发入口，不需要和 `docker-compose.yml` 叠加。
+
 ```bash
 # 只启动本地开发需要的 Redis/PostgreSQL，并暴露到 127.0.0.1
 cd docker
-docker compose --env-file ../.env -f docker-compose.yml -f docker-compose.dev.yml up -d manus-redis manus-postgres
+docker compose --env-file ../.env -f docker-compose.dev.yml up -d
 
 # 首次需要沙箱镜像时构建一次；API 动态创建沙箱容器时会使用该镜像
-docker compose --env-file ../.env -f docker-compose.yml build manus-sandbox
+docker compose --env-file ../.env -f docker-compose.dev.yml build manus-sandbox
 
 # API
 cd ../api
