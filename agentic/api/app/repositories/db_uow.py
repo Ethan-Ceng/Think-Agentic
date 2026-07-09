@@ -14,6 +14,7 @@ from .db_file_repository import DBFileRepository
 from .db_session_repository import DBSessionRepository
 from .db_user_repository import DBUserRepository
 from .db_config_repository import DBConfigRepository
+from .db_trace_repository import DBTraceRepository
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,7 @@ class DBUnitOfWork(IUnitOfWork):
         self.session = DBSessionRepository(db_session=self.db_session)
         self.user = DBUserRepository(db_session=self.db_session)
         self.config = DBConfigRepository(db_session=self.db_session)
+        self.trace = DBTraceRepository(db_session=self.db_session)
         return self
 
     @staticmethod

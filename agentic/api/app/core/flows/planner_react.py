@@ -25,6 +25,7 @@ from app.core.agent.react import ReActAgent
 from app.core.tools.a2a import A2ATool
 from app.core.tools.factory import ToolFactory
 from app.core.tools.mcp import MCPTool
+from app.services.trace_service import TraceService
 from .base import BaseFlow, FlowStatus
 from ...repositories.uow import IUnitOfWork
 
@@ -47,6 +48,7 @@ class PlannerReActFlow(BaseFlow):
             search_engine: SearchEngine,  # 搜索引擎
             mcp_tool: MCPTool,  # mcp工具
             a2a_tool: A2ATool,  # a2a远程agent
+            trace_service: TraceService | None = None,
     ) -> None:
         """构造函数，完成规划与执行流的初始化"""
         # 1.流初始化数据配置
@@ -76,6 +78,7 @@ class PlannerReActFlow(BaseFlow):
             llm=llm,
             json_parser=json_parser,
             tools=tools,
+            trace_service=trace_service,
         )
         logger.debug(f"创建规划Agent成功, 会话id: {self._session_id}")
 
@@ -87,6 +90,7 @@ class PlannerReActFlow(BaseFlow):
             llm=llm,
             json_parser=json_parser,
             tools=tools,
+            trace_service=trace_service,
         )
         logger.debug(f"创建执行Agent成功, 会话id: {self._session_id}")
 

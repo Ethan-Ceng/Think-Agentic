@@ -21,7 +21,7 @@ from app.core.llm.base import LLM
 from app.core.sandbox.base import Sandbox
 from app.core.search.base import SearchEngine
 from app.core.task.base import TaskRunner, Task
-from app.core.entities.app_config import AgentConfig, MCPConfig, A2AConfig
+from app.core.entities.app_config import AgentConfig, LLMConfig, MCPConfig, A2AConfig
 from app.core.entities.tool_config import ToolConfig
 from app.core.entities.event import ErrorEvent, Event, MessageEvent, BaseEvent, ToolEvent, ToolEventStatus, \
     BrowserToolContent, SearchToolContent, ShellToolContent, FileToolContent, MCPToolContent, A2AToolContent, \
@@ -36,6 +36,7 @@ from app.core.flows.planner_react import PlannerReActFlow
 from app.core.tools.a2a import A2ATool
 from app.core.tools.mcp import MCPTool
 from app.core.config import get_settings
+from app.services.trace_service import TraceService
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,7 @@ class AgentTaskRunner(TaskRunner):
             self,
             uow_factory: Callable[[], IUnitOfWork],  # uow模块
             llm: LLM,  # 大语言模型
+            llm_config: LLMConfig,  # LLM配置
             agent_config: AgentConfig,  # 智能体配置
             mcp_config: MCPConfig,  # mcp配置
             a2a_config: A2AConfig,  # a2a配置
@@ -65,6 +67,13 @@ class AgentTaskRunner(TaskRunner):
         self._session_id = session_id
         self._user_id = user_id
         self._sandbox = sandbox
+        self._trace_service = TraceService(
+            uow_factory=uow_factory,
+            tool_config=tool_config,
+            agent_config=agent_config,
+            llm_config=llm_config,
+            fail_silently=True,
+        )
         self._mcp_config = mcp_config
         self._mcp_tool = MCPTool()
         self._a2a_config = a2a_config
@@ -83,6 +92,7 @@ class AgentTaskRunner(TaskRunner):
             search_engine=search_engine,
             mcp_tool=self._mcp_tool,
             a2a_tool=self._a2a_tool,
+            trace_service=self._trace_service,
         )
 
     async def _put_and_add_event(self, task: Task, event: Event) -> None:
@@ -94,6 +104,8 @@ class AgentTaskRunner(TaskRunner):
         # 2.将事件添加到对应的会话中
         async with self._uow:
             await self._uow.session.add_event(self._session_id, event)
+
+        await self._trace_service.project_event(event)
 
     @classmethod
     async def _pop_event(cls, task: Task) -> Event:
@@ -374,6 +386,12 @@ class AgentTaskRunner(TaskRunner):
                 if isinstance(event, MessageEvent):
                     message = event.message or ""
                     await self._sync_message_attachments_to_sandbox(event)
+                    await self._trace_service.start_run(
+                        user_id=self._user_id,
+                        session_id=self._session_id,
+                        task_id=task.id,
+                        input_event=event,
+                    )
                     logger.info(f"AgentTaskRunner接收到新消息: {message[:50]}...")
 
                 # 5.将消息事件转换称消息对象

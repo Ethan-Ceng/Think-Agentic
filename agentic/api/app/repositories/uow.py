@@ -12,6 +12,7 @@ from .file_repository import FileRepository
 from .session_repository import SessionRepository
 from .user_repository import UserRepository
 from .config_repository import ConfigRepository
+from .trace_repository import TraceRepository
 
 T = TypeVar("T", bound="IUnitOfWork")
 
@@ -22,6 +23,7 @@ class IUnitOfWork(ABC):
     session: SessionRepository
     user: UserRepository
     config: ConfigRepository
+    trace: TraceRepository
 
     @abstractmethod
     async def commit(self):

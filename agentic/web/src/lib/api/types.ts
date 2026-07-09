@@ -231,6 +231,164 @@ export type ToolPreflightParams = {
   input_modalities?: string[]
 }
 
+export type RunStatus = 'pending' | 'running' | 'waiting' | 'completed' | 'failed'
+export type RunTraceStatus =
+  | 'started'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'calling'
+  | 'called'
+  | 'blocked'
+  | 'succeeded'
+
+export type AgentRun = {
+  id: string
+  trace_id: string
+  user_id: string
+  session_id: string
+  task_id?: string | null
+  input_event_id?: string | null
+  status: RunStatus
+  input_summary: string
+  final_summary: string
+  error?: string | null
+  tool_config_snapshot: Record<string, unknown>
+  agent_config_snapshot: Record<string, unknown>
+  llm_config_snapshot: Record<string, unknown>
+  started_at?: string | null
+  finished_at?: string | null
+  updated_at?: string
+  created_at: string
+  [key: string]: unknown
+}
+
+export type RunStepRecord = {
+  id: string
+  run_id: string
+  session_id: string
+  event_id?: string | null
+  step_id: string
+  step_index?: number | null
+  title?: string
+  description: string
+  status: RunTraceStatus
+  success?: boolean | null
+  result_summary: string
+  error?: string | null
+  attachments: unknown[]
+  started_at?: string | null
+  finished_at?: string | null
+  updated_at?: string
+  created_at: string
+  [key: string]: unknown
+}
+
+export type ToolCallRecord = {
+  id: string
+  run_id: string
+  run_step_id?: string | null
+  step_id?: string | null
+  session_id: string
+  event_id?: string | null
+  tool_call_id: string
+  tool_id: string
+  tool_name: string
+  function_name: string
+  provider_id?: string | null
+  registration_id?: string | null
+  source_type?: ToolSourceType | null
+  executor_type?: ToolExecutorType | null
+  risk_level?: ToolRiskLevel | null
+  enabled_effective?: boolean | null
+  requires_sandbox: boolean
+  requires_browser: boolean
+  requires_credentials: boolean
+  status: RunTraceStatus
+  arguments: Record<string, unknown>
+  arguments_preview: string
+  arguments_hash: string
+  result: Record<string, unknown>
+  result_preview: string
+  success?: boolean | null
+  error?: string | null
+  latency_ms?: number | null
+  started_at?: string | null
+  finished_at?: string | null
+  updated_at?: string
+  created_at: string
+  [key: string]: unknown
+}
+
+export type ModelCallRecord = {
+  id: string
+  run_id: string
+  run_step_id?: string | null
+  step_id?: string | null
+  session_id: string
+  agent_name: string
+  provider: string
+  base_url: string
+  model_name: string
+  temperature?: number | null
+  max_tokens?: number | null
+  tool_schema_count: number
+  message_count: number
+  tool_choice?: string | null
+  response_format: Record<string, unknown>
+  status: RunTraceStatus
+  finish_reason?: string | null
+  prompt_tokens?: number | null
+  completion_tokens?: number | null
+  total_tokens?: number | null
+  latency_ms?: number | null
+  request_preview: Record<string, unknown>
+  response_preview: Record<string, unknown>
+  error?: string | null
+  started_at?: string | null
+  finished_at?: string | null
+  updated_at?: string
+  created_at: string
+  [key: string]: unknown
+}
+
+export type TraceEventRecord = {
+  id: string
+  trace_id: string
+  run_id: string
+  session_id: string
+  event_id?: string | null
+  event_type: string
+  source: string
+  payload: Record<string, unknown>
+  created_at: string
+  [key: string]: unknown
+}
+
+export type RunListData = {
+  runs: AgentRun[]
+}
+
+export type RunDetailData = {
+  run: AgentRun
+  steps: RunStepRecord[]
+  tool_calls: ToolCallRecord[]
+  model_calls: ModelCallRecord[]
+  events: TraceEventRecord[]
+}
+
+export type RunEventsData = {
+  events: TraceEventRecord[]
+}
+
+export type RunToolCallsData = {
+  tool_calls: ToolCallRecord[]
+}
+
+export type RunModelCallsData = {
+  model_calls: ModelCallRecord[]
+}
+
 export type FileInfo = {
   id: string
   filename: string

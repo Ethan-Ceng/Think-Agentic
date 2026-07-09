@@ -23,8 +23,9 @@ class OpenAILLM(LLM):
     def __init__(self, llm_config: LLMConfig, **kwargs) -> None:
         """构造函数，完成异步OpenAI客户端的创建和参数初始化"""
         # 1.初始化异步客户端
+        self._base_url = str(llm_config.base_url)
         self._client = AsyncOpenAI(
-            base_url=str(llm_config.base_url),
+            base_url=self._base_url,
             api_key=llm_config.api_key,
             **kwargs,
         )
@@ -38,6 +39,10 @@ class OpenAILLM(LLM):
     @property
     def model_name(self) -> str:
         return self._model_name
+
+    @property
+    def base_url(self) -> str:
+        return self._base_url
 
     @property
     def temperature(self) -> float:
@@ -84,7 +89,13 @@ class OpenAILLM(LLM):
 
             # 3.处理响应数据并返回
             logger.info(f"OpenAI客户端返回内容: {response.model_dump()}")
-            return response.choices[0].message.model_dump()
+            message = response.choices[0].message.model_dump()
+            message["_trace_metadata"] = {
+                "model": getattr(response, "model", None),
+                "finish_reason": response.choices[0].finish_reason,
+                "usage": response.usage.model_dump(mode="json") if response.usage else {},
+            }
+            return message
         except Exception as e:
             logger.error(f"调用OpenAI客户端发生错误: {str(e)}")
             raise ServerRequestsError("调用OpenAI客户端向LLM发起请求出错")

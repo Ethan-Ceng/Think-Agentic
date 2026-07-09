@@ -94,6 +94,7 @@ class AgentService:
         task_runner = AgentTaskRunner(
             uow_factory=self._uow_factory,
             llm=llm,
+            llm_config=app_config.llm_config,
             agent_config=app_config.agent_config,
             mcp_config=app_config.mcp_config,
             a2a_config=app_config.a2a_config,

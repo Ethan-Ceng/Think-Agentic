@@ -8,6 +8,7 @@ from .session import SessionModel, SessionStatus
 from .file import FileModel
 from .user import UserModel
 from .config import ConfigModel
+from .run_trace import AgentRunModel, ModelCallModel, RunStepModel, ToolCallModel, TraceEventModel
 
 __all__ = [
     "Base",
@@ -16,4 +17,9 @@ __all__ = [
     "FileModel",
     "UserModel",
     "ConfigModel",
+    "AgentRunModel",
+    "RunStepModel",
+    "ToolCallModel",
+    "ModelCallModel",
+    "TraceEventModel",
 ]

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { Download, FileSearch, FileText, PanelLeftOpen, X } from 'lucide-vue-next'
+import { Activity, Download, FileSearch, FileText, PanelLeftOpen, X } from 'lucide-vue-next'
 import SettingsButton from '@/components/SettingsButton.vue'
 import UserMenu from '@/components/UserMenu.vue'
 import { useSidebar } from '@/composables/useSidebar'
@@ -26,6 +26,7 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   'update:fileListOpen': [open: boolean]
   fileClick: [file: AttachmentFile]
+  openTrace: []
 }>()
 
 const sidebar = useSidebar()
@@ -100,6 +101,9 @@ function handleFileClick(file: SessionFile) {
     <div class="session-header-actions">
       <SettingsButton />
       <UserMenu />
+      <button class="icon-button subtle" type="button" title="查看运行 Trace" @click="emit('openTrace')">
+        <Activity :size="18" />
+      </button>
       <button class="icon-button subtle" type="button" title="查看任务文件" @click="openState = true">
         <FileSearch :size="18" />
       </button>

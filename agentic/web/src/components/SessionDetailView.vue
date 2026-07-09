@@ -39,11 +39,13 @@ type PendingUserMessage = {
 const router = useRouter()
 const toast = useToast()
 const FilePreviewPanel = defineAsyncComponent(() => import('@/components/FilePreviewPanel.vue'))
+const TracePanel = defineAsyncComponent(() => import('@/components/TracePanel.vue'))
 const ToolPreviewPanel = defineAsyncComponent(() => import('@/components/chat/ToolPreviewPanel.vue'))
 const VNCOverlay = defineAsyncComponent(() => import('@/components/VNCOverlay.vue'))
 const fileListOpen = ref(false)
 const previewFile = ref<AttachmentFile | null>(null)
 const previewTool = ref<ToolEvent | null>(null)
+const traceOpen = ref(false)
 const vncOpen = ref(false)
 const initialMessageSent = ref(false)
 const scrollContainerRef = ref<HTMLDivElement | null>(null)
@@ -91,7 +93,7 @@ const timeline = computed<TimelineItem[]>(() => {
   return items
 })
 const planSteps = computed(() => getLatestPlanFromEvents(detail.events.value))
-const hasPreview = computed(() => previewFile.value !== null || resolvedPreviewTool.value !== null)
+const hasPreview = computed(() => previewFile.value !== null || resolvedPreviewTool.value !== null || traceOpen.value)
 const showJumpToBottom = computed(
   () =>
     !isNearBottom.value &&
@@ -272,6 +274,7 @@ watch(
       const shouldFollow = isNearBottom.value
       previewTool.value = latestTool
       previewFile.value = null
+      traceOpen.value = false
       if (shouldFollow) scrollToConversationBottom('smooth')
     }
     prevToolCount.value = toolCount
@@ -385,15 +388,23 @@ function handleViewAllFiles() {
 function handleFileClick(file: AttachmentFile) {
   previewFile.value = file
   previewTool.value = null
+  traceOpen.value = false
 }
 
 function handleToolClick(tool: ToolEvent) {
   if (getToolKind(tool) === 'message') return
   previewTool.value = tool
   previewFile.value = null
+  traceOpen.value = false
 }
 
 function closePreview() {
+  previewFile.value = null
+  previewTool.value = null
+}
+
+function openTracePanel() {
+  traceOpen.value = true
   previewFile.value = null
   previewTool.value = null
 }
@@ -403,6 +414,7 @@ function jumpToLatest() {
   if (latest) {
     previewTool.value = latest
     previewFile.value = null
+    traceOpen.value = false
   }
   scrollContainerRef.value?.scrollTo({
     top: scrollContainerRef.value.scrollHeight,
@@ -417,6 +429,7 @@ function closeVNC() {
   if (latest && detail.session.value?.status === 'running') {
     previewTool.value = latest
     previewFile.value = null
+    traceOpen.value = false
     window.setTimeout(() => {
       scrollContainerRef.value?.scrollTo({
         top: scrollContainerRef.value.scrollHeight,
@@ -475,6 +488,7 @@ async function handleStop() {
             :files="detail.files.value"
             :on-fetch-files="detail.refreshFiles"
             @file-click="handleFileClick"
+            @open-trace="openTracePanel"
           />
 
           <div ref="scrollContainerRef" class="conversation-scroll" @scroll.passive="handleConversationScroll">
@@ -549,6 +563,13 @@ async function handleStop() {
         @close="closePreview"
         @jump-to-latest="jumpToLatest"
         @open-vnc="vncOpen = true"
+      />
+
+      <TracePanel
+        v-if="traceOpen"
+        class="side-preview"
+        :session-id="sessionId"
+        @close="traceOpen = false"
       />
     </div>
 

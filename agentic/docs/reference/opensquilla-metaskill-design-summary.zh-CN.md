@@ -1,5 +1,7 @@
 # OpenSquilla MetaSkill 设计与实现总结
 
+> 参考说明：本文是 OpenSquilla MetaSkill 调研材料，不代表 `agentic` 当前实现。当前路线见 `../roadmap.zh-CN.md`。
+
 > 基于本仓库源码与文档在 2026-07-07 的本地审阅整理。本文聚焦 MetaSkill 的设计方案、执行模型、实现链路、运行状态、审计回放和可借鉴点。
 
 ## 1. 核心判断

@@ -16,6 +16,7 @@ from app.services.agent_service import AgentService
 from app.services.auth_service import AuthService
 from app.services.file_service import FileService
 from app.services.session_service import SessionService
+from app.services.trace_service import TraceService
 from app.services.user_config_service import UserConfigService
 
 
@@ -29,6 +30,10 @@ def get_user_config_service() -> UserConfigService:
 
 def get_session_service() -> SessionService:
     return SessionService(uow_factory=get_uow, sandbox_cls=sandbox_cls)
+
+
+def get_trace_service() -> TraceService:
+    return TraceService(uow_factory=get_uow)
 
 
 def get_file_service(

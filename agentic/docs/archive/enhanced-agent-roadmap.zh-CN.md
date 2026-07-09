@@ -1,5 +1,7 @@
 # Agentic 增强型 Agent 路线
 
+> 归档说明：本文是早期路线草案，已被 `../roadmap.zh-CN.md` 合并收敛。
+
 本文档用于把 `agentic` 的近期方向从“企业平台化蓝图”收敛为“增强型 Agent 产品路线”。当前判断是：先不以 `llmops` 为主线，也不优先补完整 Workflow，而是基于 `agentic` 现有 Planner/ReAct、Sandbox、Browser、Shell、File、MCP、A2A 和 SSE 事件流，做一个更能执行、更可配置、更可复盘的增强型 Agent。
 
 ## 1. 核心判断
@@ -157,7 +159,7 @@ runbook:
 
 增强型 Agent 最大的风险来自强执行工具。必须把工具治理前置。
 
-建议先按现有 `tool-management-landing-plan.md` 落地：
+建议先按现有 `2026-06-08-tool-management-landing-plan.md` 落地：
 
 ```text
 ToolRegistry

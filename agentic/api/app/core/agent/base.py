@@ -20,6 +20,7 @@ from app.core.entities.message import Message
 from app.core.entities.tool_result import ToolResult
 from app.repositories.uow import IUnitOfWork
 from app.core.tools.base import BaseTool
+from app.services.trace_service import TraceService, elapsed_ms, model_call_timer
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,7 @@ class BaseAgent(ABC):
             llm: LLM,  # 语言模型协议
             json_parser: JSONParser,  # JSON输出解析器
             tools: List[BaseTool],  # 工具列表
+            trace_service: TraceService | None = None,
     ) -> None:
         """构造函数，完成Agent的初始化"""
         self._uow_factory = uow_factory
@@ -50,6 +52,7 @@ class BaseAgent(ABC):
         self._memory: Optional[Memory] = None
         self._json_parser = json_parser
         self._tools = tools
+        self._trace_service = trace_service
 
     async def _ensure_memory(self) -> None:
         """确保智能体记忆是存在的"""
@@ -85,14 +88,33 @@ class BaseAgent(ABC):
         # 3.循环向LLM发起提问直到最大重试次数
         error = "调用语言模型发生错误"
         for _ in range(self._agent_config.max_retries):
+            available_tools = self._get_available_tools()
+            model_call_id = None
+            model_started = model_call_timer()
             try:
+                if self._trace_service:
+                    model_call_id = await self._trace_service.record_model_call_started(
+                        agent_name=self.name,
+                        llm=self._llm,
+                        messages=self._memory.get_messages(),
+                        tools=available_tools,
+                        response_format=response_format,
+                        tool_choice=self._tool_choice,
+                    )
+
                 # 4.调用语言模型获取响应内容
                 message = await self._llm.invoke(
                     messages=self._memory.get_messages(),
-                    tools=self._get_available_tools(),
+                    tools=available_tools,
                     response_format=response_format,
                     tool_choice=self._tool_choice,
                 )
+                if self._trace_service:
+                    await self._trace_service.record_model_call_finished(
+                        model_call_id,
+                        message=message,
+                        latency_ms=elapsed_ms(model_started),
+                    )
 
                 # 5.处理AI响应内容避免空回复
                 if message.get("role") == "assistant":
@@ -115,12 +137,22 @@ class BaseAgent(ABC):
                 else:
                     # 8.非AI消息则记录日志并存储message
                     logger.warning(f"LLM响应内容无法确认消息角色: {message.get('role')}")
-                    filtered_message = message
+                    filtered_message = {
+                        key: value
+                        for key, value in message.items()
+                        if key != "_trace_metadata"
+                    }
 
                 # 9.将消息添加到记忆中
                 await self._add_to_memory([filtered_message])
                 return filtered_message
             except Exception as e:
+                if self._trace_service:
+                    await self._trace_service.record_model_call_finished(
+                        model_call_id,
+                        error=str(e),
+                        latency_ms=elapsed_ms(model_started),
+                    )
                 # 10.记录日志并睡眠指定的时间
                 logger.error(f"调用语言模型发生错误: {str(e)}")
                 error = str(e)

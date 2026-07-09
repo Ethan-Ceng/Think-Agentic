@@ -6,6 +6,7 @@ from app.dependencies.services import (
     get_file_service,
     get_user_config_service,
     get_session_service,
+    get_trace_service,
 )
 from app.dependencies.auth import get_current_user
 from app.dependencies.uow import get_uow
@@ -17,5 +18,6 @@ __all__ = [
     "get_file_service",
     "get_user_config_service",
     "get_session_service",
+    "get_trace_service",
     "get_uow",
 ]
