@@ -13,6 +13,7 @@ from app.schemas.tool_config import (
     ToolConfig,
     ToolRegistration,
     ToolRegistrationTestRequest,
+    RuntimeToolPolicy,
 )
 from app.schemas.tool_config import ToolRegistrationCreate, ToolRegistrationUpdate
 from app.services.tool_config_service import ToolConfigService
@@ -84,28 +85,79 @@ def test_tool_registry_lists_builtin_registrations() -> None:
 
 
 def test_filtered_tool_hides_and_denies_disabled_function() -> None:
+    config = ToolConfig(
+        registrations={
+            "api.weather": ToolRegistration(
+                registration_id="api.weather",
+                provider_id="api.weather",
+                provider_label="Weather API",
+                source_type="api",
+                executor_type="api",
+                group="weather",
+                category="weather",
+                config={"openapi_schema": WEATHER_OPENAPI},
+            )
+        },
+        bindings={
+            "api.weather.api_weather_get_weather": ToolBinding(
+                enabled=False,
+                risk_level="low",
+            )
+        }
+    )
+    registry = ToolRegistry(tool_config=config)
+    filtered = FilteredTool(APITool(config), config, registry)
+
+    tool_names = {schema["function"]["name"] for schema in filtered.get_tools()}
+    assert "api_weather_get_weather" not in tool_names
+    assert not filtered.has_tool("api_weather_get_weather")
+
+    result = asyncio.run(filtered.invoke("api_weather_get_weather", city="Hong Kong"))
+    assert result.success is False
+    assert "api.weather.api_weather_get_weather" in result.message
+
+
+def test_system_builtin_tools_ignore_user_bindings_and_executor_policy() -> None:
     registry = ToolRegistry()
     config = ToolConfig(
         bindings={
+            "builtin.file.read_file": ToolBinding(
+                enabled=False,
+                risk_level="low",
+            ),
+            "builtin.message.message_notify_user": ToolBinding(
+                enabled=False,
+                risk_level="low",
+            ),
             "builtin.message.message_ask_user": ToolBinding(
                 enabled=False,
                 risk_level="medium",
-            )
-        }
+            ),
+        },
+        runtime_policy=RuntimeToolPolicy(allowed_executor_types=["api"]),
     )
     filtered = FilteredTool(MessageTool(), config, registry)
 
     tool_names = {schema["function"]["name"] for schema in filtered.get_tools()}
-    assert "message_notify_user" in tool_names
-    assert "message_ask_user" not in tool_names
-    assert not filtered.has_tool("message_ask_user")
+    assert tool_names == {"message_notify_user", "message_ask_user"}
+    assert filtered.has_tool("message_notify_user")
+    assert filtered.has_tool("message_ask_user")
 
-    result = asyncio.run(filtered.invoke("message_ask_user", text="confirm?"))
-    assert result.success is False
-    assert "builtin.message.message_ask_user" in result.message
+    descriptors = {
+        descriptor.function_name: descriptor
+        for descriptor in registry.apply_config(config, effective=True)
+        if descriptor.provider_id.startswith("builtin.")
+    }
+    assert descriptors["message_notify_user"].enabled is True
+    assert descriptors["message_ask_user"].enabled is True
+    assert descriptors["read_file"].enabled is True
+    assert all(
+        not tool_id.startswith("builtin.")
+        for tool_id in registry.default_bindings(config)
+    )
 
 
-def test_preflight_blocks_when_required_shell_tools_are_disabled() -> None:
+def test_preflight_ignores_historical_disabled_builtin_bindings() -> None:
     registry = ToolRegistry()
     bindings = {
         descriptor.tool_id: ToolBinding(
@@ -120,11 +172,11 @@ def test_preflight_blocks_when_required_shell_tools_are_disabled() -> None:
 
     result = service.check("帮我运行 pytest", config)
 
-    assert result.status == "blocked"
-    assert "shell" not in result.capability_snapshot.semantic_tags
+    assert result.status == "pass"
+    assert "shell" in result.capability_snapshot.semantic_tags
     assert any(
         check.rule_id == "shell_required"
-        and check.error_code == "capability_missing:shell"
+        and check.passed
         for check in result.checks
     )
 
@@ -162,8 +214,13 @@ def test_tool_config_service_manages_custom_registrations() -> None:
             for registration in created.registrations
             if registration.registration_id == "api.weather"
         )
+        assert len(created.registrations) == 1
         assert custom.editable is True
         assert custom.enabled is True
+
+        listed = await service.list_tools(USER_ID)
+        assert listed.tools == []
+        assert all(not registration.builtin for registration in listed.registrations)
 
         updated = await service.update_registration(
             USER_ID,

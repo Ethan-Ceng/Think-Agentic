@@ -1,6 +1,6 @@
 # Agentic 文档索引
 
-整理日期：2026-07-09
+整理日期：2026-07-13
 
 这个目录按“当前事实优先，规划其次，历史方案归档”的方式维护。阅读时不要把 `archive/` 或 `reference/` 里的内容当成当前实现。
 
@@ -14,6 +14,8 @@
    对比 `agentic` 与 `llmops` 的工具管理、Trace、tool_calls、model_calls，实现差异和落地细节。
 4. [tool-management.zh-CN.md](tool-management.zh-CN.md)
    工具管理当前实现、未完成项和下一步。
+5. [tool-capability-boundary-redesign.zh-CN.md](tool-capability-boundary-redesign.zh-CN.md)
+   系统内置能力与 API Tools、MCP、A2A 外部能力的最终边界。
 
 ## 目录说明
 
@@ -23,6 +25,7 @@
 | `roadmap.zh-CN.md` | 活跃 | 当前建议执行路线。 |
 | `run-trace-tooling-research.zh-CN.md` | 活跃 | Run / Trace 与工具治理落地调研。 |
 | `tool-management.zh-CN.md` | 活跃 | 工具治理专项说明。 |
+| `tool-capability-boundary-redesign.zh-CN.md` | 活跃 | 内置能力内部装配、外部工具独立管理的已实施基线。 |
 | `reference/` | 参考 | OpenSquilla 调研材料，只用于借鉴设计。 |
 | `archive/` | 归档 | 早期规划和旧基线，保留上下文但不代表当前状态。 |
 

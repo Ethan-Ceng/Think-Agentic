@@ -1,6 +1,6 @@
 # Agentic 当前状态
 
-整理日期：2026-07-09
+整理日期：2026-07-13
 
 本文是 `agentic` 当前实现基线，用于替代旧的数据库与部署基线文档。结论以当前代码为准，不再沿用旧文档中“用户、工具配置未入库”的说法。
 
@@ -13,7 +13,7 @@
 - 用户注册、密码登录、JWT 当前用户。
 - `sessions`、`files` 按 `user_id` 隔离。
 - 用户级配置表 `configs`，承载 LLM、Agent、MCP、A2A、Tool 等配置。
-- API 工具源注册配置、工具启停、能力摘要、preflight、Settings Tools tab。
+- API 工具源注册配置、operation 启停、能力摘要、preflight；Settings 只管理 API Tools，MCP/A2A 保持独立入口，系统内置能力由运行时内部默认装配。
 - 工具执行链路通过 `ToolFactory` 和 `FilteredTool` 过滤可见 schema 与调用。
 - Run / Trace 最小后端闭环：`agent_runs`、`run_steps`、`tool_calls`、`model_calls`、`trace_events`，并提供 `/api/runs` 查询接口。
 - Run / Trace 前端入口：会话页头部可打开 Trace 侧边面板，查看 run 列表、事件时间线、step、tool call、model call。
@@ -113,7 +113,7 @@ storage
 - `ToolFactory`：构建当前 Agent 的工具集合。
 - `FilteredTool`：过滤 LLM 可见工具 schema，并阻止禁用工具调用。
 - 自定义 API 工具源注册、测试和运行时加载。
-- 前端 Settings Tools tab。
+- 前端 Settings“API Tools”页：只管理自定义 API Provider/operations；系统内置能力不展示、不提供用户开关，由 Registry 内部默认装配，用户通知和询问等基础能力始终可用。
 
 当前没有实现：
 

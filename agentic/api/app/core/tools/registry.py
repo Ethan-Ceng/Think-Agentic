@@ -109,6 +109,7 @@ class ToolRegistry:
                 risk_level=descriptor.risk_level,
             )
             for descriptor in self.list_descriptors(tool_config)
+            if not self._is_system_builtin(descriptor)
         }
 
     def resolve_binding(
@@ -125,6 +126,9 @@ class ToolRegistry:
             tool_id,
             ToolBinding(enabled=source_enabled, risk_level=default_risk),
         )
+        if descriptor and self._is_system_builtin(descriptor):
+            binding = binding.model_copy(update={"enabled": True})
+            source_enabled = True
         executor_type = descriptor.executor_type if descriptor else self.executor_type_for_function(tool_name, function_name)
         return tool_id, binding, executor_type, source_enabled
 
@@ -134,6 +138,9 @@ class ToolRegistry:
         tool_name: str,
         function_name: str,
     ) -> bool:
+        descriptor = self.get_by_function_name(function_name, tool_config)
+        if descriptor and self._is_system_builtin(descriptor):
+            return True
         _, binding, executor_type, source_enabled = self.resolve_binding(
             tool_config,
             tool_name,
@@ -148,11 +155,13 @@ class ToolRegistry:
         for descriptor in descriptors:
             binding = tool_config.bindings.get(descriptor.tool_id)
             descriptor.enabled = descriptor.enabled_by_default
-            if binding:
+            if binding and not self._is_system_builtin(descriptor):
                 descriptor.enabled = descriptor.enabled and binding.enabled
                 descriptor.risk_level = binding.risk_level or descriptor.risk_level
+            if self._is_system_builtin(descriptor):
+                descriptor.enabled = True
             if effective:
-                descriptor.enabled = (
+                descriptor.enabled = self._is_system_builtin(descriptor) or (
                     descriptor.enabled
                     and descriptor.executor_type in tool_config.runtime_policy.allowed_executor_types
                 )
@@ -218,3 +227,7 @@ class ToolRegistry:
     @classmethod
     def _risk_for(cls, function_name: str) -> str:
         return risk_for_builtin_function(function_name)
+
+    @staticmethod
+    def _is_system_builtin(descriptor: ToolDescriptor) -> bool:
+        return descriptor.provider_id.startswith("builtin.")

@@ -1,8 +1,10 @@
 # Agentic 工具管理现状
 
-整理日期：2026-07-09
+整理日期：2026-07-13
 
 本文替代旧的工具管理落地计划。旧文档中的 Phase 1/2 已经部分落地，当前应按“实现现状 + 未完成项 + 下一步”维护。
+
+> 能力边界修订（已实施）：当前 API Tools 注册和管理能力继续保留；系统内置能力不再对用户展示或提供控制，由 Registry 内部默认装配；MCP、A2A 保持各自现有页签。详见 [tool-capability-boundary-redesign.zh-CN.md](tool-capability-boundary-redesign.zh-CN.md)。
 
 ## 1. 当前结论
 
@@ -15,12 +17,14 @@
 - API 工具源注册、更新、删除、测试。
 - 能力摘要。
 - preflight 规则诊断。
-- Settings Tools tab。
+- Settings“API Tools”页：只管理自定义 API Provider/operations。
+- 所有 `builtin.*` 都是系统内部默认能力，不生成用户 binding，也不受用户 binding 或 executor 策略影响。
+- `message_notify_user`、`message_ask_user` 作为用户对话基础组件始终可用。
 - `ToolFactory` 构建当前工具集合。
 - `FilteredTool` 过滤 LLM 可见工具 schema，并拦截禁用工具调用。
 - 自定义 API 工具通过注册配置进入运行时。
 
-需要澄清的是：当前没有类似 `llmops` 的通用工具注册管理中心。内置 Shell、File、Browser、Search、Message、MCP、A2A 等工具仍由代码中的 built-in catalog 定义；UI/API 管理的是这些内置工具的启停、风险等级和运行时策略。所谓“注册”主要指用户级自定义 API 工具源配置。
+需要澄清的是：当前没有类似 `llmops` 的通用工具注册管理中心。Shell、File、Browser、Search、Message 等系统能力仍由代码中的 built-in catalog 定义并由运行时默认装配，UI/API 不再提供用户级管理。所谓“注册”主要指用户级自定义 API 工具源配置；MCP、A2A 分别通过各自入口管理。
 
 未完成：
 
@@ -34,7 +38,7 @@
 ## 2. 当前架构
 
 ```text
-Settings Tools tab
+Settings API Tools tab
         |
         v
 /api/tools

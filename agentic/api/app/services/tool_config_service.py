@@ -42,8 +42,14 @@ class ToolConfigService:
     async def list_tools(self, user_id: str) -> ToolListResponse:
         tool_config = await self.get_tool_config(user_id)
         return ToolListResponse(
-            tools=self.registry.apply_config(tool_config),
-            registrations=self._redact_registrations(self.registry.list_registrations(tool_config)),
+            tools=[
+                descriptor
+                for descriptor in self.registry.apply_config(tool_config)
+                if descriptor.executor_type == "api"
+            ],
+            registrations=self._redact_registrations(
+                self._list_api_registrations(tool_config)
+            ),
             runtime_policy=tool_config.runtime_policy,
         )
 
@@ -84,7 +90,9 @@ class ToolConfigService:
     async def list_registrations(self, user_id: str) -> ToolRegistrationListResponse:
         tool_config = await self.get_tool_config(user_id)
         return ToolRegistrationListResponse(
-            registrations=self._redact_registrations(self.registry.list_registrations(tool_config))
+            registrations=self._redact_registrations(
+                self._list_api_registrations(tool_config)
+            )
         )
 
     async def create_registration(
@@ -239,6 +247,13 @@ class ToolConfigService:
             registration.registration_id == registration_id and registration.builtin
             for registration in self.registry.list_registrations()
         )
+
+    def _list_api_registrations(self, tool_config: ToolConfig) -> list[ToolRegistration]:
+        return [
+            registration
+            for registration in self.registry.list_registrations(tool_config)
+            if not registration.builtin and registration.source_type == "api"
+        ]
 
     def _validate_registration(self, registration: ToolRegistration) -> None:
         try:
