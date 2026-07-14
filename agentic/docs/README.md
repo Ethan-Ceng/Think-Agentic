@@ -1,6 +1,6 @@
 # Agentic 文档索引
 
-整理日期：2026-07-13
+整理日期：2026-07-15
 
 这个目录按“当前事实优先，规划其次，历史方案归档”的方式维护。阅读时不要把 `archive/` 或 `reference/` 里的内容当成当前实现。
 
@@ -18,6 +18,8 @@
    系统内置能力与 API Tools、MCP、A2A 外部能力的最终边界。
 6. [file-management.zh-CN.md](file-management.zh-CN.md)
    文件中心、用户上传/AI 生成来源区分，以及 Local/COS/OSS 用户级存储配置。
+7. [librechat-ui-redesign.zh-CN.md](librechat-ui-redesign.zh-CN.md)
+   保持 Vue 3 技术栈、借鉴 LibreChat UI 的页面清单、边界、分阶段改造任务与验收标准。
 
 ## 目录说明
 
@@ -29,6 +31,7 @@
 | `tool-management.zh-CN.md` | 活跃 | 工具治理专项说明。 |
 | `tool-capability-boundary-redesign.zh-CN.md` | 活跃 | 内置能力内部装配、外部工具独立管理的已实施基线。 |
 | `file-management.zh-CN.md` | 活跃 | 文件资产管理、来源追踪、存储 Provider 与删除生命周期。 |
+| `librechat-ui-redesign.zh-CN.md` | 活跃规划 | Web 页面与交互借鉴 LibreChat 的 Vue 3 改造主文档。 |
 | `reference/` | 参考 | OpenSquilla 调研材料，只用于借鉴设计。 |
 | `archive/` | 归档 | 早期规划和旧基线，保留上下文但不代表当前状态。 |
 
