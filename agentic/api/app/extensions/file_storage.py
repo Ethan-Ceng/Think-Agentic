@@ -15,8 +15,11 @@ from app.core.entities.file import File
 class FileStorage(Protocol):
     """文件存储桶协议"""
 
-    async def upload_file(self, upload_file: UploadFile, user_id: str) -> File:
+    async def upload_file(self, upload_file: UploadFile, user_id: str, *, source_type: str = "user_upload", parent_id: str | None = None, origin_session_id: str | None = None, origin_run_id: str | None = None, metadata: dict | None = None) -> File:
         """根据传递的文件源上传文件后返回文件信息"""
+        ...
+
+    async def delete_object(self, file: File) -> None:
         ...
 
     async def download_file(self, file_id: str, user_id: str | None = None) -> Tuple[BinaryIO, File]:

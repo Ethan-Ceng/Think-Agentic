@@ -11,7 +11,6 @@ from app.dependencies.infrastructure import (
     task_cls,
 )
 from app.dependencies.uow import get_uow
-from app.extensions.storage import Storage, get_storage
 from app.services.agent_service import AgentService
 from app.services.auth_service import AuthService
 from app.services.file_service import FileService
@@ -36,18 +35,14 @@ def get_trace_service() -> TraceService:
     return TraceService(uow_factory=get_uow)
 
 
-def get_file_service(
-    storage: Storage = Depends(get_storage),
-) -> FileService:
+def get_file_service() -> FileService:
     return FileService(
         uow_factory=get_uow,
-        file_storage=get_file_storage(storage),
+        file_storage=get_file_storage(),
     )
 
 
-def get_agent_service(
-    storage: Storage = Depends(get_storage),
-) -> AgentService:
+def get_agent_service() -> AgentService:
     return AgentService(
         uow_factory=get_uow,
         user_config_service=get_user_config_service(),
@@ -56,5 +51,5 @@ def get_agent_service(
         task_cls=task_cls,
         json_parser=get_json_parser(),
         search_engine=get_search_engine(),
-        file_storage=get_file_storage(storage),
+        file_storage=get_file_storage(),
     )

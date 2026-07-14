@@ -9,3 +9,10 @@ wheels/
 # Virtual environments
 .venv
 .idea
+
+# Test/runtime scratch data
+api/tmp/
+api/.pytest_tmp/
+
+# Test/runtime scratch data
+api/tmp/

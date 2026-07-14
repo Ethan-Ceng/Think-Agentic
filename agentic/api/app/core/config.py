@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     auth_secret_key: str = "change-me-in-production"
     auth_access_token_ttl_seconds: int = 60 * 60 * 24 * 7
     auth_registration_enabled: bool = True
+    config_encryption_key: str = "change-me-in-production"
+    max_upload_size_mb: int = 100
+    local_storage_path: str = "/app/storage/files"
+    deleted_file_retention_days: int = 7
+    file_purge_interval_seconds: int = 60 * 60
 
     sqlalchemy_database_uri: str = "postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/manus"
 

@@ -17,6 +17,8 @@
 - 工具执行链路通过 `ToolFactory` 和 `FilteredTool` 过滤可见 schema 与调用。
 - Run / Trace 最小后端闭环：`agent_runs`、`run_steps`、`tool_calls`、`model_calls`、`trace_events`，并提供 `/api/runs` 查询接口。
 - Run / Trace 前端入口：会话页头部可打开 Trace 侧边面板，查看 run 列表、事件时间线、step、tool call、model call。
+- 文件中心：独立 `/files` 页面，支持目录、搜索、筛选、上传、预览、下载、重命名、移动和延迟删除，并区分用户上传与 AI 生成文件。
+- 用户级文件存储：Local、腾讯 COS、阿里云 OSS 三种 Provider；凭据加密保存，切换默认 Provider 不改变历史文件读取位置。
 
 仍未标准化入库：
 
@@ -40,7 +42,7 @@ agentic/api/alembic/versions/
 | --- | --- |
 | `users` | 用户账号、密码哈希、状态、登录时间。 |
 | `sessions` | 会话主记录、事件流、文件快照、状态，已带 `user_id`。 |
-| `files` | 上传或生成文件元数据，已带 `user_id`。 |
+| `files` | 用户上传或 AI 生成文件资产，包含目录、来源、实际存储 Provider、Run/Session 来源和延迟清理状态。 |
 | `configs` | 用户级 typed JSONB 配置，按 `user_id + config_type` 唯一。 |
 | `alembic_version` | Alembic 迁移版本。 |
 
@@ -170,7 +172,7 @@ Run / Trace 最小闭环已经开始落地：
 | `auth.py` | `/auth` | 注册、登录、退出、当前用户。 |
 | `health.py` | `/status` | 健康检查。 |
 | `session.py` | `/sessions` | 会话、聊天 SSE、会话文件、沙箱文件、Shell 输出、VNC。 |
-| `file.py` | `/files` | 文件上传、查询、下载。 |
+| `file.py` | `/files` | 文件中心列表、目录、上传、预览、下载、重命名、移动和删除。 |
 | `app_config.py` | `/app-config` | 当前用户 LLM、Agent、MCP、A2A 配置。 |
 | `tools.py` | `/tools` | 工具列表、绑定、注册、测试、能力摘要、preflight。 |
 | `runs.py` | `/runs` | Run / Trace 查询、事件、工具调用、模型调用。 |

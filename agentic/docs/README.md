@@ -16,6 +16,8 @@
    工具管理当前实现、未完成项和下一步。
 5. [tool-capability-boundary-redesign.zh-CN.md](tool-capability-boundary-redesign.zh-CN.md)
    系统内置能力与 API Tools、MCP、A2A 外部能力的最终边界。
+6. [file-management.zh-CN.md](file-management.zh-CN.md)
+   文件中心、用户上传/AI 生成来源区分，以及 Local/COS/OSS 用户级存储配置。
 
 ## 目录说明
 
@@ -26,6 +28,7 @@
 | `run-trace-tooling-research.zh-CN.md` | 活跃 | Run / Trace 与工具治理落地调研。 |
 | `tool-management.zh-CN.md` | 活跃 | 工具治理专项说明。 |
 | `tool-capability-boundary-redesign.zh-CN.md` | 活跃 | 内置能力内部装配、外部工具独立管理的已实施基线。 |
+| `file-management.zh-CN.md` | 活跃 | 文件资产管理、来源追踪、存储 Provider 与删除生命周期。 |
 | `reference/` | 参考 | OpenSquilla 调研材料，只用于借鉴设计。 |
 | `archive/` | 归档 | 早期规划和旧基线，保留上下文但不代表当前状态。 |
 

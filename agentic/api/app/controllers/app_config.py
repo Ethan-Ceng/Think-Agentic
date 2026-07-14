@@ -18,10 +18,45 @@ from app.schemas.app_config import (
     A2AConfig,
 )
 from app.services.user_config_service import UserConfigService
+from app.dependencies.infrastructure import get_file_storage
+from app.schemas.file_management import StorageTestRequest
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/app-config", tags=["应用配置"])
+
+
+@router.get("/storage", summary="获取存储配置")
+async def get_storage_config(
+    current_user: User = Depends(get_current_user),
+    service: UserConfigService = Depends(get_user_config_service),
+) -> Response[dict]:
+    config = await service.get_storage_config(current_user.id)
+    return Response.success(data=config)
+
+
+@router.post("/storage", summary="更新存储配置")
+async def update_storage_config(
+    body: dict = Body(...),
+    current_user: User = Depends(get_current_user),
+    service: UserConfigService = Depends(get_user_config_service),
+) -> Response[dict]:
+    candidate = await service.prepare_storage_config(current_user.id, body)
+    if candidate.default_provider != "local":
+        await get_file_storage().test_provider(current_user.id, candidate.default_provider, candidate)
+    updated = await service.update_storage_config(current_user.id, candidate)
+    return Response.success(data=updated, msg="存储配置已保存")
+
+
+@router.post("/storage/test", summary="测试存储连接")
+async def test_storage_config(
+    body: StorageTestRequest,
+    current_user: User = Depends(get_current_user),
+) -> Response[dict]:
+    if body.provider not in {"local", "qcloud_cos", "aliyun_oss"}:
+        return Response.fail(code=400, msg="不支持的存储 Provider")
+    await get_file_storage().test_provider(current_user.id, body.provider)
+    return Response.success(data={"provider": body.provider, "ok": True}, msg="存储连接测试成功")
 
 
 # ==================== LLM ====================

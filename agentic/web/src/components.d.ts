@@ -29,6 +29,7 @@ declare module 'vue' {
     ElInput: typeof import('element-plus/es')['ElInput']
     ElInputNumber: typeof import('element-plus/es')['ElInputNumber']
     ElOption: typeof import('element-plus/es')['ElOption']
+    ElPagination: typeof import('element-plus/es')['ElPagination']
     ElProgress: typeof import('element-plus/es')['ElProgress']
     ElSelect: typeof import('element-plus/es')['ElSelect']
     ElSwitch: typeof import('element-plus/es')['ElSwitch']
@@ -47,6 +48,7 @@ declare module 'vue' {
     SessionListItem: typeof import('./components/SessionListItem.vue')['default']
     SettingsButton: typeof import('./components/SettingsButton.vue')['default']
     SettingsModal: typeof import('./components/SettingsModal.vue')['default']
+    StorageSettings: typeof import('./components/StorageSettings.vue')['default']
     SuggestedQuestions: typeof import('./components/SuggestedQuestions.vue')['default']
     ThinkingBlock: typeof import('./components/chat/ThinkingBlock.vue')['default']
     ThinkingIndicator: typeof import('./components/chat/ThinkingIndicator.vue')['default']
@@ -56,5 +58,8 @@ declare module 'vue' {
     UserMenu: typeof import('./components/UserMenu.vue')['default']
     VNCOverlay: typeof import('./components/VNCOverlay.vue')['default']
     VNCViewer: typeof import('./components/VNCViewer.vue')['default']
+  }
+  export interface GlobalDirectives {
+    vLoading: typeof import('element-plus/es')['ElLoadingDirective']
   }
 }

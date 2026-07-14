@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useRouter } from 'vue-router'
-import { PanelLeftClose, PanelLeftOpen, Plus } from 'lucide-vue-next'
+import { Files, PanelLeftClose, PanelLeftOpen, Plus } from 'lucide-vue-next'
 import SessionList from '@/components/SessionList.vue'
 import { useSidebar } from '@/composables/useSidebar'
 
@@ -27,6 +27,11 @@ function createTask() {
         <span>新建任务</span>
         <kbd class="kbd">Ctrl</kbd>
         <kbd class="kbd">K</kbd>
+      </button>
+
+      <button class="button left-nav-button" :class="{ active: router.currentRoute.value.name === 'files' }" type="button" @click="router.push('/files')">
+        <Files :size="16" />
+        <span>文件</span>
       </button>
 
       <SessionList />

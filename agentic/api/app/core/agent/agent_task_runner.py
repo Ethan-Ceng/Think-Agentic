@@ -6,9 +6,8 @@
 @File    : agent_task_runner.py
 """
 import asyncio
-import io
+import base64
 import logging
-import uuid
 from typing import List, AsyncGenerator, Callable, BinaryIO
 
 from fastapi import UploadFile
@@ -35,7 +34,6 @@ from app.repositories.uow import IUnitOfWork
 from app.core.flows.planner_react import PlannerReActFlow
 from app.core.tools.a2a import A2ATool
 from app.core.tools.mcp import MCPTool
-from app.core.config import get_settings
 from app.services.trace_service import TraceService
 
 logger = logging.getLogger(__name__)
@@ -140,10 +138,7 @@ class AgentTaskRunner(TaskRunner):
 
             # 4.判断是否上传成功
             if tool_result.success:
-                file.filepath = filepath
-                async with self._uow:
-                    await self._uow.file.save(file)  # 可以更新也可以不更新
-                return file
+                return file.model_copy(update={"filepath": filepath})
         except Exception as e:
             logger.exception(f"AgentTaskRunner同步文件[{file_id}]失败: {str(e)}")
 
@@ -212,7 +207,13 @@ class AgentTaskRunner(TaskRunner):
             )
 
             # 5.上传文件到文件存储桶
-            file = await self._file_storage.upload_file(upload_file, user_id=self._user_id)
+            file = await self._file_storage.upload_file(
+                upload_file,
+                user_id=self._user_id,
+                source_type="agent_generated",
+                origin_session_id=self._session_id,
+                origin_run_id=self._trace_service.run_id,
+            )
             file.filepath = filepath
 
             # 6.往会话中新增一个文件信息
@@ -244,20 +245,8 @@ class AgentTaskRunner(TaskRunner):
 
     async def _get_browser_screenshot(self) -> str:
         """获取浏览器截图并返回截图文件对应的在线URL"""
-        # 1.调用浏览器完成截图
         screenshot = await self._browser.screenshot()
-
-        # 2.将浏览器截图上传到文件存储中
-        file = await self._file_storage.upload_file(UploadFile(
-            file=io.BytesIO(screenshot),
-            filename=f"{str(uuid.uuid4())}.png",
-            # bugfix:添加size尺寸
-            size=self._get_stream_size(io.BytesIO(screenshot)),
-        ), user_id=self._user_id)
-
-        # 3.获取setting并组装完整URL
-        settings = get_settings()
-        return f"https://{settings.cos_bucket}.cos.{settings.cos_region}.myqcloud.com/{file.key}"
+        return f"data:image/png;base64,{base64.b64encode(screenshot).decode('ascii')}"
 
     async def _handle_tool_event(self, event: ToolEvent) -> None:
         """额外处理工具消息，使其前端交互更友好"""
@@ -293,8 +282,6 @@ class AgentTaskRunner(TaskRunner):
                         file_read_result = await self._sandbox.read_file(filepath)
                         file_content: str = (file_read_result.data or {}).get("content", "")
                         event.tool_content = FileToolContent(content=file_content)
-                        # bugfix:修改为同步文件到storage
-                        await self._sync_file_to_storage(filepath)
                     else:
                         event.tool_content = FileToolContent(content="(No Content)")
                 elif event.tool_name in ["mcp", "a2a"]:

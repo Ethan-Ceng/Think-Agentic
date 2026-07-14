@@ -6,9 +6,16 @@ import type {
   LLMConfig,
   MCPConfig,
   MCPServersData,
+  StorageConfig,
 } from './types'
 
 export const configApi = {
+  getStorageConfig: (): Promise<StorageConfig> => get<StorageConfig>('/app-config/storage'),
+
+  updateStorageConfig: (config: StorageConfig): Promise<StorageConfig> => post<StorageConfig>('/app-config/storage', config),
+
+  testStorageConfig: (provider: StorageConfig['default_provider']): Promise<{ provider: string; ok: boolean }> =>
+    post<{ provider: string; ok: boolean }>('/app-config/storage/test', { provider }),
   getLLMConfig: (): Promise<LLMConfig> => {
     return get<LLMConfig>('/app-config/llm')
   },

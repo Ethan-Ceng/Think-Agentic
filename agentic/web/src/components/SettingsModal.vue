@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { ClipboardCheck, Languages, LayoutGrid, Loader2, Pencil, Play, Plus, Settings, ShieldAlert, Trash, Wrench } from 'lucide-vue-next'
+import { ClipboardCheck, Database, Languages, LayoutGrid, Loader2, Pencil, Play, Plus, Settings, ShieldAlert, Trash, Wrench } from 'lucide-vue-next'
+import StorageSettings from '@/components/StorageSettings.vue'
 import { useSettingsModal } from '@/composables/useSettingsModal'
 import { useToast } from '@/composables/useToast'
 import { configApi } from '@/lib/api/config'
@@ -20,7 +21,7 @@ import type {
   ToolRiskLevel,
 } from '@/lib/api/types'
 
-type SettingTab = 'common' | 'llm' | 'tools' | 'a2a' | 'mcp'
+type SettingTab = 'common' | 'llm' | 'storage' | 'tools' | 'a2a' | 'mcp'
 
 const toast = useToast()
 const settingsModal = useSettingsModal()
@@ -79,6 +80,7 @@ const preflightResult = ref<ToolPreflightResponse | null>(null)
 const tabs = [
   { key: 'common' as const, icon: Settings, title: '通用配置' },
   { key: 'llm' as const, icon: Languages, title: '模型提供商' },
+  { key: 'storage' as const, icon: Database, title: '文件存储' },
   { key: 'tools' as const, icon: ShieldAlert, title: 'API Tools' },
   { key: 'a2a' as const, icon: LayoutGrid, title: 'A2A Agent' },
   { key: 'mcp' as const, icon: Wrench, title: 'MCP 服务器' },
@@ -788,6 +790,8 @@ async function addA2A() {
             <ElInputNumber v-model="llmConfig.max_tokens" :min="1" :max="128000" :step="1024" controls-position="right" />
           </ElFormItem>
         </ElForm>
+
+        <StorageSettings v-else-if="activeTab === 'storage'" />
 
         <section v-else-if="activeTab === 'tools'" class="settings-list tools-settings">
           <header>

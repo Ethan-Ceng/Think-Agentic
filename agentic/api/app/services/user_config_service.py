@@ -20,8 +20,10 @@ from app.core.entities.app_config import (
 )
 from app.core.entities.config import Config
 from app.core.entities.tool_config import ToolConfig
+from app.core.entities.storage_config import StorageConfig
 from app.repositories.uow import IUnitOfWork
 from app.schemas.exceptions import BadRequestError
+from app.services.config_crypto import ConfigCrypto
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +47,10 @@ CONFIG_TYPES = {
 }
 
 REDACTED_VALUE = "******"
+STORAGE_SECRET_FIELDS = {
+    "qcloud_cos": ("secret_id", "secret_key"),
+    "aliyun_oss": ("access_key_id", "access_key_secret"),
+}
 SENSITIVE_KEY_PARTS = (
     "api_key",
     "apikey",
@@ -68,6 +74,7 @@ class UserConfigService:
         self._uow_factory = uow_factory
         self._settings = get_settings()
         self._default_app_config: AppConfig | None = None
+        self._crypto = ConfigCrypto()
 
     def _load_default_app_config(self) -> AppConfig:
         if self._default_app_config is not None:
@@ -253,6 +260,94 @@ class UserConfigService:
     async def update_tool_config(self, user_id: str, new_config: Any) -> ToolConfig:
         data = ToolConfig.model_validate(self._to_plain_data(new_config)).model_dump(mode="json")
         return ToolConfig.model_validate(await self.upsert_raw_config(user_id, CONFIG_TYPE_TOOL, data))
+
+    def _default_storage_config(self) -> StorageConfig:
+        cos_enabled = bool(
+            self._settings.cos_bucket
+            and self._settings.cos_region
+            and self._settings.cos_secret_id
+            and self._settings.cos_secret_key
+        )
+        return StorageConfig.model_validate(
+            {
+                "default_provider": "qcloud_cos" if cos_enabled else "local",
+                "providers": {
+                    "local": {"enabled": True},
+                    "qcloud_cos": {
+                        "enabled": cos_enabled,
+                        "bucket": self._settings.cos_bucket,
+                        "region": self._settings.cos_region,
+                        "domain": self._settings.cos_domain,
+                        "scheme": self._settings.cos_scheme or "https",
+                        "secret_id": self._settings.cos_secret_id,
+                        "secret_key": self._settings.cos_secret_key,
+                    },
+                    "aliyun_oss": {"enabled": False},
+                },
+            }
+        )
+
+    @classmethod
+    def _restore_storage_masks(cls, incoming: Dict[str, Any], existing: Dict[str, Any]) -> Dict[str, Any]:
+        restored = copy.deepcopy(incoming)
+        incoming_providers = restored.setdefault("providers", {})
+        existing_providers = existing.get("providers", {})
+        for provider_name, field_names in STORAGE_SECRET_FIELDS.items():
+            provider = incoming_providers.setdefault(provider_name, {})
+            existing_provider = existing_providers.get(provider_name, {})
+            for field_name in field_names:
+                if provider.get(field_name) == REDACTED_VALUE:
+                    provider[field_name] = existing_provider.get(field_name, "")
+        return restored
+
+    def _encrypt_storage_config(self, config: StorageConfig) -> Dict[str, Any]:
+        data = config.model_dump(mode="json")
+        for provider_name, field_names in STORAGE_SECRET_FIELDS.items():
+            provider = data["providers"][provider_name]
+            for field_name in field_names:
+                provider[field_name] = self._crypto.encrypt(provider.get(field_name, ""))
+        return data
+
+    def _decrypt_storage_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        decrypted = copy.deepcopy(data)
+        for provider_name, field_names in STORAGE_SECRET_FIELDS.items():
+            provider = decrypted.get("providers", {}).get(provider_name, {})
+            for field_name in field_names:
+                provider[field_name] = self._crypto.decrypt(provider.get(field_name, ""))
+        return decrypted
+
+    @classmethod
+    def _redact_storage_config(cls, config: StorageConfig) -> Dict[str, Any]:
+        data = config.model_dump(mode="json")
+        for provider_name, field_names in STORAGE_SECRET_FIELDS.items():
+            provider = data["providers"][provider_name]
+            for field_name in field_names:
+                provider[field_name] = REDACTED_VALUE if provider.get(field_name) else ""
+        return data
+
+    async def get_storage_config(self, user_id: str, *, redact: bool = True) -> StorageConfig | Dict[str, Any]:
+        stored = await self.get_raw_config(user_id, CONFIG_TYPE_STORAGE)
+        if stored:
+            data = self._decrypt_storage_data(stored)
+            config = StorageConfig.model_validate(data)
+        else:
+            config = self._default_storage_config()
+        return self._redact_storage_config(config) if redact else config
+
+    async def prepare_storage_config(self, user_id: str, new_config: Any) -> StorageConfig:
+        current = await self.get_storage_config(user_id, redact=False)
+        assert isinstance(current, StorageConfig)
+        incoming = self._to_plain_data(new_config)
+        restored = self._restore_storage_masks(incoming, current.model_dump(mode="json"))
+        try:
+            return StorageConfig.model_validate(restored)
+        except PydanticValidationError as exc:
+            raise BadRequestError(f"存储配置格式错误: {exc}") from exc
+
+    async def update_storage_config(self, user_id: str, new_config: Any) -> Dict[str, Any]:
+        config = await self.prepare_storage_config(user_id, new_config)
+        await self.upsert_raw_config(user_id, CONFIG_TYPE_STORAGE, self._encrypt_storage_config(config))
+        return self._redact_storage_config(config)
 
     async def get_app_config(self, user_id: str) -> AppConfig:
         return AppConfig(

@@ -203,6 +203,18 @@ export function put<T = unknown>(
   })
 }
 
+export function patch<T = unknown>(
+  endpoint: string,
+  data?: unknown,
+  options?: RequestOptions,
+): Promise<T> {
+  return request<T>(endpoint, {
+    ...options,
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  })
+}
+
 export function del<T = unknown>(endpoint: string, options?: RequestOptions): Promise<T> {
   return request<T>(endpoint, {
     ...options,

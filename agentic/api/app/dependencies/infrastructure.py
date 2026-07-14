@@ -6,21 +6,16 @@ from app.core.llm.openai_llm import OpenAILLM
 from app.core.sandbox.docker_sandbox import DockerSandbox
 from app.core.search.bing_search import BingSearchEngine
 from app.core.task.redis_stream_task import RedisStreamTask
-from app.extensions.cos_file_storage import CosFileStorage
-from app.extensions.storage import Storage
+from app.extensions.managed_file_storage import ManagedFileStorage
 from app.repositories.file_app_config_repository import FileAppConfigRepository
 
 settings = get_settings()
 
 
-def get_file_storage(storage: Storage) -> CosFileStorage:
+def get_file_storage() -> ManagedFileStorage:
     from app.dependencies.uow import get_uow
 
-    return CosFileStorage(
-        bucket=settings.cos_bucket,
-        cos=storage,
-        uow_factory=get_uow,
-    )
+    return ManagedFileStorage(uow_factory=get_uow)
 
 
 def get_app_config():

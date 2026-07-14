@@ -397,12 +397,62 @@ export type FileInfo = {
   extension: string
   content_type: string
   size: number
+  parent_id?: string | null
+  type?: 'file' | 'folder'
+  name?: string
+  mime_type?: string
+  storage_provider?: 'local' | 'qcloud_cos' | 'aliyun_oss'
+  source_type?: 'user_upload' | 'agent_generated'
+  status?: 'available' | 'deleted'
+  sha256?: string
+  origin_session_id?: string | null
+  origin_run_id?: string | null
+  preview_url?: string
+  download_url?: string
+  created_at?: number
+  updated_at?: number
   [key: string]: unknown
 }
 
 export type FileUploadParams = {
   file: File
   session_id?: string
+  parent_id?: string | null
+}
+
+export type ManagedFile = Required<Pick<FileInfo, 'id' | 'filename' | 'size'>> & {
+  parent_id: string | null
+  type: 'file' | 'folder'
+  name: string
+  extension: string
+  mime_type: string
+  storage_provider: 'local' | 'qcloud_cos' | 'aliyun_oss'
+  source_type: 'user_upload' | 'agent_generated'
+  status: 'available' | 'deleted'
+  preview_url: string
+  download_url: string
+  created_at: number
+  updated_at: number
+}
+
+export type FilePaginator = {
+  current_page: number
+  page_size: number
+  total_page: number
+  total_record: number
+}
+
+export type ManagedFilesData = { list: ManagedFile[]; paginator: FilePaginator }
+export type FolderTreeItem = { id: string; parent_id: string | null; name: string; depth: number }
+
+export type StorageProvider = 'local' | 'qcloud_cos' | 'aliyun_oss'
+export type StorageConfig = {
+  default_provider: StorageProvider
+  providers: {
+    local: { enabled: boolean }
+    qcloud_cos: { enabled: boolean; bucket: string; region: string; domain: string; scheme: 'http' | 'https'; secret_id: string; secret_key: string }
+    aliyun_oss: { enabled: boolean; bucket: string; endpoint: string; region: string; domain: string; path_prefix: string; access_key_id: string; access_key_secret: string }
+  }
 }
 
 export type Session = {

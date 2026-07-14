@@ -4,6 +4,8 @@
 主应用入口 - 重构后的简化版本
 """
 import logging
+import asyncio
+from contextlib import suppress
 from contextlib import asynccontextmanager
 
 from alembic import command
@@ -12,7 +14,8 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.extensions import get_db, get_redis, get_storage
+from app.extensions import get_db, get_redis
+from app.dependencies.infrastructure import get_file_storage
 from app.controllers import router
 from app.schemas.exceptions import AppException
 from app.core.config import get_settings
@@ -26,6 +29,17 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+async def _purge_deleted_files() -> None:
+    while True:
+        await asyncio.sleep(settings.file_purge_interval_seconds)
+        try:
+            purged = await get_file_storage().purge_expired()
+            if purged:
+                logger.info("Purged %s expired files", purged)
+        except Exception:
+            logger.exception("Deleted file purge failed")
 
 
 @asynccontextmanager
@@ -45,7 +59,7 @@ async def lifespan(app: FastAPI):
     # 初始化扩展
     await get_db().init()
     await get_redis().init()
-    await get_storage().init()
+    purge_task = asyncio.create_task(_purge_deleted_files())
 
     logger.info("MoocManus 启动完成")
 
@@ -53,9 +67,11 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         logger.info("MoocManus 正在关闭...")
+        purge_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await purge_task
         await get_db().shutdown()
         await get_redis().shutdown()
-        await get_storage().shutdown()
         logger.info("MoocManus 关闭完成")
 
 

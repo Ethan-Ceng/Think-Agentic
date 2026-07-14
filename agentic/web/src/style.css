@@ -291,6 +291,20 @@ h3 {
   padding: 0 10px;
 }
 
+.left-nav-button {
+  width: 100%;
+  justify-content: flex-start;
+  gap: 9px;
+  background: transparent;
+  color: #4b5563;
+}
+
+.left-nav-button.active,
+.left-nav-button:hover {
+  background: #e7e7e4;
+  color: #111827;
+}
+
 .kbd {
   display: inline-flex;
   align-items: center;
