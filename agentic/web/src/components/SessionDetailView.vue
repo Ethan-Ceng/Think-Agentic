@@ -2,6 +2,7 @@
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowDown } from 'lucide-vue-next'
+import { ElMessageBox } from 'element-plus'
 import ChatInput from '@/components/chat/ChatInput.vue'
 import ChatMessage from '@/components/chat/ChatMessage.vue'
 import PlanPanel from '@/components/chat/PlanPanel.vue'
@@ -12,7 +13,7 @@ import UiState from '@/components/ui/UiState.vue'
 import { useSessionDetail } from '@/composables/useSessionDetail'
 import { useToast } from '@/composables/useToast'
 import { sessionApi } from '@/lib/api/session'
-import type { FileInfo, ToolEvent } from '@/lib/api/types'
+import type { FileInfo, ResumeMode, ToolEvent } from '@/lib/api/types'
 import type { AttachmentFile, TimelineItem, UserMessageStatus } from '@/lib/session-events'
 import { eventsToTimeline, formatMessageTimeLabel, getLatestPlanFromEvents } from '@/lib/session-events'
 import { getToolKind } from '@/lib/tool-utils'
@@ -98,6 +99,13 @@ const timeline = computed<TimelineItem[]>(() => {
   return items
 })
 const planSteps = computed(() => getLatestPlanFromEvents(detail.events.value))
+const latestRecoverableErrorId = computed(() => {
+  if (detail.session.value?.status !== 'completed') return null
+  for (let i = timeline.value.length - 1; i >= 0; i--) {
+    if (timeline.value[i].kind === 'error') return timeline.value[i].id
+  }
+  return null
+})
 const hasPreview = computed(() => previewFile.value !== null || resolvedPreviewTool.value !== null || traceOpen.value)
 const showJumpToBottom = computed(
   () =>
@@ -418,6 +426,35 @@ function handleFileClick(file: AttachmentFile) {
   traceOpen.value = false
 }
 
+async function handleRecoverTask(mode: ResumeMode) {
+  if (detail.streaming.value || detail.session.value?.status === 'running') return
+
+  if (mode === 'restart') {
+    try {
+      await ElMessageBox.confirm(
+        '将基于当前对话的原始需求从头执行，并创建一个新的运行记录。已产生的文件不会自动删除。',
+        '从头重新执行任务？',
+        {
+          confirmButtonText: '重新执行',
+          cancelButtonText: '取消',
+          type: 'warning',
+        },
+      )
+    } catch {
+      return
+    }
+  }
+
+  stoppedAt.value = null
+  try {
+    await detail.resumeTask(mode)
+    isNearBottom.value = true
+    scrollToConversationBottom('smooth')
+  } catch (error) {
+    toast.error(error instanceof Error ? error.message : '恢复任务失败，请稍后再试')
+  }
+}
+
 function handleToolClick(tool: ToolEvent) {
   if (getToolKind(tool) === 'message') return
   previewTool.value = tool
@@ -536,10 +573,13 @@ async function handleStop() {
                 :key="item.id"
                 :item="item"
                 :dom-id="item.sourceEventId ? `event-${item.sourceEventId}` : undefined"
+                :show-recovery-actions="item.kind === 'error' && item.id === latestRecoverableErrorId"
+                :recovery-busy="detail.streaming.value"
                 @view-all-files="handleViewAllFiles"
                 @file-click="handleFileClick"
                 @tool-click="handleToolClick"
                 @retry-message="handleRetryMessage"
+                @recover-task="handleRecoverTask"
               />
 
               <div

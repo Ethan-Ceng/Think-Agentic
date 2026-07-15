@@ -28,6 +28,15 @@ class TraceRepository(Protocol):
     async def append_event(self, data: Dict[str, Any]) -> None:
         ...
 
+    async def finalize_interrupted_run(
+        self,
+        session_id: str,
+        error: str,
+        finished_at: Any,
+    ) -> Optional[str]:
+        """Fail the latest active run and all of its unfinished child records."""
+        ...
+
     async def list_runs(
         self,
         user_id: str,

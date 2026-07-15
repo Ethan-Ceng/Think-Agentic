@@ -514,6 +514,12 @@ export type ChatParams = {
   [key: string]: unknown
 }
 
+export type ResumeMode = 'continue' | 'restart'
+
+export type ResumeSessionParams = {
+  mode: ResumeMode
+}
+
 export type SessionDetail = Session & {
   events?: SSEEventData[]
 }

@@ -2,6 +2,7 @@ import { createSSEStream, get, parseSSEStream, post } from './fetch'
 import type {
   ChatParams,
   CreateSessionParams,
+  ResumeSessionParams,
   SSEEventData,
   SSEEventHandler,
   Session,
@@ -140,6 +141,56 @@ export const sessionApi = {
     return () => {
       controller.abort()
     }
+  },
+
+  resumeSession: (
+    sessionId: string,
+    params: ResumeSessionParams,
+    onEvent: SSEEventHandler,
+    onError?: (error: Error) => void,
+  ): (() => void) => {
+    const controller = new AbortController()
+
+    const startStream = async () => {
+      try {
+        const stream = await createSSEStream(
+          `/sessions/${sessionId}/resume`,
+          params,
+          {
+            signal: controller.signal,
+            timeout: 5 * 60 * 1000,
+          },
+        )
+
+        await parseSSEStream(
+          stream,
+          (messageEvent) => {
+            if (controller.signal.aborted) return
+            const data =
+              typeof messageEvent.data === 'string'
+                ? JSON.parse(messageEvent.data)
+                : messageEvent.data
+            onEvent({
+              type: messageEvent.type as SSEEventData['type'],
+              data,
+            } as SSEEventData)
+          },
+          (error) => {
+            if (!controller.signal.aborted) onError?.(error)
+          },
+        )
+
+        if (!controller.signal.aborted) onError?.(new Error('SSE_STREAM_END'))
+      } catch (error) {
+        if (error instanceof Error && error.name === 'AbortError') return
+        if (!controller.signal.aborted) {
+          onError?.(error instanceof Error ? error : new Error('启动任务恢复流失败'))
+        }
+      }
+    }
+
+    void startStream()
+    return () => controller.abort()
   },
 
   stopSession: (sessionId: string): Promise<void> => {

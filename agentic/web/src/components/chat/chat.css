@@ -329,6 +329,41 @@
   color: #991b1b;
 }
 
+.task-recovery-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.task-recovery-button {
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid #fecaca;
+  border-radius: var(--radius-sm);
+  background: #fff;
+  color: #991b1b;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.task-recovery-button.is-primary {
+  border-color: #dc2626;
+  background: #dc2626;
+  color: #fff;
+}
+
+.task-recovery-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.task-recovery-button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
 .message-actions {
   display: flex;
   gap: 4px;

@@ -1,7 +1,7 @@
 import { computed, onBeforeUnmount, ref, unref, watch, type Ref } from 'vue'
 import { sessionApi } from '@/lib/api/session'
 import { normalizeEvent, normalizeEvents } from '@/lib/session-events'
-import type { SSEEventData, SessionDetail, SessionFile } from '@/lib/api/types'
+import type { ResumeMode, SSEEventData, SessionDetail, SessionFile } from '@/lib/api/types'
 
 export type UseSessionDetailResult = {
   session: Ref<SessionDetail | null>
@@ -12,6 +12,7 @@ export type UseSessionDetailResult = {
   refresh: () => Promise<void>
   refreshFiles: () => Promise<void>
   sendMessage: (message: string, attachmentIds: string[]) => Promise<void>
+  resumeTask: (mode: ResumeMode) => Promise<void>
   streaming: Ref<boolean>
 }
 
@@ -43,11 +44,18 @@ export function useSessionDetail(
 
   let emptyStreamCleanup: (() => void) | null = null
   let messageStreamCleanup: (() => void) | null = null
+  let emptyReconnectTimer: number | null = null
+  let emptyReconnectAttempt = 0
   let isSendMessage = false
   let lastEventId: string | null = null
   let seenEventIds = new Set<string>()
 
   function appendEvent(ev: SSEEventData): void {
+    emptyReconnectAttempt = 0
+    if (emptyReconnectTimer !== null) {
+      window.clearTimeout(emptyReconnectTimer)
+      emptyReconnectTimer = null
+    }
     let evToAppend = ev
     if (
       ev.data &&
@@ -110,6 +118,10 @@ export function useSessionDetail(
   }
 
   function stopEmptyStream(): void {
+    if (emptyReconnectTimer !== null) {
+      window.clearTimeout(emptyReconnectTimer)
+      emptyReconnectTimer = null
+    }
     if (emptyStreamCleanup) {
       emptyStreamCleanup()
       emptyStreamCleanup = null
@@ -118,7 +130,7 @@ export function useSessionDetail(
 
   function startEmptyStream(): void {
     const currentId = id.value
-    if (!currentId) return
+    if (!currentId || session.value?.status === 'completed') return
 
     stopEmptyStream()
     emptyStreamCleanup = sessionApi.chat(
@@ -129,16 +141,30 @@ export function useSessionDetail(
         if (err.name === 'AbortError') return
         if (err.message === 'SSE_STREAM_END') {
           emptyStreamCleanup = null
-          window.setTimeout(() => {
-            if (!emptyStreamCleanup && !isSendMessage) {
-              startEmptyStream()
-            }
-          }, 500)
+          scheduleEmptyStreamReconnect()
           return
         }
         console.warn('Session detail empty stream error:', err)
+        emptyStreamCleanup = null
+        scheduleEmptyStreamReconnect()
       },
     )
+  }
+
+  function scheduleEmptyStreamReconnect(): void {
+    if (
+      emptyReconnectTimer !== null ||
+      isSendMessage ||
+      !id.value ||
+      session.value?.status === 'completed'
+    ) return
+
+    const delay = Math.min(1000 * 2 ** emptyReconnectAttempt, 15_000)
+    emptyReconnectAttempt += 1
+    emptyReconnectTimer = window.setTimeout(() => {
+      emptyReconnectTimer = null
+      if (!emptyStreamCleanup && !isSendMessage) startEmptyStream()
+    }, delay)
   }
 
   async function refresh(): Promise<void> {
@@ -244,6 +270,46 @@ export function useSessionDetail(
     )
   }
 
+  async function resumeTask(mode: ResumeMode): Promise<void> {
+    const currentId = id.value
+    if (!currentId) return
+
+    stopEmptyStream()
+    if (messageStreamCleanup) {
+      messageStreamCleanup()
+      messageStreamCleanup = null
+    }
+
+    skipEmptyStream.value = false
+    isSendMessage = true
+    streaming.value = true
+    error.value = null
+    session.value = session.value ? { ...session.value, status: 'running' } : null
+
+    messageStreamCleanup = sessionApi.resumeSession(
+      currentId,
+      { mode },
+      (ev) => {
+        appendEvent(ev)
+        if (ev.type === 'done') {
+          streaming.value = false
+          isSendMessage = false
+          messageStreamCleanup?.()
+          messageStreamCleanup = null
+        }
+      },
+      (err) => {
+        if (err.name === 'AbortError') return
+        streaming.value = false
+        isSendMessage = false
+        messageStreamCleanup = null
+        if (err.message === 'SSE_STREAM_END') return
+        error.value = err
+        session.value = session.value ? { ...session.value, status: 'completed' } : null
+      },
+    )
+  }
+
   watch(
     id,
     () => {
@@ -258,6 +324,7 @@ export function useSessionDetail(
       error.value = null
       lastEventId = null
       seenEventIds = new Set()
+      emptyReconnectAttempt = 0
       isSendMessage = false
       streaming.value = false
       skipEmptyStream.value = Boolean(unref(initialSkipEmptyStream))
@@ -303,6 +370,7 @@ export function useSessionDetail(
     refresh,
     refreshFiles,
     sendMessage,
+    resumeTask,
     streaming,
   }
 }

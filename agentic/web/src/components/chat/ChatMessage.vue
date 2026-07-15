@@ -14,13 +14,15 @@ import {
   RefreshCw,
 } from 'lucide-vue-next'
 import type { Component } from 'vue'
-import type { ToolEvent } from '@/lib/api/types'
+import type { ResumeMode, ToolEvent } from '@/lib/api/types'
 import type { AttachmentFile, TimelineItem, UserMessageStatus } from '@/lib/session-events'
 import { getFriendlyToolLabel, getToolKind } from '@/lib/tool-utils'
 
 defineProps<{
   item: TimelineItem
   domId?: string
+  showRecoveryActions?: boolean
+  recoveryBusy?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -28,6 +30,7 @@ const emit = defineEmits<{
   fileClick: [file: AttachmentFile]
   toolClick: [tool: ToolEvent]
   retryMessage: [itemId: string]
+  recoverTask: [mode: ResumeMode]
 }>()
 
 const statusIconMap: Record<UserMessageStatus, Component> = {
@@ -165,9 +168,27 @@ function handleToolClick(tool: ToolEvent) {
       <div class="assistant-status-card assistant-error-card">
         <div class="assistant-status-card-title">
           <AlertCircle :size="16" />
-          <strong>回复异常</strong>
+          <strong>{{ showRecoveryActions ? '任务执行中断' : '回复异常' }}</strong>
         </div>
         <MarkdownContent :content="item.error || '发生未知错误'" />
+        <div v-if="showRecoveryActions" class="task-recovery-actions">
+          <button
+            class="task-recovery-button is-primary"
+            type="button"
+            :disabled="recoveryBusy"
+            @click="emit('recoverTask', 'continue')"
+          >
+            从未完成处继续
+          </button>
+          <button
+            class="task-recovery-button"
+            type="button"
+            :disabled="recoveryBusy"
+            @click="emit('recoverTask', 'restart')"
+          >
+            从头重新执行
+          </button>
+        </div>
       </div>
       <MessageActions :content="item.error" />
     </div>

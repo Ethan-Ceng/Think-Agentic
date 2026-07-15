@@ -31,6 +31,21 @@ logger = logging.getLogger(__name__)
 class AgentService:
     """Manus智能体服务"""
 
+    ORPHANED_RUN_ERROR = (
+        "任务执行已中断：服务重启后运行上下文已丢失。"
+        "你可以在当前对话中继续未完成的任务，或从头重新执行。"
+    )
+    RECOVERY_MESSAGES = {
+        "continue": (
+            "请基于当前对话已有结果，从未完成处继续执行任务。"
+            "保留已经完成的步骤和产物，先核对当前状态，避免重复执行可能产生副作用的操作。"
+        ),
+        "restart": (
+            "请基于当前对话中的原始需求，从头重新执行任务。"
+            "重新检查前置条件并生成新的执行计划；执行可能产生副作用的操作前，先确认当前状态。"
+        ),
+    }
+
     def __init__(
             self,
             uow_factory: Callable[[], IUnitOfWork],
@@ -130,6 +145,42 @@ class AgentService:
         except Exception as e:
             logger.warning(f"会话[{session_id}]后台更新未读消息计数失败: {e}")
 
+    @classmethod
+    def get_recovery_message(cls, mode: str) -> str:
+        try:
+            return cls.RECOVERY_MESSAGES[mode]
+        except KeyError as exc:
+            raise ValueError(f"不支持的任务恢复方式: {mode}") from exc
+
+    async def _finalize_orphaned_run(self, session: Session) -> ErrorEvent:
+        event = ErrorEvent(error=self.ORPHANED_RUN_ERROR)
+        finished_at = datetime.now()
+        async with self._uow:
+            await self._uow.session.update_status(session.id, SessionStatus.COMPLETED)
+            await self._uow.session.add_event(session.id, event)
+            await self._uow.trace.finalize_interrupted_run(
+                session_id=session.id,
+                error=event.error,
+                finished_at=finished_at,
+            )
+        session.status = SessionStatus.COMPLETED
+        logger.warning("会话[%s]运行态任务句柄丢失，已终止孤儿运行", session.id)
+        return event
+
+    async def resume(
+            self,
+            session_id: str,
+            user_id: str,
+            mode: str,
+    ) -> AsyncGenerator[BaseEvent, None]:
+        """Create a user-triggered run in the existing conversation."""
+        async for event in self.chat(
+            session_id=session_id,
+            user_id=user_id,
+            message=self.get_recovery_message(mode),
+        ):
+            yield event
+
     async def chat(
             self,
             session_id: str,
@@ -151,6 +202,14 @@ class AgentService:
 
             # 2.获取对应会话任务
             task = await self._get_task(session)
+
+            # A running database record without an in-process task can never make progress.
+            # Finalize it before accepting a user-triggered recovery run.
+            if session.status == SessionStatus.RUNNING and task is None:
+                orphaned_event = await self._finalize_orphaned_run(session)
+                if not message:
+                    yield orphaned_event
+                    return
 
             # 3.判断是否传递了message
             if message:
@@ -266,6 +325,9 @@ class AgentService:
         task = await self._get_task(session)
         if task:
             task.cancel()
+        elif session.status == SessionStatus.RUNNING:
+            await self._finalize_orphaned_run(session)
+            return
 
         # 3.更新会话任务状态
         async with self._uow:

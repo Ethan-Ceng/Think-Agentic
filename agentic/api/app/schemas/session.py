@@ -4,7 +4,7 @@
 Session Schemas - 请求和响应模型
 """
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -61,6 +61,11 @@ class ChatRequest(BaseModel):
     attachments: Optional[List[str]] = Field(default_factory=list)
     event_id: Optional[str] = None
     timestamp: Optional[int] = None
+
+
+class ResumeSessionRequest(BaseModel):
+    """User-triggered recovery of a failed run in the same conversation."""
+    mode: Literal["continue", "restart"]
 
 
 class FileReadRequest(BaseModel):

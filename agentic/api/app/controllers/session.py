@@ -23,6 +23,7 @@ from app.schemas.session import (
     ListSessionResponse,
     GetSessionResponse,
     ChatRequest,
+    ResumeSessionRequest,
     FileReadRequest,
     FileReadResponse,
     ShellReadRequest,
@@ -197,6 +198,33 @@ async def chat(
             attachments=request.attachments,
             latest_event_id=request.event_id,
             timestamp=datetime.fromtimestamp(request.timestamp) if request.timestamp else None,
+        ):
+            sse_event = EventMapper.event_to_sse_event(event)
+            if sse_event:
+                yield ServerSentEvent(
+                    event=sse_event.event,
+                    data=sse_event.data.model_dump_json(),
+                )
+
+    return EventSourceResponse(event_generator())
+
+
+# ==================== 任务恢复 ====================
+
+@router.post("/{session_id}/resume", summary="恢复失败任务（SSE 流式）")
+async def resume_session(
+    session_id: str,
+    request: ResumeSessionRequest,
+    current_user: User = Depends(get_current_user),
+    agent_service: AgentService = Depends(get_agent_service),
+) -> EventSourceResponse:
+    """在保留当前对话上下文的前提下，由用户发起一个新的 Run。"""
+
+    async def event_generator() -> AsyncGenerator[ServerSentEvent, None]:
+        async for event in agent_service.resume(
+            session_id=session_id,
+            user_id=current_user.id,
+            mode=request.mode,
         ):
             sse_event = EventMapper.event_to_sse_event(event)
             if sse_event:

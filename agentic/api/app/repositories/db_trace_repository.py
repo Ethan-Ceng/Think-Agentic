@@ -78,6 +78,73 @@ class DBTraceRepository(TraceRepository):
     async def append_event(self, data: Dict[str, Any]) -> None:
         self.db_session.add(TraceEventModel(**data))
 
+    async def finalize_interrupted_run(
+        self,
+        session_id: str,
+        error: str,
+        finished_at: datetime,
+    ) -> Optional[str]:
+        result = await self.db_session.execute(
+            select(AgentRunModel)
+            .where(
+                AgentRunModel.session_id == session_id,
+                AgentRunModel.status.in_(("pending", "running", "waiting")),
+            )
+            .order_by(AgentRunModel.created_at.desc())
+            .limit(1)
+        )
+        run = result.scalar_one_or_none()
+        if run is None:
+            return None
+
+        await self.db_session.execute(
+            update(AgentRunModel)
+            .where(AgentRunModel.id == run.id)
+            .values(status="failed", error=error, finished_at=finished_at, updated_at=finished_at)
+        )
+        await self.db_session.execute(
+            update(RunStepModel)
+            .where(
+                RunStepModel.run_id == run.id,
+                RunStepModel.status.notin_(("completed", "failed")),
+            )
+            .values(
+                status="failed",
+                success=False,
+                error=error,
+                finished_at=finished_at,
+                updated_at=finished_at,
+            )
+        )
+        await self.db_session.execute(
+            update(ToolCallModel)
+            .where(ToolCallModel.run_id == run.id, ToolCallModel.status == "calling")
+            .values(
+                status="failed",
+                success=False,
+                error=error,
+                finished_at=finished_at,
+                updated_at=finished_at,
+            )
+        )
+        await self.db_session.execute(
+            update(ModelCallModel)
+            .where(ModelCallModel.run_id == run.id, ModelCallModel.status == "started")
+            .values(status="failed", error=error, finished_at=finished_at, updated_at=finished_at)
+        )
+        self.db_session.add(
+            TraceEventModel(
+                trace_id=run.trace_id,
+                run_id=run.id,
+                session_id=session_id,
+                event_type="run.interrupted",
+                source="system",
+                payload={"error": error, "reason": "task_registry_lost"},
+                created_at=finished_at,
+            )
+        )
+        return run.id
+
     async def list_runs(
         self,
         user_id: str,
