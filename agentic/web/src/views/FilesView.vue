@@ -163,7 +163,7 @@ onMounted(() => loadFiles(1))
   <div class="files-page">
     <header class="files-header">
       <div class="files-header-left">
-        <button v-if="!sidebar.open.value" class="icon-button" type="button" @click="sidebar.openSidebar"><PanelLeftOpen :size="18" /></button>
+        <button v-if="sidebar.mobile.value && !sidebar.open.value" class="icon-button" type="button" aria-label="打开侧边栏" @click="sidebar.openSidebar"><PanelLeftOpen :size="18" /></button>
         <div><h1>文件</h1><p>统一管理用户上传与 AI 生成的交付文件</p></div>
       </div>
       <div class="header-actions"><SettingsButton /><UserMenu /></div>

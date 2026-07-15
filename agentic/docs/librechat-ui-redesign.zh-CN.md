@@ -342,18 +342,27 @@ web/src/
 
 ### Phase UI-0：视觉基础
 
-状态：待实施
+状态：进行中（基础 Token 已落地，待主要页面暗色视觉回归）
 
 目标：建立后续页面共同使用的视觉语言，不改变业务行为。
 
 任务：
 
-- [ ] 新建语义颜色 Token。
-- [ ] 建立浅色和暗色主题变量。
-- [ ] 整理字体、字号、行高、圆角、阴影和间距。
-- [ ] 将 Element Plus 主题变量映射到语义 Token。
+- [x] 新建语义颜色 Token。
+- [x] 建立浅色和暗色主题变量。
+- [x] 整理字体、字号、行高、圆角、阴影和间距。
+- [x] 将 Element Plus 主题变量映射到语义 Token。
 - [ ] 统一 Button、Icon Button、Card、Input、Empty、Loading、Error 状态。
-- [ ] 避免继续在新组件中增加硬编码颜色。
+- [x] 避免继续在新组件中增加硬编码颜色。
+
+主要实现文件：
+
+- `web/src/styles/tokens.css`
+- `web/src/styles/themes.css`
+- `web/src/style.css`
+- `web/src/components/chat/chat.css`
+
+当前说明：新应用外壳和首页已使用语义 Token；文件、设置、执行时间线中的既有硬编码颜色将按页面阶段渐进迁移，不在本轮一次性替换。
 
 验收标准：
 
@@ -364,20 +373,31 @@ web/src/
 
 ### Phase UI-1：统一侧栏和应用外壳
 
-状态：待实施
+状态：进行中（主体交互已落地，待浏览器响应式与焦点回归）
 
 参考：`../LibreChat/client/src/components/UnifiedSidebar/`。
 
 任务：
 
-- [ ] 将当前 `LeftPanel.vue` 拆分为 Rail、Panel、Sections。
-- [ ] 收起后保留约 52px 图标栏。
-- [ ] 展开宽度可拖动，限制最小/最大宽度。
-- [ ] 使用 `localStorage` 保存用户选择的宽度和展开状态。
-- [ ] 新增任务、文件、搜索、设置入口。
-- [ ] 历史任务支持按时间分组。
-- [ ] 移动端改为抽屉，并支持 Escape 和遮罩关闭。
-- [ ] 拖动分隔条支持键盘左右键调整。
+- [x] 将当前 `LeftPanel.vue` 拆分为 Rail、Panel、Sections。
+- [x] 收起后保留约 56px 图标栏。
+- [x] 展开宽度可拖动，限制最小/最大宽度。
+- [x] 使用 `localStorage` 保存用户选择的宽度和展开状态。
+- [x] 新增任务、文件、任务搜索、设置入口。
+- [x] 历史任务支持按时间分组。
+- [x] 移动端改为抽屉，并支持 Escape 和遮罩关闭。
+- [x] 拖动分隔条支持键盘左右键调整。
+
+主要实现文件：
+
+- `web/src/components/LeftPanel.vue`
+- `web/src/components/navigation/SidebarRail.vue`
+- `web/src/components/navigation/SidebarPanel.vue`
+- `web/src/components/navigation/SessionSections.vue`
+- `web/src/components/SessionList.vue`
+- `web/src/App.vue`
+
+决策记录：侧栏的“搜索”当前只过滤已加载的任务标题和最近消息，不提前创建 `/search` 空壳页。跨任务消息、Tool、Trace 和文件的全局搜索仍归 Phase UI-4，待后端搜索 API 明确后实施。
 
 验收标准：
 
@@ -388,7 +408,7 @@ web/src/
 
 ### Phase UI-2：首页与输入器
 
-状态：待实施
+状态：进行中（首页与 Composer 第一版视觉已落地）
 
 参考：
 
@@ -397,14 +417,24 @@ web/src/
 
 任务：
 
-- [ ] 欢迎语根据时间和用户名生成。
-- [ ] 预留当前 Agent 名称、图标和简介位置。
-- [ ] 统一首页与会话页的 Composer 外观和交互。
-- [ ] 保留附件上传、进度、失败重试和删除。
-- [ ] 优化建议问题为轻量快捷入口。
-- [ ] 输入框自动增高并设置合理最大高度。
-- [ ] 明确发送、停止、禁用和上传中状态。
+- [x] 欢迎语根据时间和用户名生成。
+- [x] 预留当前 Agent 名称、图标和简介位置。
+- [x] 统一首页与会话页的 Composer 外观和交互。
+- [x] 保留附件上传、进度、失败重试和删除。
+- [x] 优化建议问题为轻量快捷入口。
+- [x] 输入框自动增高并设置合理最大高度。
+- [x] 明确发送、停止、禁用和上传中状态。
 - [ ] 支持草稿保存时再增加草稿状态提示。
+
+主要实现文件：
+
+- `web/src/views/HomeView.vue`
+- `web/src/components/chat/ChatComposer.vue`
+- `web/src/components/chat/ChatInput.vue`
+- `web/src/components/SuggestedQuestions.vue`
+- `web/src/config/app.config.ts`
+
+验证记录（2026-07-15）：`pnpm build` 已通过，包含 `vue-tsc -b` 与 Vite 生产构建。本地浏览器运行时当次无可用会话，桌面、平板和 360px 的截图式视觉回归尚待补充，因此 UI-0、UI-1、UI-2 暂不标记为“已完成”。
 
 验收标准：
 

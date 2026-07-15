@@ -7,7 +7,11 @@ import { provideSidebar } from '@/composables/useSidebar'
 import { useAuthStore } from '@/stores/auth'
 import { useSessionsStore } from '@/stores/sessions'
 
-const sidebarOpen = ref(true)
+const SIDEBAR_STORAGE_KEY = 'agentic.sidebar.expanded'
+const MOBILE_BREAKPOINT = 900
+const storedSidebarState = window.localStorage.getItem(SIDEBAR_STORAGE_KEY)
+const sidebarOpen = ref(storedSidebarState === null ? true : storedSidebarState === 'true')
+const isMobile = ref(window.innerWidth <= MOBILE_BREAKPOINT)
 const route = useRoute()
 const authStore = useAuthStore()
 const sessionsStore = useSessionsStore()
@@ -18,6 +22,7 @@ const authRoute = computed(() => route.name === 'auth')
 
 provideSidebar({
   open: sidebarOpen,
+  mobile: isMobile,
   toggle: () => {
     sidebarOpen.value = !sidebarOpen.value
   },
@@ -30,9 +35,11 @@ provideSidebar({
 })
 
 onMounted(async () => {
-  if (window.innerWidth <= 900) {
+  if (isMobile.value) {
     sidebarOpen.value = false
   }
+  window.addEventListener('resize', handleViewportResize)
+  window.addEventListener('keydown', handleGlobalKeydown)
   await authStore.initialize()
   if (authStore.isAuthenticated) {
     sessionsStore.start()
@@ -40,7 +47,29 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('resize', handleViewportResize)
+  window.removeEventListener('keydown', handleGlobalKeydown)
   sessionsStore.stop()
+})
+
+function handleViewportResize() {
+  const nextMobile = window.innerWidth <= MOBILE_BREAKPOINT
+  if (nextMobile && !isMobile.value && sidebarOpen.value) {
+    sidebarOpen.value = false
+  }
+  isMobile.value = nextMobile
+}
+
+function handleGlobalKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape' && window.innerWidth <= MOBILE_BREAKPOINT && sidebarOpen.value) {
+    sidebarOpen.value = false
+  }
+}
+
+watch(sidebarOpen, (expanded) => {
+  if (!isMobile.value) {
+    window.localStorage.setItem(SIDEBAR_STORAGE_KEY, String(expanded))
+  }
 })
 
 watch(
@@ -66,7 +95,7 @@ watch(
       aria-label="关闭侧边栏"
       @click="sidebarOpen = false"
     />
-    <main class="app-main">
+    <main class="app-main" :inert="isMobile && sidebarOpen">
       <RouterView />
     </main>
     <SettingsModal v-if="settingsOpen" />

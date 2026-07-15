@@ -862,37 +862,35 @@
   flex-direction: column;
   width: 100%;
   min-width: 0;
-  border: 1px solid #d9e0ea;
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.96);
-  box-shadow:
-    0 18px 40px rgba(15, 23, 42, 0.1),
-    0 0 0 1px rgba(255, 255, 255, 0.6) inset;
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-xl);
+  background: var(--surface-elevated);
+  box-shadow: var(--shadow-md);
   transition:
     border-color 0.15s ease,
     box-shadow 0.15s ease;
 }
 
 .chat-composer:focus-within {
-  border-color: #b8c2d0;
+  border-color: var(--accent-primary);
   box-shadow:
-    0 20px 46px rgba(15, 23, 42, 0.13),
-    0 0 0 1px rgba(255, 255, 255, 0.7) inset;
+    var(--shadow-md),
+    var(--focus-ring);
 }
 
 .chat-composer.is-disabled {
-  background: #f9fafb;
+  background: var(--surface-secondary);
 }
 
 .chat-composer .el-textarea__inner {
   width: 100%;
-  min-height: 68px;
-  padding: 15px 16px 6px;
+  min-height: 74px;
+  padding: 18px 18px 6px;
   border: 0;
   outline: none;
   resize: none;
   background: transparent;
-  color: #1f2937;
+  color: var(--text-primary);
   font-size: 15px;
   line-height: 1.6;
   box-shadow: none;
@@ -910,8 +908,8 @@
 }
 
 .composer-footer {
-  min-height: 58px;
-  padding: 9px 12px 12px;
+  min-height: 60px;
+  padding: 9px 14px 13px;
 }
 
 .composer-actions-left,
@@ -923,7 +921,7 @@
 }
 
 .composer-hint {
-  color: #9ca3af;
+  color: var(--text-tertiary);
   font-size: 12px;
   white-space: nowrap;
 }
@@ -999,14 +997,14 @@
 }
 
 .composer-send-button {
-  border-color: #111827;
-  background: #111827;
-  color: #ffffff;
-  box-shadow: 0 8px 18px rgba(17, 24, 39, 0.18);
+  border-color: var(--accent-primary);
+  background: var(--accent-primary);
+  color: var(--accent-contrast);
+  box-shadow: 0 8px 20px rgba(79, 70, 229, 0.22);
 }
 
 .composer-send-button:hover:not(:disabled) {
-  background: #1f2937;
+  background: var(--accent-hover);
 }
 
 .composer-stop-button {
@@ -1028,7 +1026,7 @@
   gap: 8px;
   padding: 12px 0 calc(18px + env(safe-area-inset-bottom, 0px));
   background:
-    linear-gradient(180deg, rgba(248, 248, 247, 0), #f8f8f7 22%, #f8f8f7 100%);
+    linear-gradient(180deg, transparent, var(--surface-canvas) 22%, var(--surface-canvas) 100%);
 }
 
 .timeline-spacer {

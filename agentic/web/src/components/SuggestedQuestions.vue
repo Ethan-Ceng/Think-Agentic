@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ArrowUpRight } from 'lucide-vue-next'
 import { suggestedQuestions } from '@/config/app.config'
 
 const emit = defineEmits<{
@@ -15,7 +16,8 @@ const emit = defineEmits<{
       class="button secondary suggestion-button"
       @click="emit('select', question)"
     >
-      {{ question }}
+      <span>{{ question }}</span>
+      <ArrowUpRight :size="15" />
     </button>
   </div>
 </template>

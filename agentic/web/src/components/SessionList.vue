@@ -15,7 +15,46 @@ const sessionsStore = useSessionsStore()
 const sidebar = useSidebar()
 const toast = useToast()
 
+const props = withDefaults(defineProps<{
+  query?: string
+}>(), {
+  query: '',
+})
+
 const activeId = computed(() => String(route.params.id ?? ''))
+const normalizedQuery = computed(() => props.query.trim().toLocaleLowerCase())
+const filteredSessions = computed(() => {
+  if (!normalizedQuery.value) return sessionsStore.sessions
+  return sessionsStore.sessions.filter((session) =>
+    [session.title, session.latest_message]
+      .filter(Boolean)
+      .some((value) => String(value).toLocaleLowerCase().includes(normalizedQuery.value)),
+  )
+})
+
+const groupedSessions = computed(() => {
+  const groups = new Map<string, Session[]>()
+  for (const session of filteredSessions.value) {
+    const label = groupLabel(session.latest_message_at)
+    groups.set(label, [...(groups.get(label) || []), session])
+  }
+  return Array.from(groups, ([label, sessions]) => ({ label, sessions }))
+})
+
+function groupLabel(value: string | null | undefined) {
+  if (!value) return '更早'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '更早'
+  const now = new Date()
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+  const target = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime()
+  const diff = Math.floor((today - target) / 86_400_000)
+  if (diff <= 0) return '今天'
+  if (diff === 1) return '昨天'
+  if (diff < 7) return '过去 7 天'
+  if (diff < 30) return '过去 30 天'
+  return '更早'
+}
 
 function handleSessionClick(sessionId: string) {
   void router.push(`/sessions/${sessionId}`)
@@ -74,18 +113,22 @@ async function requestDelete(session: Session) {
     <button type="button" class="link-button" @click="sessionsStore.refresh">重试</button>
   </div>
 
-  <div v-else-if="sessionsStore.sessions.length === 0" class="empty-state">
-    暂无任务
+  <div v-else-if="filteredSessions.length === 0" class="empty-state sidebar-empty-state">
+    <p>{{ normalizedQuery ? '没有匹配的任务' : '还没有任务' }}</p>
+    <span>{{ normalizedQuery ? '试试搜索其他关键词' : '创建任务后会显示在这里' }}</span>
   </div>
 
-  <div v-else class="session-list">
-    <SessionListItem
-      v-for="session in sessionsStore.sessions"
-      :key="session.session_id"
-      :session="session"
-      :active="session.session_id === activeId"
-      @open="handleSessionClick"
-      @delete="requestDelete"
-    />
+  <div v-else class="session-list" aria-live="polite">
+    <section v-for="group in groupedSessions" :key="group.label" class="session-group">
+      <h3>{{ group.label }}</h3>
+      <SessionListItem
+        v-for="session in group.sessions"
+        :key="session.session_id"
+        :session="session"
+        :active="session.session_id === activeId"
+        @open="handleSessionClick"
+        @delete="requestDelete"
+      />
+    </section>
   </div>
 </template>

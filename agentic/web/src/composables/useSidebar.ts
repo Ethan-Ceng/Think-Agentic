@@ -3,6 +3,7 @@ import { inject, provide } from 'vue'
 
 export type SidebarContext = {
   open: Ref<boolean>
+  mobile: Ref<boolean>
   toggle: () => void
   close: () => void
   openSidebar: () => void

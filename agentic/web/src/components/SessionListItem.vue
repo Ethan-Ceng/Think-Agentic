@@ -33,6 +33,7 @@ function handleCommand(command: string | number | object) {
     :class="{ active }"
     role="button"
     tabindex="0"
+    :aria-current="active ? 'page' : undefined"
     @click="emit('open', session.session_id)"
     @keydown.enter.prevent="emit('open', session.session_id)"
     @keydown.space.prevent="emit('open', session.session_id)"

@@ -12,7 +12,7 @@ const sidebar = useSidebar()
   <header class="top-header">
     <div class="top-header-left">
       <button
-        v-if="!sidebar.open.value"
+        v-if="sidebar.mobile.value && !sidebar.open.value"
         class="icon-button"
         type="button"
         title="打开侧边栏"
