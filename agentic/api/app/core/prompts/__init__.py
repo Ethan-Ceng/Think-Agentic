@@ -5,3 +5,7 @@
 @Author  : thezehui@gmail.com
 @File    : __init__.py.py
 """
+
+from .skill_selector import build_skill_selector_messages
+
+__all__ = ["build_skill_selector_messages"]
