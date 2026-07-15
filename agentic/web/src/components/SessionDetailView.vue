@@ -7,6 +7,8 @@ import ChatMessage from '@/components/chat/ChatMessage.vue'
 import PlanPanel from '@/components/chat/PlanPanel.vue'
 import ThinkingIndicator from '@/components/chat/ThinkingIndicator.vue'
 import SessionHeader from '@/components/SessionHeader.vue'
+import UiButton from '@/components/ui/UiButton.vue'
+import UiState from '@/components/ui/UiState.vue'
 import { useSessionDetail } from '@/composables/useSessionDetail'
 import { useToast } from '@/composables/useToast'
 import { sessionApi } from '@/lib/api/session'
@@ -491,17 +493,14 @@ async function handleStop() {
       title="正在创建任务"
       description="MoocManus 正在读取你的初始问题"
     />
-    <p v-else>加载中...</p>
+    <UiState v-else kind="loading" title="正在加载任务" description="正在读取会话和执行记录。" />
   </div>
 
-  <div v-else-if="detail.error.value && !detail.session.value" class="page-state">
-    <p class="error-text">{{ detail.error.value.message }}</p>
-    <button class="link-button" type="button" @click="detail.refresh">重试</button>
-  </div>
+  <UiState v-else-if="detail.error.value && !detail.session.value" class="page-state" kind="error" title="任务加载失败" :description="detail.error.value.message">
+    <template #actions><UiButton @click="detail.refresh">重试</UiButton></template>
+  </UiState>
 
-  <div v-else-if="!detail.session.value" class="page-state">
-    <p>未找到该任务</p>
-  </div>
+  <UiState v-else-if="!detail.session.value" class="page-state" title="未找到该任务" description="任务可能已被删除，或当前账号没有访问权限。" />
 
   <template v-else>
     <div class="session-workspace">
@@ -524,12 +523,13 @@ async function handleStop() {
             @scroll.passive="handleConversationScroll"
           >
             <div class="timeline">
-              <div
+              <UiState
                 v-if="timeline.length === 0 && !detail.streaming.value && !hasInitialMessage"
-                class="empty-state timeline-empty"
-              >
-                暂无对话记录，在下方输入任务或提问
-              </div>
+                class="timeline-empty"
+                compact
+                title="暂无对话记录"
+                description="在下方输入任务或提问。"
+              />
 
               <ChatMessage
                 v-for="item in timeline"

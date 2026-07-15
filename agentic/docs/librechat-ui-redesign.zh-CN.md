@@ -342,7 +342,7 @@ web/src/
 
 ### Phase UI-0：视觉基础
 
-状态：进行中（基础 Token 已落地，待主要页面暗色视觉回归）
+状态：进行中（基础 Token 与通用控件已落地，待主要页面暗色视觉回归）
 
 目标：建立后续页面共同使用的视觉语言，不改变业务行为。
 
@@ -352,17 +352,29 @@ web/src/
 - [x] 建立浅色和暗色主题变量。
 - [x] 整理字体、字号、行高、圆角、阴影和间距。
 - [x] 将 Element Plus 主题变量映射到语义 Token。
-- [ ] 统一 Button、Icon Button、Card、Input、Empty、Loading、Error 状态。
+- [x] 统一 Button、Icon Button、Card、Input、Empty、Loading、Error 状态。
 - [x] 避免继续在新组件中增加硬编码颜色。
 
 主要实现文件：
 
 - `web/src/styles/tokens.css`
 - `web/src/styles/themes.css`
+- `web/src/styles/ui.css`
 - `web/src/style.css`
 - `web/src/components/chat/chat.css`
+- `web/src/components/ui/UiButton.vue`
+- `web/src/components/ui/UiIconButton.vue`
+- `web/src/components/ui/UiTextField.vue`
+- `web/src/components/ui/UiState.vue`
+- `web/src/views/FilesView.vue`
+- `web/src/views/SearchView.vue`
+- `web/src/components/FilePreviewPanel.vue`
+- `web/src/components/SessionDetailView.vue`
+- `web/src/components/TracePanel.vue`
 
-当前说明：新应用外壳和首页已使用语义 Token；文件、设置、执行时间线中的既有硬编码颜色将按页面阶段渐进迁移，不在本轮一次性替换。
+当前说明：新应用外壳、首页、搜索、文件、设置和主要执行状态已使用语义 Token。原有 `.button` / `.icon-button` 继续作为兼容类，新增页面优先使用 `UiButton`、`UiIconButton`、`UiTextField` 和 `UiState`，避免重复实现可访问性与交互状态。文件中心的浅色硬编码已迁移为语义变量；低频旧组件中的既有硬编码颜色仍按页面阶段渐进迁移。
+
+验证记录（2026-07-15）：`pnpm build` 已通过，包含 `vue-tsc -b` 与 Vite 生产构建；`git diff --check` 已通过。静态检查确认新 `UiIconButton` 必须提供可读 `label`，Loading 与 Error 状态分别使用 Live Region 和 Alert 语义。当前浏览器控制环境仍无可用实例，浅色/暗色以及桌面/移动端截图式回归待补充，因此阶段状态保持“进行中”。
 
 验收标准：
 
@@ -397,7 +409,7 @@ web/src/
 - `web/src/components/SessionList.vue`
 - `web/src/App.vue`
 
-决策记录：侧栏的“搜索”当前只过滤已加载的任务标题和最近消息，不提前创建 `/search` 空壳页。跨任务消息、Tool、Trace 和文件的全局搜索仍归 Phase UI-4，待后端搜索 API 明确后实施。
+决策记录：UI-1 初次落地时，侧栏搜索仅过滤已加载的任务标题和最近消息；Phase UI-4 完成后已升级为 `/search` 全局搜索，查询范围覆盖跨任务消息、Tool、Trace 和文件，侧栏输入框与搜索页通过 URL 查询状态同步。
 
 验收标准：
 

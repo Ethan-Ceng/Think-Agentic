@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { Download, FileText, X } from 'lucide-vue-next'
+import UiButton from '@/components/ui/UiButton.vue'
+import UiIconButton from '@/components/ui/UiIconButton.vue'
+import UiState from '@/components/ui/UiState.vue'
 import { useToast } from '@/composables/useToast'
 import { fileApi } from '@/lib/api/file'
 import type { AttachmentFile } from '@/lib/session-events'
@@ -143,29 +146,24 @@ onBeforeUnmount(revokeImageUrl)
         </div>
       </div>
       <div class="preview-actions">
-        <button class="icon-button subtle" type="button" aria-label="下载文件" title="下载文件" @click="handleDownload">
+        <UiIconButton label="下载文件" variant="subtle" @click="handleDownload">
           <Download :size="16" />
-        </button>
-        <button class="icon-button subtle" type="button" aria-label="关闭文件预览" title="关闭" @click="emit('close')">
+        </UiIconButton>
+        <UiIconButton label="关闭文件预览" title="关闭" variant="subtle" @click="emit('close')">
           <X :size="16" />
-        </button>
+        </UiIconButton>
       </div>
     </header>
 
     <div class="preview-body">
-      <div v-if="loading" class="center-state">加载中...</div>
-      <div v-else-if="error" class="center-state error-text">{{ error }}</div>
-      <div v-else-if="fileType === 'unsupported'" class="unsupported-file">
-        <div class="unsupported-icon">
-          <FileText :size="32" />
-        </div>
-        <p>暂不支持预览此文件类型</p>
-        <span>您可以下载文件后查看</span>
-        <button class="button secondary" type="button" @click="handleDownload">
-          <Download :size="16" />
-          下载文件
-        </button>
-      </div>
+      <UiState v-if="loading" kind="loading" title="正在加载文件" description="文件内容准备完成后会自动显示。" />
+      <UiState v-else-if="error" kind="error" title="文件加载失败" :description="error">
+        <template #actions><UiButton @click="loadFileContent">重新加载</UiButton></template>
+      </UiState>
+      <UiState v-else-if="fileType === 'unsupported'" title="暂不支持预览此文件类型" description="可以下载文件后使用本地应用查看。">
+        <template #icon><FileText :size="28" /></template>
+        <template #actions><UiButton @click="handleDownload"><template #icon><Download :size="16" /></template>下载文件</UiButton></template>
+      </UiState>
       <div v-else-if="fileType === 'image' && imageUrl" class="image-preview">
         <img :src="imageUrl" :alt="file.filename">
       </div>

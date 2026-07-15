@@ -6,7 +6,6 @@ import {
   Bot,
   Braces,
   CheckCircle2,
-  Clock3,
   RefreshCw,
   Route,
   Timer,
@@ -14,6 +13,7 @@ import {
   X,
 } from 'lucide-vue-next'
 import { runsApi } from '@/lib/api/runs'
+import UiState from '@/components/ui/UiState.vue'
 import type {
   AgentRun,
   ModelCallRecord,
@@ -389,8 +389,8 @@ function stepResultPreview(step: RunStepRecord): string {
           </span>
         </button>
 
-        <div v-if="loadingRuns && runs.length === 0" class="center-state compact-state">加载中...</div>
-        <div v-else-if="!loadingRuns && runs.length === 0" class="center-state compact-state">暂无运行记录</div>
+        <UiState v-if="loadingRuns && runs.length === 0" kind="loading" compact title="正在加载运行记录" />
+        <UiState v-else-if="!loadingRuns && runs.length === 0" compact title="暂无运行记录" />
       </div>
 
       <template v-if="detail && selectedRun">
@@ -448,7 +448,7 @@ function stepResultPreview(step: RunStepRecord): string {
               </div>
             </article>
 
-            <div v-if="orderedEvents.length === 0" class="center-state">暂无事件</div>
+            <UiState v-if="orderedEvents.length === 0" compact title="暂无事件" />
           </section>
 
           <section v-else-if="activeTab === 'steps'" class="trace-list">
@@ -469,7 +469,7 @@ function stepResultPreview(step: RunStepRecord): string {
               <pre>{{ stepResultPreview(step) }}</pre>
             </article>
 
-            <div v-if="orderedSteps.length === 0" class="center-state">暂无步骤</div>
+            <UiState v-if="orderedSteps.length === 0" compact title="暂无步骤" />
           </section>
 
           <section v-else-if="activeTab === 'tools'" class="trace-list">
@@ -503,7 +503,7 @@ function stepResultPreview(step: RunStepRecord): string {
               </div>
             </article>
 
-            <div v-if="orderedToolCalls.length === 0" class="center-state">暂无工具调用</div>
+            <UiState v-if="orderedToolCalls.length === 0" compact title="暂无工具调用" />
           </section>
 
           <section v-else class="trace-list">
@@ -537,15 +537,12 @@ function stepResultPreview(step: RunStepRecord): string {
               </div>
             </article>
 
-            <div v-if="orderedModelCalls.length === 0" class="center-state">暂无模型调用</div>
+            <UiState v-if="orderedModelCalls.length === 0" compact title="暂无模型调用" />
           </section>
         </div>
       </template>
 
-      <div v-else-if="loadingDetail" class="center-state trace-loading">
-        <Clock3 :size="18" />
-        <span>加载 Trace...</span>
-      </div>
+      <UiState v-else-if="loadingDetail" class="trace-loading" kind="loading" title="正在加载 Trace" />
     </div>
 
     <footer class="trace-footer">

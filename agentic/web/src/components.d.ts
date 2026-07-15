@@ -64,11 +64,12 @@ declare module 'vue' {
     ToolCallCard: typeof import('./components/chat/ToolCallCard.vue')['default']
     ToolPreviewPanel: typeof import('./components/chat/ToolPreviewPanel.vue')['default']
     TracePanel: typeof import('./components/TracePanel.vue')['default']
+    UiButton: typeof import('./components/ui/UiButton.vue')['default']
+    UiIconButton: typeof import('./components/ui/UiIconButton.vue')['default']
+    UiState: typeof import('./components/ui/UiState.vue')['default']
+    UiTextField: typeof import('./components/ui/UiTextField.vue')['default']
     UserMenu: typeof import('./components/UserMenu.vue')['default']
     VNCOverlay: typeof import('./components/VNCOverlay.vue')['default']
     VNCViewer: typeof import('./components/VNCViewer.vue')['default']
-  }
-  export interface GlobalDirectives {
-    vLoading: typeof import('element-plus/es')['ElLoadingDirective']
   }
 }

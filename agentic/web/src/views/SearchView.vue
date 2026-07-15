@@ -1,9 +1,13 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Activity, ArrowRight, FileText, Loader2, MessageSquare, PanelLeftOpen, Search, Sparkles, Wrench, X } from 'lucide-vue-next'
+import { Activity, ArrowRight, FileText, MessageSquare, PanelLeftOpen, Search, Sparkles, Wrench, X } from 'lucide-vue-next'
 import { useRoute, useRouter } from 'vue-router'
 import SettingsButton from '@/components/SettingsButton.vue'
 import UserMenu from '@/components/UserMenu.vue'
+import UiButton from '@/components/ui/UiButton.vue'
+import UiIconButton from '@/components/ui/UiIconButton.vue'
+import UiState from '@/components/ui/UiState.vue'
+import UiTextField from '@/components/ui/UiTextField.vue'
 import { useSidebar } from '@/composables/useSidebar'
 import { searchApi } from '@/lib/api/search'
 import type { SearchContentType, SearchResultItem, SearchResults } from '@/lib/api/types'
@@ -13,7 +17,7 @@ type HighlightSegment = { text: string; match: boolean }
 const route = useRoute()
 const router = useRouter()
 const sidebar = useSidebar()
-const inputRef = ref<HTMLInputElement | null>(null)
+const inputRef = ref<InstanceType<typeof UiTextField> | null>(null)
 const inputValue = ref('')
 const loading = ref(false)
 const error = ref('')
@@ -146,15 +150,13 @@ function formatDate(value?: string | null) {
   <div class="search-page">
     <header class="search-header">
       <div class="search-header-title">
-        <button
+        <UiIconButton
           v-if="sidebar.mobile.value && !sidebar.open.value"
-          class="icon-button"
-          type="button"
-          aria-label="打开侧边栏"
+          label="打开侧边栏"
           @click="sidebar.openSidebar"
         >
           <PanelLeftOpen :size="18" />
-        </button>
+        </UiIconButton>
         <div>
           <h1>全局搜索</h1>
           <p>检索任务、消息、工具调用、Trace 与文件</p>
@@ -166,20 +168,19 @@ function formatDate(value?: string | null) {
     <main class="search-main">
       <section class="search-hero">
         <form class="global-search-box" role="search" @submit.prevent="submitSearch">
-          <Search :size="20" aria-hidden="true" />
-          <input
+          <UiTextField
             ref="inputRef"
             v-model="inputValue"
             type="search"
+            label="全局搜索"
             maxlength="200"
             placeholder="搜索任务、对话、工具或文件"
-            aria-label="全局搜索"
             @input="scheduleSearch"
           >
-          <button v-if="inputValue" type="button" aria-label="清空搜索" @click="clearSearch">
-            <X :size="17" />
-          </button>
-          <button class="search-submit" type="submit">搜索</button>
+            <template #leading><Search :size="20" /></template>
+            <template v-if="inputValue" #trailing><UiIconButton label="清空搜索" variant="subtle" size="tiny" @click.prevent="clearSearch"><X :size="16" /></UiIconButton></template>
+          </UiTextField>
+          <UiButton class="search-submit" type="submit" variant="primary">搜索</UiButton>
         </form>
         <p v-if="routeQuery" class="search-summary" aria-live="polite">
           <template v-if="loading">正在搜索“{{ routeQuery }}”</template>
@@ -188,34 +189,25 @@ function formatDate(value?: string | null) {
       </section>
 
       <section class="search-results" :aria-busy="loading">
-        <div v-if="loading" class="search-loading">
-          <Loader2 :size="20" class="spin" />
-          <span>正在检索工作区…</span>
-        </div>
+        <UiState v-if="loading" kind="loading" title="正在检索工作区" description="正在查找任务、消息、工具、Trace 与文件。" />
 
-        <div v-else-if="error" class="search-state error-state" role="alert">
-          <h2>搜索暂时不可用</h2>
-          <p>{{ error }}</p>
-          <button class="button secondary" type="button" @click="loadResults(routeQuery, routePage)">重新搜索</button>
-        </div>
+        <UiState v-else-if="error" kind="error" title="搜索暂时不可用" :description="error">
+          <template #actions><UiButton @click="loadResults(routeQuery, routePage)">重新搜索</UiButton></template>
+        </UiState>
 
-        <div v-else-if="!routeQuery" class="search-state">
-          <span class="search-state-icon"><Search :size="26" /></span>
-          <h2>搜索整个 Agent 工作区</h2>
-          <p>输入关键词后，可以找到历史问答、工具执行记录、运行 Trace 和交付文件。</p>
-        </div>
+        <UiState v-else-if="!routeQuery" title="搜索整个 Agent 工作区" description="输入关键词后，可以找到历史问答、工具执行记录、运行 Trace 和交付文件。">
+          <template #icon><Search :size="26" /></template>
+        </UiState>
 
-        <div v-else-if="results.items.length === 0" class="search-state">
-          <span class="search-state-icon"><Search :size="26" /></span>
-          <h2>没有找到匹配内容</h2>
-          <p>尝试缩短关键词，或使用任务标题、工具名和文件名搜索。</p>
-        </div>
+        <UiState v-else-if="results.items.length === 0" title="没有找到匹配内容" description="尝试缩短关键词，或使用任务标题、工具名和文件名搜索。">
+          <template #icon><Search :size="26" /></template>
+        </UiState>
 
         <div v-else class="search-result-list">
           <button
             v-for="item in results.items"
             :key="item.id"
-            class="search-result-card"
+            class="search-result-card ui-card"
             type="button"
             @click="openResult(item)"
           >
@@ -263,17 +255,10 @@ function formatDate(value?: string | null) {
 .search-header h1 { color: var(--text-primary); font-size: 17px; }.search-header p { color: var(--text-tertiary); font-size: 12px; }
 .search-main { flex: 1; min-height: 0; overflow-y: auto; padding: 40px 24px 64px; }
 .search-hero, .search-results { width: min(820px, 100%); margin: 0 auto; }
-.global-search-box { display: flex; align-items: center; gap: 11px; width: 100%; min-height: 58px; padding: 7px 8px 7px 17px; border: 1px solid var(--border-medium); border-radius: var(--radius-lg); background: var(--surface-primary); color: var(--text-tertiary); box-shadow: var(--shadow-md); }
-.global-search-box:focus-within { border-color: var(--accent-primary); box-shadow: var(--shadow-md), var(--focus-ring); }
-.global-search-box input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text-primary); font-size: 16px; }
-.global-search-box > button:not(.search-submit) { display: inline-flex; padding: 7px; border-radius: var(--radius-sm); background: transparent; color: var(--text-tertiary); cursor: pointer; }
-.search-submit { min-height: 42px; padding: 0 18px; border-radius: var(--radius-md); background: var(--accent-primary); color: var(--accent-contrast); cursor: pointer; font-size: var(--text-sm); font-weight: 700; }
+.global-search-box { display: flex; align-items: stretch; gap: 10px; width: 100%; }
+.global-search-box .ui-text-field { min-height: 58px; padding-left: 17px; border-radius: var(--radius-lg); box-shadow: var(--shadow-md); font-size: 16px; }
+.search-submit { min-height: 58px; padding: 0 20px; border-radius: var(--radius-lg); }
 .search-summary { min-height: 20px; margin: 12px 4px 20px; color: var(--text-tertiary); font-size: var(--text-sm); }
-.search-loading { display: flex; align-items: center; justify-content: center; gap: 9px; min-height: 240px; color: var(--text-secondary); }
-.search-state { display: flex; align-items: center; flex-direction: column; justify-content: center; min-height: 330px; padding: 32px; text-align: center; }
-.search-state-icon { display: inline-flex; align-items: center; justify-content: center; width: 56px; height: 56px; margin-bottom: 16px; border-radius: var(--radius-lg); background: var(--accent-soft); color: var(--accent-primary); }
-.search-state h2 { color: var(--text-primary); font-size: 18px; }.search-state p { max-width: 480px; margin-top: 6px; color: var(--text-tertiary); font-size: var(--text-sm); line-height: 1.6; }
-.error-state .button { margin-top: 16px; padding: 0 14px; }
 .search-result-list { display: flex; flex-direction: column; gap: 8px; }
 .search-result-card { display: grid; grid-template-columns: 38px minmax(0, 1fr) 24px; align-items: start; gap: 12px; width: 100%; padding: 15px; border: 1px solid var(--border-light); border-radius: var(--radius-md); background: var(--surface-primary); color: var(--text-secondary); cursor: pointer; text-align: left; transition: border-color var(--motion-fast) ease, box-shadow var(--motion-fast) ease, transform var(--motion-fast) ease; }
 .search-result-card:hover { border-color: var(--border-medium); box-shadow: var(--shadow-sm); transform: translateY(-1px); }
@@ -283,5 +268,5 @@ function formatDate(value?: string | null) {
 .result-content > strong { overflow: hidden; color: var(--text-primary); font-size: var(--text-base); font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }.result-content p { display: -webkit-box; overflow: hidden; color: var(--text-secondary); font-size: var(--text-sm); line-height: 1.55; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 mark { padding: 1px 2px; border-radius: 3px; background: var(--status-warning-soft); color: var(--text-primary); }.result-arrow { align-self: center; color: var(--text-tertiary); }
 .search-pagination { justify-content: center; margin-top: 24px; }
-@media (max-width: 640px) { .search-header { padding: 0 12px; }.search-header p, .header-actions .user-label { display: none; }.search-main { padding: 24px 14px 48px; }.global-search-box { min-height: 52px; padding-left: 13px; }.search-submit { min-height: 38px; padding: 0 13px; }.search-result-card { grid-template-columns: 34px minmax(0, 1fr); padding: 12px; }.result-type-icon { width: 34px; height: 34px; }.result-arrow { display: none; } }
+@media (max-width: 640px) { .search-header { padding: 0 12px; }.search-header p, .header-actions .user-label { display: none; }.search-main { padding: 24px 14px 48px; }.global-search-box { gap: 7px; }.global-search-box .ui-text-field { min-height: 52px; padding-left: 13px; }.search-submit { min-height: 52px; padding: 0 13px; }.search-result-card { grid-template-columns: 34px minmax(0, 1fr); padding: 12px; }.result-type-icon { width: 34px; height: 34px; }.result-arrow { display: none; } }
 </style>
