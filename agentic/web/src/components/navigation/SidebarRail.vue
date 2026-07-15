@@ -17,6 +17,7 @@ const route = useRoute()
 const router = useRouter()
 const filesActive = computed(() => route.name === 'files')
 const homeActive = computed(() => route.name === 'home')
+const searchActive = computed(() => route.name === 'search')
 
 function createTask() {
   void router.push('/')
@@ -43,8 +44,15 @@ function createTask() {
         </button>
       </ElTooltip>
 
-      <ElTooltip content="搜索任务" placement="right" :show-after="400">
-        <button class="rail-button" type="button" aria-label="搜索任务" @click="emit('search')">
+      <ElTooltip content="全局搜索" placement="right" :show-after="400">
+        <button
+          class="rail-button"
+          :class="{ active: searchActive }"
+          type="button"
+          aria-label="全局搜索"
+          :aria-current="searchActive ? 'page' : undefined"
+          @click="emit('search')"
+        >
           <Search :size="19" />
         </button>
       </ElTooltip>

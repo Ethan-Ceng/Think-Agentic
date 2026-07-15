@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, nextTick, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ArrowDown } from 'lucide-vue-next'
 import ChatInput from '@/components/chat/ChatInput.vue'
 import ChatMessage from '@/components/chat/ChatMessage.vue'
@@ -37,6 +37,7 @@ type PendingUserMessage = {
 }
 
 const router = useRouter()
+const route = useRoute()
 const toast = useToast()
 const FilePreviewPanel = defineAsyncComponent(() => import('@/components/FilePreviewPanel.vue'))
 const TracePanel = defineAsyncComponent(() => import('@/components/TracePanel.vue'))
@@ -53,6 +54,8 @@ const prevToolCount = ref(0)
 const isNearBottom = ref(true)
 const pendingUserMessage = ref<PendingUserMessage | null>(null)
 const stoppedAt = ref<number | null>(null)
+const lastFocusedEvent = ref('')
+let focusTimer = 0
 
 const detail = useSessionDetail(
   computed(() => props.sessionId),
@@ -348,9 +351,31 @@ watch(
     pendingUserMessage.value = null
     stoppedAt.value = null
     isNearBottom.value = true
+    lastFocusedEvent.value = ''
     scrollToConversationBottom('auto')
   },
 )
+
+watch(
+  () => [route.query.focus, timeline.value.length, detail.loading.value] as const,
+  ([focus, , loading]) => {
+    if (typeof focus !== 'string' || !focus || loading) return
+    const focusKey = `${props.sessionId}:${focus}`
+    if (lastFocusedEvent.value === focusKey) return
+    void nextTick(() => {
+      const target = document.getElementById(`event-${focus}`)
+      if (!target) return
+      lastFocusedEvent.value = focusKey
+      target.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      target.classList.add('search-target-flash')
+      window.clearTimeout(focusTimer)
+      focusTimer = window.setTimeout(() => target.classList.remove('search-target-flash'), 1800)
+    })
+  },
+  { immediate: true },
+)
+
+onBeforeUnmount(() => window.clearTimeout(focusTimer))
 
 async function handleSend(message: string, uploadedFiles: FileInfo[]) {
   const pending = createPendingMessage(
@@ -486,12 +511,18 @@ async function handleStop() {
             v-model:file-list-open="fileListOpen"
             :title="detail.session.value.title"
             :files="detail.files.value"
+            :status="detail.session.value.status"
             :on-fetch-files="detail.refreshFiles"
             @file-click="handleFileClick"
             @open-trace="openTracePanel"
           />
 
-          <div ref="scrollContainerRef" class="conversation-scroll" @scroll.passive="handleConversationScroll">
+          <div
+            ref="scrollContainerRef"
+            class="conversation-scroll"
+            :aria-busy="detail.streaming.value || detail.session.value.status === 'running'"
+            @scroll.passive="handleConversationScroll"
+          >
             <div class="timeline">
               <div
                 v-if="timeline.length === 0 && !detail.streaming.value && !hasInitialMessage"
@@ -504,6 +535,7 @@ async function handleStop() {
                 v-for="item in timeline"
                 :key="item.id"
                 :item="item"
+                :dom-id="item.sourceEventId ? `event-${item.sourceEventId}` : undefined"
                 @view-all-files="handleViewAllFiles"
                 @file-click="handleFileClick"
                 @tool-click="handleToolClick"
@@ -520,6 +552,8 @@ async function handleStop() {
                 v-if="runningStateLabel"
                 class="conversation-status-note"
                 :class="{ 'is-error': detail.error.value && detail.session.value, 'is-stopped': stoppedAt }"
+                role="status"
+                aria-live="polite"
               >
                 {{ runningStateLabel }}
               </div>

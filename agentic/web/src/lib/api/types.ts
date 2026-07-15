@@ -445,6 +445,27 @@ export type FilePaginator = {
 export type ManagedFilesData = { list: ManagedFile[]; paginator: FilePaginator }
 export type FolderTreeItem = { id: string; parent_id: string | null; name: string; depth: number }
 
+export type SearchContentType = 'session' | 'message' | 'tool' | 'trace' | 'file'
+export type SearchResultItem = {
+  id: string
+  content_type: SearchContentType
+  session_id?: string | null
+  run_id?: string | null
+  event_id?: string | null
+  title: string
+  snippet: string
+  created_at?: string | null
+  metadata: Record<string, unknown>
+}
+export type SearchResults = {
+  items: SearchResultItem[]
+  query: string
+  current_page: number
+  page_size: number
+  total_page: number
+  total_record: number
+}
+
 export type StorageProvider = 'local' | 'qcloud_cos' | 'aliyun_oss'
 export type StorageConfig = {
   default_provider: StorageProvider

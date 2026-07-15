@@ -20,6 +20,7 @@ import { getFriendlyToolLabel, getToolKind } from '@/lib/tool-utils'
 
 defineProps<{
   item: TimelineItem
+  domId?: string
 }>()
 
 const emit = defineEmits<{
@@ -75,7 +76,7 @@ function handleToolClick(tool: ToolEvent) {
 </script>
 
 <template>
-  <article v-if="item.kind === 'user'" class="chat-message chat-message-user">
+  <article v-if="item.kind === 'user'" :id="domId" class="chat-message chat-message-user" aria-label="你的消息">
     <div class="message-stack user-stack">
       <div class="message-bubble user-bubble" :class="`status-${getUserStatus(item)}`">
         <p class="message-text">{{ item.data.message ?? '' }}</p>
@@ -105,7 +106,7 @@ function handleToolClick(tool: ToolEvent) {
     </div>
   </article>
 
-  <article v-else-if="item.kind === 'assistant'" class="chat-message chat-message-assistant">
+  <article v-else-if="item.kind === 'assistant'" :id="domId" class="chat-message chat-message-assistant" aria-label="MoocManus 回复">
     <AssistantAvatar />
     <div class="assistant-message-body">
       <div class="assistant-message-header">
@@ -139,6 +140,7 @@ function handleToolClick(tool: ToolEvent) {
 
   <ThinkingBlock
     v-else-if="item.kind === 'step'"
+    :id="domId"
     :step="item.data"
     :tools="item.tools"
     @tool-click="handleToolClick"
@@ -153,7 +155,7 @@ function handleToolClick(tool: ToolEvent) {
     @view-all-files="emit('viewAllFiles')"
   />
 
-  <article v-else-if="item.kind === 'error'" class="chat-message chat-message-assistant error-message">
+  <article v-else-if="item.kind === 'error'" :id="domId" class="chat-message chat-message-assistant error-message" role="alert">
     <AssistantAvatar />
     <div class="assistant-message-body">
       <div class="assistant-message-header">

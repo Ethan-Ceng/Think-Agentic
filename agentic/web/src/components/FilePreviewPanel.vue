@@ -131,7 +131,7 @@ onBeforeUnmount(revokeImageUrl)
 </script>
 
 <template>
-  <aside class="preview-panel file-preview">
+  <aside class="preview-panel file-preview" role="dialog" aria-modal="true" aria-label="文件预览">
     <header class="preview-header">
       <div class="preview-title">
         <div class="file-icon">
@@ -143,10 +143,10 @@ onBeforeUnmount(revokeImageUrl)
         </div>
       </div>
       <div class="preview-actions">
-        <button class="icon-button subtle" type="button" title="下载文件" @click="handleDownload">
+        <button class="icon-button subtle" type="button" aria-label="下载文件" title="下载文件" @click="handleDownload">
           <Download :size="16" />
         </button>
-        <button class="icon-button subtle" type="button" title="关闭" @click="emit('close')">
+        <button class="icon-button subtle" type="button" aria-label="关闭文件预览" title="关闭" @click="emit('close')">
           <X :size="16" />
         </button>
       </div>

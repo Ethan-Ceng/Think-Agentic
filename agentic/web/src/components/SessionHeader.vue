@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { Activity, Download, FileSearch, FileText, PanelLeftOpen, X } from 'lucide-vue-next'
+import { Activity, CheckCircle2, Circle, Clock3, Download, FileSearch, FileText, Loader2, PanelLeftOpen, X } from 'lucide-vue-next'
 import SettingsButton from '@/components/SettingsButton.vue'
 import UserMenu from '@/components/UserMenu.vue'
 import { useSidebar } from '@/composables/useSidebar'
 import { useToast } from '@/composables/useToast'
 import { fileApi } from '@/lib/api/file'
-import type { SessionFile } from '@/lib/api/types'
+import type { SessionFile, SessionStatus } from '@/lib/api/types'
 import type { AttachmentFile } from '@/lib/session-events'
 import { sessionFileToAttachment } from '@/lib/session-events'
 import { downloadBlob, formatFileSize } from '@/lib/utils'
@@ -16,11 +16,13 @@ const props = withDefaults(defineProps<{
   files?: SessionFile[]
   fileListOpen?: boolean
   onFetchFiles?: () => void | Promise<void>
+  status?: SessionStatus
 }>(), {
   title: '',
   files: () => [],
   fileListOpen: undefined,
   onFetchFiles: undefined,
+  status: 'pending',
 })
 
 const emit = defineEmits<{
@@ -33,6 +35,18 @@ const sidebar = useSidebar()
 const toast = useToast()
 const internalOpen = ref(false)
 const downloadingId = ref<string | null>(null)
+const statusMeta = computed(() => {
+  switch (props.status) {
+    case 'running':
+      return { label: '执行中', icon: Loader2 }
+    case 'waiting':
+      return { label: '等待回复', icon: Clock3 }
+    case 'completed':
+      return { label: '已完成', icon: CheckCircle2 }
+    default:
+      return { label: '准备中', icon: Circle }
+  }
+})
 
 const openState = computed({
   get() {
@@ -99,6 +113,10 @@ function handleFileClick(file: SessionFile) {
     </button>
     <h1>{{ title || '未命名任务' }}</h1>
     <div class="session-header-actions">
+      <span class="session-status-pill" :class="`status-${status}`" role="status">
+        <component :is="statusMeta.icon" :size="13" :class="{ spin: status === 'running' }" />
+        {{ statusMeta.label }}
+      </span>
       <SettingsButton />
       <UserMenu />
       <button class="icon-button subtle" type="button" title="查看运行 Trace" @click="emit('openTrace')">

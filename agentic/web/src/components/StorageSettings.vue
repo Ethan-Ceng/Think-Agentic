@@ -1,14 +1,17 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { CheckCircle2, Database, Loader2, ShieldCheck } from 'lucide-vue-next'
 import { configApi } from '@/lib/api/config'
 import type { StorageConfig, StorageProvider } from '@/lib/api/types'
 import { useToast } from '@/composables/useToast'
+import type { SettingsPanelEmits } from '@/components/settings/types'
 
+const emit = defineEmits<SettingsPanelEmits>()
 const toast = useToast()
 const loading = ref(true)
 const saving = ref(false)
 const testing = ref(false)
+const initialSnapshot = ref('')
 const activeProvider = ref<StorageProvider>('local')
 const config = ref<StorageConfig>({
   default_provider: 'local',
@@ -25,11 +28,14 @@ const options: Array<{ value: StorageProvider; label: string; description: strin
   { value: 'aliyun_oss', label: '阿里云 OSS', description: '使用用户级 OSS Bucket 保存新文件' },
 ]
 const activeOption = computed(() => options.find((item) => item.value === activeProvider.value)!)
+const dirty = computed(() => Boolean(initialSnapshot.value) && JSON.stringify(config.value) !== initialSnapshot.value)
+watch(dirty, (value) => emit('dirty-change', value), { immediate: true })
 
 onMounted(async () => {
   try {
     config.value = await configApi.getStorageConfig()
     activeProvider.value = config.value.default_provider
+    initialSnapshot.value = JSON.stringify(config.value)
   } catch (error) {
     toast.error(error instanceof Error ? error.message : '存储配置加载失败')
   } finally {
@@ -41,9 +47,12 @@ async function save() {
   saving.value = true
   try {
     config.value = await configApi.updateStorageConfig(config.value)
+    initialSnapshot.value = JSON.stringify(config.value)
     toast.success('存储配置已保存')
+    return true
   } catch (error) {
     toast.error(error instanceof Error ? error.message : '存储配置保存失败')
+    return false
   } finally {
     saving.value = false
   }
@@ -53,6 +62,7 @@ async function testConnection() {
   testing.value = true
   try {
     config.value = await configApi.updateStorageConfig(config.value)
+    initialSnapshot.value = JSON.stringify(config.value)
     await configApi.testStorageConfig(activeProvider.value)
     toast.success(`${activeOption.value.label}连接测试成功`)
   } catch (error) {
@@ -66,17 +76,20 @@ function setDefault(provider: StorageProvider) {
   config.value.default_provider = provider
   config.value.providers[provider].enabled = true
 }
+
+function isDirty() { return dirty.value }
+defineExpose({ isDirty, save })
 </script>
 
 <template>
   <div v-if="loading" class="center-state"><Loader2 :size="22" class="spin" /></div>
   <section v-else class="storage-settings">
-    <header class="storage-heading">
+    <header class="settings-section-heading storage-heading">
       <div>
+        <span>存储</span>
         <h3>文件存储</h3>
         <p>默认 Provider 只影响新文件，历史文件继续从原存储位置读取。</p>
       </div>
-      <ElButton type="primary" :loading="saving" @click="save">保存配置</ElButton>
     </header>
 
     <div class="storage-provider-list">
@@ -153,16 +166,18 @@ function setDefault(provider: StorageProvider) {
 <style scoped>
 .storage-settings { display: flex; flex-direction: column; gap: 18px; }
 .storage-heading, .storage-provider-title, .storage-actions { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
-.storage-heading p, .storage-provider-title p, .storage-local-note p { color: #6b7280; font-size: 13px; margin-top: 4px; }
+.storage-heading p, .storage-provider-title p, .storage-local-note p { color: var(--text-secondary); font-size: 13px; margin-top: 4px; }
 .storage-provider-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
-.storage-provider-card { display: flex; align-items: center; gap: 10px; padding: 12px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; color: #374151; text-align: left; cursor: pointer; }
-.storage-provider-card.active { border-color: #111827; box-shadow: 0 0 0 1px #111827; }
+.storage-provider-card { display: flex; align-items: center; gap: 10px; padding: 12px; border: 1px solid var(--border-light); border-radius: var(--radius-md); background: var(--surface-primary); color: var(--text-primary); text-align: left; cursor: pointer; }
+.storage-provider-card:hover { border-color: var(--border-heavy); background: var(--surface-secondary); }
+.storage-provider-card:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.storage-provider-card.active { border-color: var(--accent-primary); box-shadow: 0 0 0 1px var(--accent-primary); }
 .storage-provider-card span { min-width: 0; flex: 1; display: flex; flex-direction: column; }
-.storage-provider-card small { color: #6b7280; font-size: 11px; margin-top: 3px; }
-.storage-provider-form { padding: 18px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; }
+.storage-provider-card small { color: var(--text-secondary); font-size: 11px; margin-top: 3px; }
+.storage-provider-form { padding: 18px; border: 1px solid var(--border-light); border-radius: var(--radius-lg); background: var(--surface-primary); }
 .storage-provider-title { margin-bottom: 18px; }
 .storage-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-.storage-local-note { display: flex; gap: 12px; padding: 16px; border-radius: 8px; background: #f3f4f6; }
+.storage-local-note { display: flex; gap: 12px; padding: 16px; border-radius: var(--radius-md); background: var(--surface-secondary); }
 .storage-actions { justify-content: flex-end; margin-top: 8px; }
 @media (max-width: 760px) { .storage-provider-list, .storage-form-grid { grid-template-columns: 1fr; } }
 </style>

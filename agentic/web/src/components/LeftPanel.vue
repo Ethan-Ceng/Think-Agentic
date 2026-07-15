@@ -11,7 +11,6 @@ const WIDTH_STORAGE_KEY = 'agentic.sidebar.panel-width'
 
 const router = useRouter()
 const sidebar = useSidebar()
-const panelRef = ref<InstanceType<typeof SidebarPanel> | null>(null)
 const panelWidth = ref(readPanelWidth())
 let resizeFrame = 0
 
@@ -32,8 +31,8 @@ function createTask() {
 }
 
 function focusSearch() {
-  sidebar.openSidebar()
-  panelRef.value?.focusSearch()
+  void router.push('/search')
+  if (window.innerWidth <= 900) sidebar.close()
 }
 
 function setPanelWidth(width: number) {
@@ -86,7 +85,6 @@ onBeforeUnmount(() => window.cancelAnimationFrame(resizeFrame))
       @search="focusSearch"
     />
     <SidebarPanel
-      ref="panelRef"
       :expanded="sidebar.open.value"
       @create="createTask"
       @close="sidebar.close"

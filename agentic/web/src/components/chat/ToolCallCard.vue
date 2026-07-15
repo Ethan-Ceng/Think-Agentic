@@ -84,6 +84,10 @@ const cardTitle = computed(() => `${toolKindLabel.value} · ${label.value}`)
 const ariaLabel = computed(() => `查看${toolKindLabel.value}调用详情：${label.value}`)
 const argsCopyText = computed(() => stringifyToolValue(props.data?.args || {}))
 const resultCopyText = computed(() => getToolResultText(props.data))
+const eventDomId = computed(() => {
+  const eventId = (props.data as { event_id?: string } | null)?.event_id
+  return eventId ? `event-${eventId}` : undefined
+})
 
 function handleClick() {
   if (props.clickable && props.data) {
@@ -127,6 +131,7 @@ async function copyText(text: string, target: 'args' | 'result') {
 
 <template>
   <div
+    :id="eventDomId"
     class="tool-call-card"
     :class="[`kind-${kind}`, { 'is-running': isRunning, 'is-failed': isFailed, passive: !clickable, dense }]"
     :title="cardTitle"

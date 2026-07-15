@@ -335,7 +335,7 @@ function stepResultPreview(step: RunStepRecord): string {
 </script>
 
 <template>
-  <aside class="preview-panel trace-panel">
+  <aside class="preview-panel trace-panel" role="dialog" aria-modal="true" aria-label="运行 Trace">
     <header class="trace-header">
       <div class="trace-title">
         <span class="trace-title-icon">
@@ -357,7 +357,7 @@ function stepResultPreview(step: RunStepRecord): string {
         >
           <RefreshCw :size="16" :class="{ spinning: loadingRuns || loadingDetail }" />
         </button>
-        <button class="icon-button subtle" type="button" title="关闭" @click="emit('close')">
+        <button class="icon-button subtle" type="button" aria-label="关闭 Trace" title="关闭" @click="emit('close')">
           <X :size="16" />
         </button>
       </div>
@@ -558,8 +558,8 @@ function stepResultPreview(step: RunStepRecord): string {
 
 <style scoped>
 .trace-panel {
-  border-left: 1px solid #e5e7eb;
-  background: #f8fafc;
+  border-left: 1px solid var(--border-light);
+  background: var(--surface-secondary);
 }
 
 .trace-header {
@@ -569,8 +569,8 @@ function stepResultPreview(step: RunStepRecord): string {
   gap: 12px;
   min-height: 64px;
   padding: 12px 14px;
-  border-bottom: 1px solid #e2e8f0;
-  background: #ffffff;
+  border-bottom: 1px solid var(--border-light);
+  background: var(--surface-primary);
 }
 
 .trace-title {
@@ -587,10 +587,10 @@ function stepResultPreview(step: RunStepRecord): string {
   width: 36px;
   height: 36px;
   flex: 0 0 36px;
-  border: 1px solid #dbeafe;
-  border-radius: 8px;
-  background: #eff6ff;
-  color: #2563eb;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  background: var(--accent-soft);
+  color: var(--accent-primary);
 }
 
 .trace-title div {
@@ -598,7 +598,7 @@ function stepResultPreview(step: RunStepRecord): string {
 }
 
 .trace-title p {
-  color: #111827;
+  color: var(--text-primary);
   font-size: 15px;
   font-weight: 750;
   line-height: 1.35;
@@ -608,7 +608,7 @@ function stepResultPreview(step: RunStepRecord): string {
   display: block;
   overflow: hidden;
   max-width: 420px;
-  color: #64748b;
+  color: var(--text-tertiary);
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -647,9 +647,9 @@ function stepResultPreview(step: RunStepRecord): string {
   gap: 8px;
   min-height: 82px;
   padding: 10px 12px;
-  border-bottom: 1px solid #e2e8f0;
+  border-bottom: 1px solid var(--border-light);
   overflow-x: auto;
-  background: #f8fafc;
+  background: var(--surface-secondary);
 }
 
 .run-item {
@@ -660,17 +660,17 @@ function stepResultPreview(step: RunStepRecord): string {
   gap: 7px;
   min-width: 0;
   padding: 9px 10px;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  background: #ffffff;
-  color: #334155;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  background: var(--surface-primary);
+  color: var(--text-secondary);
   cursor: pointer;
   text-align: left;
 }
 
 .run-item.active {
-  border-color: #93c5fd;
-  background: #eff6ff;
+  border-color: var(--accent-primary);
+  background: var(--accent-soft);
 }
 
 .run-item-main {
@@ -706,8 +706,8 @@ function stepResultPreview(step: RunStepRecord): string {
 
 .run-summary {
   padding: 12px;
-  border-bottom: 1px solid #e2e8f0;
-  background: #ffffff;
+  border-bottom: 1px solid var(--border-light);
+  background: var(--surface-primary);
 }
 
 .run-heading {
@@ -773,8 +773,8 @@ function stepResultPreview(step: RunStepRecord): string {
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 6px;
   padding: 10px 12px;
-  border-bottom: 1px solid #e2e8f0;
-  background: #f8fafc;
+  border-bottom: 1px solid var(--border-light);
+  background: var(--surface-secondary);
 }
 
 .trace-tabs button {
@@ -785,19 +785,19 @@ function stepResultPreview(step: RunStepRecord): string {
   min-width: 0;
   min-height: 32px;
   padding: 0 8px;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  background: #ffffff;
-  color: #475569;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  background: var(--surface-primary);
+  color: var(--text-secondary);
   cursor: pointer;
   font-size: 12px;
   font-weight: 650;
 }
 
 .trace-tabs button.active {
-  border-color: #2563eb;
-  background: #eff6ff;
-  color: #1d4ed8;
+  border-color: var(--accent-primary);
+  background: var(--accent-soft);
+  color: var(--accent-primary);
 }
 
 .trace-tabs strong {

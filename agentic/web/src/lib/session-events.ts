@@ -13,7 +13,9 @@ type RawEvent = { event?: string; type?: string; data?: unknown }
 
 export type UserMessageStatus = 'sending' | 'sent' | 'failed' | 'stopped'
 
-export type TimelineItem =
+type TimelineSource = { sourceEventId?: string }
+
+export type TimelineItem = (
   | {
       kind: 'user'
       id: string
@@ -30,6 +32,7 @@ export type TimelineItem =
   | { kind: 'tool'; id: string; data: ToolEvent; timeLabel?: string }
   | { kind: 'step'; id: string; data: StepEvent; tools: ToolEvent[] }
   | { kind: 'error'; id: string; error: string; timestamp?: number; timeLabel?: string }
+) & TimelineSource
 
 export type AttachmentFile = {
   id: string
@@ -165,6 +168,7 @@ export function eventsToTimeline(events: SSEEventData[]): TimelineItem[] {
     switch (ev.type) {
       case 'message': {
         const msg = ev.data as ChatMessage
+        const sourceEventId = (msg as { event_id?: string }).event_id
         const createdAt = normalizeTimestamp(getEventCreatedAt(msg))
         if (msg.role === 'user') {
           lastStepId = null
@@ -176,6 +180,7 @@ export function eventsToTimeline(events: SSEEventData[]): TimelineItem[] {
             statusText: '已发送',
             timeLabel: formatMessageTimeLabel(getEventCreatedAt(msg)),
             createdAt,
+            sourceEventId,
           })
           if (msg.attachments?.length) {
             list.push({
@@ -192,6 +197,7 @@ export function eventsToTimeline(events: SSEEventData[]): TimelineItem[] {
             data: msg,
             timeLabel: formatMessageTimeLabel(getEventCreatedAt(msg)),
             createdAt,
+            sourceEventId,
           })
           if (msg.attachments?.length) {
             list.push({
@@ -206,6 +212,7 @@ export function eventsToTimeline(events: SSEEventData[]): TimelineItem[] {
       }
       case 'step': {
         const step = ev.data as StepEvent
+        const sourceEventId = (step as { event_id?: string }).event_id
 
         if (lastStepId !== null && lastStepId === step.id) {
           let existingIdx = -1
@@ -225,6 +232,7 @@ export function eventsToTimeline(events: SSEEventData[]): TimelineItem[] {
                 id: existing.id,
                 data: step,
                 tools: existing.tools,
+                sourceEventId: sourceEventId || existing.sourceEventId,
               }
             }
           }
@@ -234,6 +242,7 @@ export function eventsToTimeline(events: SSEEventData[]): TimelineItem[] {
             id: stableId('step', stepIndex++, `${step.id}_${String(list.length)}`),
             data: step,
             tools: [],
+            sourceEventId,
           })
         }
 
@@ -288,6 +297,7 @@ export function eventsToTimeline(events: SSEEventData[]): TimelineItem[] {
             id: stableId('tool', toolIndex++, `${tool.name || ''}${tool.function || ''}`),
             data: tool,
             timeLabel: getToolTimeLabel(tool),
+            sourceEventId: (tool as { event_id?: string }).event_id,
           })
         }
         break
@@ -305,6 +315,7 @@ export function eventsToTimeline(events: SSEEventData[]): TimelineItem[] {
             error: errorData.error,
             timestamp: errorData.created_at,
             timeLabel: formatMessageTimeLabel(errorData.created_at),
+            sourceEventId: (errorData as { event_id?: string }).event_id,
           })
         }
         break

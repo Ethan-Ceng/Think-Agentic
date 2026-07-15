@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { nextTick, ref, watch } from 'vue'
+import { ref, watch } from 'vue'
 import { Command, Plus, Search, X } from 'lucide-vue-next'
+import { useRoute, useRouter } from 'vue-router'
 import SessionSections from '@/components/navigation/SessionSections.vue'
 
-const props = defineProps<{
+defineProps<{
   expanded: boolean
 }>()
 
@@ -12,18 +13,24 @@ const emit = defineEmits<{
   close: []
 }>()
 
+const route = useRoute()
+const router = useRouter()
 const query = ref('')
-const searchInput = ref<HTMLInputElement | null>(null)
 
-function focusSearch() {
-  void nextTick(() => searchInput.value?.focus())
+watch(
+  () => route.query.q,
+  (value) => {
+    query.value = typeof value === 'string' ? value : ''
+  },
+  { immediate: true },
+)
+
+function submitSearch() {
+  const value = query.value.trim()
+  void router.push({ name: 'search', query: value ? { q: value } : {} })
+  if (window.innerWidth <= 900) emit('close')
 }
 
-watch(() => props.expanded, (expanded) => {
-  if (!expanded) query.value = ''
-})
-
-defineExpose({ focusSearch })
 </script>
 
 <template>
@@ -43,26 +50,25 @@ defineExpose({ focusSearch })
         <kbd><Command :size="12" /> K</kbd>
       </button>
 
-      <label class="sidebar-search">
+      <form class="sidebar-search" role="search" @submit.prevent="submitSearch">
         <Search :size="16" aria-hidden="true" />
         <input
-          ref="searchInput"
           v-model="query"
           type="search"
-          placeholder="搜索任务"
-          aria-label="搜索任务"
+          placeholder="搜索全部内容"
+          aria-label="搜索全部内容"
         >
         <button v-if="query" type="button" aria-label="清空搜索" @click="query = ''">
           <X :size="14" />
         </button>
-      </label>
+      </form>
 
       <div class="sidebar-section-heading">
         <span>任务历史</span>
         <span class="sidebar-status-dot" title="会话流已连接" />
       </div>
 
-      <SessionSections :query="query" />
+      <SessionSections />
     </div>
   </div>
 </template>

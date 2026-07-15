@@ -16,6 +16,7 @@ from app.services.auth_service import AuthService
 from app.services.file_service import FileService
 from app.services.session_service import SessionService
 from app.services.trace_service import TraceService
+from app.services.search_service import SearchService
 from app.services.user_config_service import UserConfigService
 
 
@@ -33,6 +34,10 @@ def get_session_service() -> SessionService:
 
 def get_trace_service() -> TraceService:
     return TraceService(uow_factory=get_uow)
+
+
+def get_search_service() -> SearchService:
+    return SearchService(uow_factory=get_uow)
 
 
 def get_file_service() -> FileService:

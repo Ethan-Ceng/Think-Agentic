@@ -165,7 +165,7 @@ async function copyText(text: string, target: 'args' | 'result') {
 </script>
 
 <template>
-  <aside class="preview-panel tool-preview">
+  <aside class="preview-panel tool-preview" role="dialog" aria-modal="true" aria-label="工具执行详情">
     <header class="tool-preview-hero">
       <span class="tool-preview-icon" :class="`kind-${kind}`">
         <component :is="iconMap[kind]" :size="18" />
@@ -207,7 +207,7 @@ async function copyText(text: string, target: 'args' | 'result') {
             <Copy v-else :size="14" />
           </button>
         </ElTooltip>
-        <button class="icon-button subtle" type="button" title="关闭预览" @click="emit('close')">
+        <button class="icon-button subtle" type="button" aria-label="关闭工具预览" title="关闭预览" @click="emit('close')">
           <X :size="16" />
         </button>
       </div>

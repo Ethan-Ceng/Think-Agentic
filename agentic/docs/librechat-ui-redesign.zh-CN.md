@@ -445,19 +445,37 @@ web/src/
 
 ### Phase UI-3：任务执行工作台
 
-状态：待实施
+状态：进行中（工作台第一版视觉已落地，待真实运行会话视觉回归）
 
 任务：
 
-- [ ] 统一用户消息、Assistant 消息、错误消息和系统状态的视觉层级。
-- [ ] 增加复制、重试等悬浮操作，并保证触屏可访问。
-- [ ] 优化 Plan 折叠、当前步骤和完成进度。
-- [ ] 优化 Thinking 与 Tool Call 的状态颜色和层级。
-- [ ] 统一 File、Tool、Trace 右侧面板外壳。
-- [ ] 桌面端支持合理的面板宽度；移动端使用全屏/Sheet。
-- [ ] 保留跳到底部、自动滚动和用户主动向上浏览逻辑。
-- [ ] 完善 Streaming、Stopped、Failed、Retrying 状态。
+- [x] 统一用户消息、Assistant 消息、错误消息和系统状态的视觉层级。
+- [x] 增加复制、重试等悬浮操作，并保证触屏可访问。
+- [x] 优化 Plan 折叠、当前步骤和完成进度。
+- [x] 优化 Thinking 与 Tool Call 的状态颜色和层级。
+- [x] 统一 File、Tool、Trace 右侧面板外壳。
+- [x] 桌面端支持合理的面板宽度；移动端使用全屏/Sheet。
+- [x] 保留跳到底部、自动滚动和用户主动向上浏览逻辑。
+- [x] 完善 Streaming、Stopped、Failed、Retrying 状态。
 - [ ] 评估 Artifact 的代码/预览切换，但不替代现有文件模型。
+
+主要实现文件：
+
+- `web/src/components/SessionDetailView.vue`
+- `web/src/components/SessionHeader.vue`
+- `web/src/components/chat/ChatMessage.vue`
+- `web/src/components/chat/PlanPanel.vue`
+- `web/src/components/chat/ThinkingBlock.vue`
+- `web/src/components/chat/ToolCallCard.vue`
+- `web/src/components/FilePreviewPanel.vue`
+- `web/src/components/chat/ToolPreviewPanel.vue`
+- `web/src/components/TracePanel.vue`
+- `web/src/components/chat/chat.css`
+- `web/src/components/chat/tool-preview.css`
+
+决策记录：桌面宽屏使用 `clamp(420px, 40vw, 640px)` 控制预览宽度；901–1100px 改为右侧覆盖面板，避免同时打开侧栏和预览时过度挤压对话；900px 以下沿用全屏文件/Trace 与底部 Tool Sheet。当前继续使用文件、Tool 和 Trace 三套业务组件，只统一外壳与状态语义，不为视觉复用强行合并数据模型。
+
+验证记录（2026-07-15）：`pnpm build` 已通过。运行中工具自动打开预览、主动向上浏览不跟随滚动、VNC 返回后恢复最新工具等原有逻辑未改动。真实 SSE 运行会话、失败会话和移动触屏视觉回归仍待浏览器环境可用后补充，因此暂不标记为“已完成”。
 
 验收标准：
 
@@ -468,7 +486,7 @@ web/src/
 
 ### Phase UI-4：全局搜索
 
-状态：待实施
+状态：进行中（前后端链路已落地，待真实数据与浏览器视觉回归）
 
 参考：`../LibreChat/client/src/routes/Search.tsx`。
 
@@ -485,13 +503,41 @@ web/src/
 
 任务：
 
-- [ ] 明确后端搜索 API 和分页方式。
-- [ ] 新增 `SearchView.vue`。
-- [ ] 侧栏搜索框与搜索页面共享查询状态。
-- [ ] 结果展示 Session、片段、时间、内容类型。
-- [ ] 高亮匹配文本。
-- [ ] 点击后进入 `/sessions/:id` 并定位消息/事件。
-- [ ] 完成加载、无结果、失败和继续加载状态。
+- [x] 明确后端搜索 API 和分页方式。
+- [x] 新增 `SearchView.vue`。
+- [x] 侧栏搜索框与搜索页面共享查询状态。
+- [x] 结果展示 Session、片段、时间、内容类型。
+- [x] 高亮匹配文本。
+- [x] 点击后进入 `/sessions/:id` 并定位消息/事件。
+- [x] 完成加载、无结果、失败和分页状态。
+
+后端协议：
+
+```text
+GET /api/search?q={query}&current_page=1&page_size=20
+```
+
+搜索结果由 PostgreSQL 在单次查询中合并 Session、Session Message、Tool Call、Trace Event 和 File，统一按时间倒序并使用 `count(*) over()` 返回总数。所有查询分支都必须包含当前认证用户的 `user_id` 条件；Tool 与 Trace 通过 `agent_runs.user_id` 校验归属，不接受前端传入用户标识。
+
+主要实现文件：
+
+- `api/app/controllers/search.py`
+- `api/app/services/search_service.py`
+- `api/app/repositories/search_repository.py`
+- `api/app/repositories/db_search_repository.py`
+- `api/app/schemas/search.py`
+- `api/tests/app/services/test_search_service.py`
+- `web/src/views/SearchView.vue`
+- `web/src/lib/api/search.ts`
+- `web/src/router/index.ts`
+- `web/src/components/navigation/SidebarRail.vue`
+- `web/src/components/navigation/SidebarPanel.vue`
+- `web/src/components/SessionDetailView.vue`
+- `web/src/lib/session-events.ts`
+
+决策记录：查询状态使用 `/search?q=...&page=...` 保存，侧栏输入框与搜索页面通过 URL 同步；输入防抖为 320ms。搜索结果不返回完整 Tool 参数或文件内容，只返回已持久化的脱敏摘要与文件元数据。点击消息、工具或可定位的 Trace 结果时使用 `focus` 查询参数滚动到对应事件，并进行短暂焦点高亮。
+
+验证记录（2026-07-15）：搜索服务单元测试 2 项通过；真实 PostgreSQL 已使用无匹配的隔离用户和查询词执行 SQL 冒烟测试，语句与分页参数可正常运行；`pnpm build` 已通过。真实用户数据的结果相关性、移动端视觉和屏幕阅读器回归仍待浏览器环境可用后补充，因此暂不标记为“已完成”。
 
 验收标准：
 
@@ -502,7 +548,7 @@ web/src/
 
 ### Phase UI-5：设置中心重构
 
-状态：待实施
+状态：进行中（领域拆分与交互保护已落地，待浏览器视觉回归）
 
 建议分类：
 
@@ -531,11 +577,32 @@ Tools
 
 任务：
 
-- [ ] 拆分当前大型 `SettingsModal.vue`。
-- [ ] 区分个人偏好与系统/运行时配置。
-- [ ] 保留现有所有保存、测试、删除和启停能力。
-- [ ] 为危险操作提供独立确认和明确后果说明。
-- [ ] 小屏幕改为一级分类列表＋二级详情，而不是挤压双栏。
+- [x] 拆分当前大型 `SettingsModal.vue`。
+- [x] 区分个人偏好与系统/运行时配置。
+- [x] 保留现有所有保存、测试、删除和启停能力。
+- [x] 为危险操作提供独立确认和明确后果说明。
+- [x] 小屏幕改为一级分类列表＋二级详情，而不是挤压双栏。
+
+主要实现文件：
+
+- `web/src/components/SettingsModal.vue`
+- `web/src/components/StorageSettings.vue`
+- `web/src/components/settings/SettingsAppearancePanel.vue`
+- `web/src/components/settings/SettingsGeneralPanel.vue`
+- `web/src/components/settings/SettingsModelPanel.vue`
+- `web/src/components/settings/SettingsApiToolsPanel.vue`
+- `web/src/components/settings/SettingsA2aPanel.vue`
+- `web/src/components/settings/SettingsMcpPanel.vue`
+- `web/src/components/settings/types.ts`
+- `web/src/lib/theme.ts`
+- `web/src/main.ts`
+- `web/src/style.css`
+
+决策记录：设置外壳只负责分类导航、统一保存、关闭保护和移动端一级/二级切换，各领域组件自行加载并维护保存状态。Agent、模型、存储和 API Operation 使用显式保存；A2A、MCP 与 API Provider 的启停沿用即时生效。切换分类、返回移动端分类列表或关闭设置时，如当前表单存在未保存修改，会明确询问是否放弃。删除 API Provider、MCP 服务器和 A2A Agent 前展示影响范围并二次确认，历史运行记录不会随连接配置删除。
+
+个人偏好当前只实现有真实行为支撑的主题选择，并通过 `localStorage` 在启动时恢复“跟随系统 / 浅色 / 深色”。语言、消息显示和快捷键尚无国际化或偏好数据基础，不创建不可用的空壳选项。API Key 与存储密钥继续使用密码输入，不写入前端日志；保存失败时组件不替换编辑态，用户输入会保留以便重试。
+
+验证记录（2026-07-15）：`pnpm build` 已通过，包含 `vue-tsc -b` 与 Vite 生产构建；`git diff --check` 已通过。当前浏览器控制环境未发现可用浏览器实例，桌面、平板、360px 移动端以及确认弹窗的截图式交互回归仍待补充，因此暂不标记为“已完成”。
 
 验收标准：
 
