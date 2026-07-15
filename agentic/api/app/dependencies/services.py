@@ -1,12 +1,13 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-from fastapi import Depends
-
 from app.dependencies.infrastructure import (
     get_file_storage,
     get_json_parser,
     get_llm,
     get_search_engine,
+    get_skill_package_service,
+    get_skill_package_storage,
+    get_skill_workspace_service,
     sandbox_cls,
     task_cls,
 )
@@ -17,6 +18,7 @@ from app.services.file_service import FileService
 from app.services.session_service import SessionService
 from app.services.trace_service import TraceService
 from app.services.search_service import SearchService
+from app.services.skill_service import SkillService
 from app.services.user_config_service import UserConfigService
 
 
@@ -44,6 +46,15 @@ def get_file_service() -> FileService:
     return FileService(
         uow_factory=get_uow,
         file_storage=get_file_storage(),
+    )
+
+
+def get_skill_service() -> SkillService:
+    return SkillService(
+        uow_factory=get_uow,
+        package_service=get_skill_package_service(),
+        package_storage=get_skill_package_storage(),
+        workspace_service=get_skill_workspace_service(),
     )
 
 

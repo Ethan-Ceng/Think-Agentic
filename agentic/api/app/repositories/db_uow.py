@@ -64,9 +64,14 @@ class DBUnitOfWork(IUnitOfWork):
             if exc_type:
                 await self.rollback()
             else:
-                await self.commit()
-        except Exception as e:
-            logger.warning(f"UoW commit/rollback failed: {e}")
+                try:
+                    await self.commit()
+                except Exception:
+                    try:
+                        await self.rollback()
+                    except Exception:
+                        logger.exception("UoW rollback after commit failure also failed")
+                    raise
         finally:
             try:
                 await self.db_session.close()

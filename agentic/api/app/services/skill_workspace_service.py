@@ -90,6 +90,9 @@ class SkillWorkspaceService:
     ) -> StagedSkillPackage:
         return await run_in_threadpool(self._stage_publish, user_id, draft_id)
 
+    async def delete_draft(self, user_id: str, draft_id: str) -> None:
+        await run_in_threadpool(self._delete_draft, user_id, draft_id)
+
     def _create_draft(
         self,
         user_id: str,
@@ -185,6 +188,13 @@ class SkillWorkspaceService:
             build=build,
             revision=build.inspected.content_sha256,
         )
+
+    def _delete_draft(self, user_id: str, draft_id: str) -> None:
+        with self._lock(user_id, draft_id):
+            draft_root = self._draft_root(user_id, draft_id)
+            if not draft_root.is_dir() or draft_root.is_symlink():
+                raise NotFoundError("Skill 草稿不存在")
+            shutil.rmtree(draft_root)
 
     def _find_skill_root(self, user_id: str, draft_id: str) -> Path:
         draft_root = self._draft_root(user_id, draft_id)
