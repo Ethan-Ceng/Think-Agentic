@@ -59,7 +59,7 @@ class SkillManifest(BaseModel):
     license: str | None = None
     compatibility: str | None = None
     metadata: dict[str, StrictStr] = Field(default_factory=dict)
-    allowed_tools: list[str] = Field(default_factory=list, alias="allowed-tools")
+    allowed_tools: str | None = Field(default=None, alias="allowed-tools")
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 

@@ -19,7 +19,7 @@ def valid_manifest_data() -> dict[str, object]:
         "license": "Apache-2.0",
         "compatibility": "Requires Python 3.12 and optional network access.",
         "metadata": {"author": "agentic", "version": "1.0"},
-        "allowed-tools": ["search_web", "read_file", "write_file"],
+        "allowed-tools": "search_web read_file write_file",
     }
 
 
@@ -35,12 +35,11 @@ def test_manifest_accepts_official_fields_and_uses_frontmatter_aliases() -> None
     manifest = SkillManifest.model_validate(valid_manifest_data())
 
     assert manifest.name == "report-writer"
-    assert manifest.allowed_tools == ["search_web", "read_file", "write_file"]
-    assert manifest.model_dump(by_alias=True)["allowed-tools"] == [
-        "search_web",
-        "read_file",
-        "write_file",
-    ]
+    assert manifest.allowed_tools == "search_web read_file write_file"
+    assert (
+        manifest.model_dump(by_alias=True)["allowed-tools"]
+        == "search_web read_file write_file"
+    )
 
 
 @pytest.mark.parametrize(
