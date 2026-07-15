@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -24,6 +25,32 @@ class Settings(BaseSettings):
     local_storage_path: str = "/app/storage/files"
     deleted_file_retention_days: int = 7
     file_purge_interval_seconds: int = 60 * 60
+
+    skill_package_storage_path: str = "/app/storage/skills/packages"
+    skill_workspace_storage_path: str = "/app/storage/skill-workspaces"
+    skill_package_archive_max_bytes: int = 50 * 1024 * 1024
+    skill_package_extracted_max_bytes: int = 100 * 1024 * 1024
+    skill_package_file_count_max: int = 256
+    skill_package_file_max_bytes: int = 10 * 1024 * 1024
+    skill_package_manifest_max_bytes: int = 256 * 1024
+    skill_package_relative_path_max_chars: int = 240
+
+    marketplace_skill_storage_provider: Literal[
+        "local", "qcloud_cos", "aliyun_oss"
+    ] = "local"
+    marketplace_skill_cos_bucket: str = ""
+    marketplace_skill_cos_region: str = ""
+    marketplace_skill_cos_domain: str = ""
+    marketplace_skill_cos_scheme: Literal["http", "https"] = "https"
+    marketplace_skill_cos_secret_id: str = ""
+    marketplace_skill_cos_secret_key: str = ""
+    marketplace_skill_oss_bucket: str = ""
+    marketplace_skill_oss_endpoint: str = ""
+    marketplace_skill_oss_region: str = ""
+    marketplace_skill_oss_domain: str = ""
+    marketplace_skill_oss_path_prefix: str = ""
+    marketplace_skill_oss_access_key_id: str = ""
+    marketplace_skill_oss_access_key_secret: str = ""
 
     sqlalchemy_database_uri: str = "postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/manus"
 

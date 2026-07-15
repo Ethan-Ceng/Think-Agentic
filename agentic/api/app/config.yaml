@@ -24,3 +24,5 @@ tool_config:
     - a2a
     - api
     max_tool_iterations: 100
+# Skill package paths, limits and marketplace storage are deployment-level
+# environment settings. Marketplace credentials must not be stored in this file.
