@@ -1,4 +1,4 @@
-from .skill import (
+from app.core.entities.skill import (
     SelectedSkill,
     SkillManifest,
     SkillRef,
