@@ -2,6 +2,7 @@
 .idea/
 .vscode/
 .github/
+.worktrees/
 
 # 字节编译/优化/DLL文件
 __pycache__
