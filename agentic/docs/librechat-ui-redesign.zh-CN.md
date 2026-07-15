@@ -130,6 +130,7 @@ Agentic 的任务会话已经不是普通 Chat UI，而是：
 - 暗色主题尚未形成完整体系。
 - 页面级全局搜索缺失。
 - 历史任务缺少收藏、标签、归档和项目分组。
+- 侧边栏尚未实现 Skills 与用户长期记忆的管理面板，未来需要按本文规划提供稳定入口。
 - 设置中心同时承载个人设置和系统能力管理，职责过重。
 - 部分组件文件和全局 CSS 体积较大，后续维护成本高。
 - 用户文案以硬编码中文为主，尚未形成统一国际化层。
@@ -171,6 +172,8 @@ Agentic 的任务会话已经不是普通 Chat UI，而是：
 - 设置中心。
 - Agent/模型选择器。
 - 文件上传和“我的文件”。
+- Skills 侧边栏面板：搜索、创建入口、“我的 Skills”列表和状态展示。
+- Memories 侧边栏面板：搜索、创建入口、使用量、引用开关和记忆卡片管理。
 - Artifact 代码/预览面板。
 - 分享、导入导出、语音、主题和快捷键。
 
@@ -188,7 +191,8 @@ Agentic 的任务会话已经不是普通 Chat UI，而是：
 | Project | 中高 | 卡片、搜索排序、项目工作区、项目内任务 | 等待任务分组数据模型 |
 | Prompt | 中 | 模板列表、变量、预览、版本 | 确认模板复用需求后实施 |
 | Agent 市场 | 中低 | 搜索、分类、Agent 卡片、详情 | 多 Agent Profile 成熟后实施 |
-| Skill | 中低 | 列表、树、详情、编辑、调用模式 | Skill 数据模型成熟后实施 |
+| Skill | 中 | 侧边栏入口、搜索、列表、详情、编辑和启停状态 | Skill 数据模型成熟后实施；当前只记录 UI 方案 |
+| 用户长期记忆 | 中 | 侧边栏入口、搜索、使用量、引用状态、记忆卡片和编辑/删除 | 与 Knowledge、Session 内部记忆分离；当前只记录 UI 方案 |
 | 分享页面 | 低到中 | 只读任务、复制链接、过期状态 | 依赖权限、脱敏和审计机制 |
 | 完整认证 | 低到中 | 忘记密码、2FA、OAuth、验证状态 | 不做无后端支撑的空壳页 |
 
@@ -249,6 +253,78 @@ Agentic 的任务会话已经不是普通 Chat UI，而是：
 - 右侧预览变为全屏 Sheet 或底部 Sheet。
 - 主输入器始终保持可见。
 - VNC 保持全屏模式。
+
+### 7.4 后续侧边栏上下文面板：Skills 与记忆
+
+本节只定义未来 UI 信息架构，不在当前阶段新增导航入口、正式路由、API 调用、静态占位页或业务逻辑。待对应能力具备真实数据和权限边界后，再将入口加入 `SidebarRail` 并接入可展开侧栏面板。
+
+参考实现：
+
+- `../LibreChat/client/src/hooks/Nav/useSideNavLinks.ts`
+- `../LibreChat/client/src/components/Skills/sidebar/SkillsSidePanel.tsx`
+- `../LibreChat/client/src/components/Skills/sidebar/SkillsAccordion.tsx`
+- `../LibreChat/client/src/components/SidePanel/Memories/MemoryPanel.tsx`
+- `../LibreChat/client/src/components/SidePanel/Memories/MemoryCard.tsx`
+
+#### Skills 面板
+
+侧边栏 Rail 使用 `ScrollText` 图标。点击后，展开区域从任务历史切换为 Skills 上下文面板；再次点击当前入口可收起侧栏，行为与 LibreChat 的 Unified Sidebar 保持一致。
+
+建议视觉结构：
+
+```text
+Skills
+  搜索                         新建
+
+  我的 Skills
+    Skill 名称
+    一行能力摘要                 已启用
+    Skill 名称
+    一行能力摘要                 已停用
+```
+
+- 面板头部显示标题、搜索按钮和创建入口。
+- 搜索展开后使用行内输入框，并提供明确的关闭按钮。
+- 主体使用可滚动列表；列表项优先展示名称、简短描述和启停状态。
+- 当前选中项使用语义 Active 状态，不只依赖颜色表达。
+- 预留 Loading、Empty、Filtered Empty、Error 和无访问权限状态。
+- 创建、编辑、启停和调用方式属于未来逻辑，本阶段不实现。
+
+#### 用户长期记忆面板
+
+侧边栏 Rail 使用 `Brain` 图标。记忆面板用于未来管理用户主动保存、可查看和可删除的长期信息，不等同于 Knowledge 知识库，也不直接展示 `sessions.memories` 中的 Agent 内部运行状态。
+
+建议视觉结构：
+
+```text
+记忆
+  搜索                         新建
+  使用量 42%              引用已保存记忆
+
+  偏好
+    默认使用中文，回答保持简洁
+                                      编辑 · 删除
+
+  工作背景
+    当前负责 Agentic 产品研发
+                                      编辑 · 删除
+```
+
+- 顶部提供搜索和创建入口。
+- 辅助控制区展示容量/使用量，并预留“是否引用已保存记忆”的状态控件。
+- 记忆以卡片列表展示，突出简短标题与内容摘要。
+- 编辑和删除使用次级操作；删除需在未来实现时提供明确确认。
+- 列表较长时使用分页或增量加载，不在侧栏中无限堆叠。
+- 预留 Loading、Empty、Filtered Empty、Error 和无访问权限状态。
+- 自动提取、记忆写入、Token 统计和偏好同步属于未来逻辑，本阶段不实现。
+
+#### 响应式与可访问性
+
+- 桌面端复用现有 Rail + 可调宽 Panel，不另开第三层固定侧栏。
+- 移动端在现有侧栏抽屉内切换上下文；进入详情或编辑时使用全屏 Sheet。
+- Rail 按钮必须提供 `aria-label`、`aria-current` 或 `aria-pressed`。
+- 搜索、列表数量、空状态和保存结果通过可读文本或 Live Region 表达。
+- Skills 与记忆入口仅在能力真实可用时显示，不提前提供不可操作的“即将推出”入口。
 
 ## 8. 设计系统改造
 
@@ -396,6 +472,7 @@ web/src/
 - [x] 展开宽度可拖动，限制最小/最大宽度。
 - [x] 使用 `localStorage` 保存用户选择的宽度和展开状态。
 - [x] 新增任务、文件、任务搜索、设置入口。
+- [x] 将设置和账号作为两个独立入口收口到侧栏底部，并移除页面头部的重复入口。
 - [x] 历史任务支持按时间分组。
 - [x] 移动端改为抽屉，并支持 Escape 和遮罩关闭。
 - [x] 拖动分隔条支持键盘左右键调整。
@@ -407,9 +484,11 @@ web/src/
 - `web/src/components/navigation/SidebarPanel.vue`
 - `web/src/components/navigation/SessionSections.vue`
 - `web/src/components/SessionList.vue`
+- `web/src/components/SettingsButton.vue`
+- `web/src/components/UserMenu.vue`
 - `web/src/App.vue`
 
-决策记录：UI-1 初次落地时，侧栏搜索仅过滤已加载的任务标题和最近消息；Phase UI-4 完成后已升级为 `/search` 全局搜索，查询范围覆盖跨任务消息、Tool、Trace 和文件，侧栏输入框与搜索页通过 URL 查询状态同步。
+决策记录：UI-1 初次落地时，侧栏搜索仅过滤已加载的任务标题和最近消息；Phase UI-4 完成后已升级为 `/search` 全局搜索，查询范围覆盖跨任务消息、Tool、Trace 和文件，侧栏输入框与搜索页通过 URL 查询状态同步。设置入口与账号入口固定在侧栏底部并彼此独立；账号入口展开后显示当前身份与退出登录操作，页面头部仅保留当前页面或任务相关操作。
 
 验收标准：
 
@@ -658,11 +737,21 @@ Tools
 
 依赖：Skill 数据模型和运行时调用约定。
 
+- 按 7.4 节增加侧边栏 Rail 入口和 Skills 上下文面板。
 - Skill 列表、详情、编辑和启停。
 - 自动/手动调用模式。
 - Skill 与 Agent Profile 的关联。
 
-这些页面不得只因为 LibreChat 存在就提前创建静态 UI。
+#### 用户长期记忆
+
+依赖：用户级长期记忆数据模型、容量策略和权限边界。
+
+- 按 7.4 节增加侧边栏 Rail 入口和记忆上下文面板。
+- 搜索、创建、编辑和删除记忆。
+- 展示使用量和是否引用已保存记忆。
+- 与 Knowledge 知识库、Session 内部记忆保持概念和入口分离。
+
+这些页面和侧边栏面板不得只因为 LibreChat 存在就提前创建静态 UI。
 
 ## 10. 可访问性和响应式要求
 
@@ -731,6 +820,6 @@ pnpm build
 | 第一优先级 | 设计 Token、统一侧栏、首页和 Composer |
 | 最重要新增页面 | 全局搜索 |
 | 会话页改造策略 | 选择性学习，保护 Agent 执行工作台 |
-| Project/Prompt/Agent/Skill | 数据模型就绪后条件实施 |
+| Project/Prompt/Agent/Skill/用户长期记忆 | 数据模型就绪后条件实施；当前仅保留 UI 信息架构 |
 | 设置中心 | 拆分个人设置与系统能力管理 |
 | 文件中心 | 保留现有独立页面，只吸收交互细节 |

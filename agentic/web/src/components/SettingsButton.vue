@@ -10,6 +10,7 @@ const settingsModal = useSettingsModal()
     class="icon-button settings-button"
     type="button"
     title="设置"
+    aria-label="设置"
     @click="settingsModal.openSettings"
   >
     <Settings :size="18" />

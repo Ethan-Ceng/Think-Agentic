@@ -209,7 +209,8 @@ h3 {
 
 .rail-brand,
 .rail-button,
-.sidebar-rail .settings-button {
+.sidebar-rail .settings-button,
+.sidebar-account-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -238,6 +239,7 @@ h3 {
 
 .rail-button:hover,
 .sidebar-rail .settings-button:hover,
+.sidebar-account-button:hover,
 .rail-button.active {
   background: var(--surface-hover);
   color: var(--text-primary);
@@ -761,21 +763,72 @@ h3 {
   min-width: 0;
 }
 
-.header-actions,
 .user-menu {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
 }
 
-.user-label {
-  max-width: 180px;
+.sidebar-account-button {
+  appearance: none;
+}
+
+.account-avatar,
+.account-menu-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--accent-primary);
+  color: var(--accent-contrast);
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.02em;
+}
+
+.account-avatar {
+  width: 30px;
+  height: 30px;
+}
+
+.account-menu-avatar {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+}
+
+.account-menu-popper {
+  min-width: 230px;
+}
+
+.account-menu-popper .account-menu-identity.is-disabled {
+  gap: 10px;
+  cursor: default;
+  opacity: 1;
+}
+
+.account-menu-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.account-menu-copy strong,
+.account-menu-copy small {
+  max-width: 160px;
   overflow: hidden;
-  color: #4b5563;
-  font-size: 13px;
-  font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.account-menu-copy strong {
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.account-menu-copy small {
+  color: var(--text-tertiary);
+  font-size: 12px;
 }
 
 .brand-mark {

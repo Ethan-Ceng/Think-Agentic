@@ -2,8 +2,6 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import { ArrowLeft, Download, File, FilePlus2, Folder, FolderPlus, Grid2X2, List, PanelLeftOpen, RefreshCw, Search, Trash2 } from 'lucide-vue-next'
-import SettingsButton from '@/components/SettingsButton.vue'
-import UserMenu from '@/components/UserMenu.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import UiIconButton from '@/components/ui/UiIconButton.vue'
 import UiState from '@/components/ui/UiState.vue'
@@ -173,7 +171,6 @@ onMounted(() => loadFiles(1))
         <UiIconButton v-if="sidebar.mobile.value && !sidebar.open.value" label="打开侧边栏" @click="sidebar.openSidebar"><PanelLeftOpen :size="18" /></UiIconButton>
         <div><h1>文件</h1><p>统一管理用户上传与 AI 生成的交付文件</p></div>
       </div>
-      <div class="header-actions"><SettingsButton /><UserMenu /></div>
     </header>
 
     <main class="files-main">
@@ -231,7 +228,7 @@ onMounted(() => loadFiles(1))
 <style scoped>
 .files-page { display: flex; height: 100%; min-width: 0; flex-direction: column; background: var(--surface-canvas); }
 .files-header { display: flex; height: 64px; flex: 0 0 64px; align-items: center; justify-content: space-between; padding: 0 22px; border-bottom: 1px solid var(--border-light); background: var(--surface-primary); }
-.files-header-left, .header-actions, .files-actions, .files-subtoolbar, .files-breadcrumb, .files-selection, .files-view-actions { display: flex; align-items: center; gap: 10px; }
+.files-header-left, .files-actions, .files-subtoolbar, .files-breadcrumb, .files-selection, .files-view-actions { display: flex; align-items: center; gap: 10px; }
 .files-header h1 { color: var(--text-primary); font-size: 17px; }
 .files-header p { color: var(--text-tertiary); font-size: var(--text-xs); }
 .files-main { display: grid; min-height: 0; flex: 1; grid-template-columns: 190px minmax(0, 1fr); gap: var(--space-4); padding: var(--space-4); overflow: hidden; }

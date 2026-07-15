@@ -1,8 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { Activity, CheckCircle2, Circle, Clock3, Download, FileSearch, FileText, Loader2, PanelLeftOpen, X } from 'lucide-vue-next'
-import SettingsButton from '@/components/SettingsButton.vue'
-import UserMenu from '@/components/UserMenu.vue'
 import { useSidebar } from '@/composables/useSidebar'
 import { useToast } from '@/composables/useToast'
 import { fileApi } from '@/lib/api/file'
@@ -117,8 +115,6 @@ function handleFileClick(file: SessionFile) {
         <component :is="statusMeta.icon" :size="13" :class="{ spin: status === 'running' }" />
         {{ statusMeta.label }}
       </span>
-      <SettingsButton />
-      <UserMenu />
       <button class="icon-button subtle" type="button" title="查看运行 Trace" @click="emit('openTrace')">
         <Activity :size="18" />
       </button>

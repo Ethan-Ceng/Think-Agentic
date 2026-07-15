@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { Bot, Files, History, PanelLeftClose, PanelLeftOpen, Plus, Search } from 'lucide-vue-next'
 import { useRoute, useRouter } from 'vue-router'
 import SettingsButton from '@/components/SettingsButton.vue'
+import UserMenu from '@/components/UserMenu.vue'
 
 const props = defineProps<{
   expanded: boolean
@@ -86,6 +87,9 @@ function createTask() {
     <div class="rail-bottom">
       <ElTooltip content="设置" placement="right" :show-after="400">
         <SettingsButton />
+      </ElTooltip>
+      <ElTooltip content="账号" placement="right" :show-after="400">
+        <UserMenu compact />
       </ElTooltip>
       <ElTooltip :content="expanded ? '收起侧栏' : '展开侧栏'" placement="right" :show-after="400">
         <button

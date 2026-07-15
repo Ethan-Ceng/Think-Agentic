@@ -2,8 +2,6 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Activity, ArrowRight, FileText, MessageSquare, PanelLeftOpen, Search, Sparkles, Wrench, X } from 'lucide-vue-next'
 import { useRoute, useRouter } from 'vue-router'
-import SettingsButton from '@/components/SettingsButton.vue'
-import UserMenu from '@/components/UserMenu.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import UiIconButton from '@/components/ui/UiIconButton.vue'
 import UiState from '@/components/ui/UiState.vue'
@@ -162,7 +160,6 @@ function formatDate(value?: string | null) {
           <p>检索任务、消息、工具调用、Trace 与文件</p>
         </div>
       </div>
-      <div class="header-actions"><SettingsButton /><UserMenu /></div>
     </header>
 
     <main class="search-main">
@@ -251,7 +248,7 @@ function formatDate(value?: string | null) {
 <style scoped>
 .search-page { display: flex; flex-direction: column; width: 100%; height: 100%; min-width: 0; background: var(--surface-canvas); }
 .search-header { display: flex; align-items: center; justify-content: space-between; min-height: 64px; padding: 0 22px; border-bottom: 1px solid var(--border-light); background: var(--surface-primary); }
-.search-header-title, .header-actions { display: flex; align-items: center; gap: 10px; }
+.search-header-title { display: flex; align-items: center; gap: 10px; }
 .search-header h1 { color: var(--text-primary); font-size: 17px; }.search-header p { color: var(--text-tertiary); font-size: 12px; }
 .search-main { flex: 1; min-height: 0; overflow-y: auto; padding: 40px 24px 64px; }
 .search-hero, .search-results { width: min(820px, 100%); margin: 0 auto; }
@@ -268,5 +265,5 @@ function formatDate(value?: string | null) {
 .result-content > strong { overflow: hidden; color: var(--text-primary); font-size: var(--text-base); font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }.result-content p { display: -webkit-box; overflow: hidden; color: var(--text-secondary); font-size: var(--text-sm); line-height: 1.55; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 mark { padding: 1px 2px; border-radius: 3px; background: var(--status-warning-soft); color: var(--text-primary); }.result-arrow { align-self: center; color: var(--text-tertiary); }
 .search-pagination { justify-content: center; margin-top: 24px; }
-@media (max-width: 640px) { .search-header { padding: 0 12px; }.search-header p, .header-actions .user-label { display: none; }.search-main { padding: 24px 14px 48px; }.global-search-box { gap: 7px; }.global-search-box .ui-text-field { min-height: 52px; padding-left: 13px; }.search-submit { min-height: 52px; padding: 0 13px; }.search-result-card { grid-template-columns: 34px minmax(0, 1fr); padding: 12px; }.result-type-icon { width: 34px; height: 34px; }.result-arrow { display: none; } }
+@media (max-width: 640px) { .search-header { padding: 0 12px; }.search-header p { display: none; }.search-main { padding: 24px 14px 48px; }.global-search-box { gap: 7px; }.global-search-box .ui-text-field { min-height: 52px; padding-left: 13px; }.search-submit { min-height: 52px; padding: 0 13px; }.search-result-card { grid-template-columns: 34px minmax(0, 1fr); padding: 12px; }.result-type-icon { width: 34px; height: 34px; }.result-arrow { display: none; } }
 </style>
