@@ -9,6 +9,7 @@ from .file import FileModel
 from .user import UserModel
 from .config import ConfigModel
 from .run_trace import AgentRunModel, ModelCallModel, RunStepModel, ToolCallModel, TraceEventModel
+from .skill import RunSkillModel, SkillInstallationModel, SkillModel, SkillVersionModel
 
 __all__ = [
     "Base",
@@ -22,4 +23,8 @@ __all__ = [
     "ToolCallModel",
     "ModelCallModel",
     "TraceEventModel",
+    "SkillModel",
+    "SkillVersionModel",
+    "SkillInstallationModel",
+    "RunSkillModel",
 ]

@@ -5,3 +5,7 @@
 @Author  : thezehui@gmail.com
 @File    : __init__.py.py
 """
+from .db_skill_repository import DBSkillRepository
+from .skill_repository import SkillRepository
+
+__all__ = ["DBSkillRepository", "SkillRepository"]
