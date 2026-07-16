@@ -44,6 +44,7 @@ from app.services.skill_runtime_service import (
     SkillRuntimeService,
 )
 from app.services.skill_selection_service import SkillSelectionService
+from app.services.bundled_skill_service import BundledSkillService
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,7 @@ class AgentTaskRunner(TaskRunner):
             search_engine: SearchEngine,  # 搜索引擎
             sandbox: Sandbox,  # 沙箱
             skill_package_storage: SkillPackageStorage | None = None,
+            bundled_skill_service: BundledSkillService | None = None,
     ) -> None:
         """构造函数，完成Agent任务运行器的创建"""
         self._uow_factory = uow_factory
@@ -108,7 +110,10 @@ class AgentTaskRunner(TaskRunner):
                 return llm
 
             selection_service = SkillSelectionService(
-                catalog_service=SkillCatalogService(uow_factory=uow_factory),
+                catalog_service=SkillCatalogService(
+                    uow_factory=uow_factory,
+                    bundled_provider=bundled_skill_service,
+                ),
                 llm_provider=llm_provider,
                 trace_service=self._trace_service,
             )
@@ -117,6 +122,7 @@ class AgentTaskRunner(TaskRunner):
                 selection_service=selection_service,
                 package_storage=skill_package_storage,
                 sandbox=sandbox,
+                bundled_provider=bundled_skill_service,
                 trace_service=self._trace_service,
             )
 

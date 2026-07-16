@@ -1,5 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
+from functools import lru_cache
+
 from app.core.config import get_settings
 from app.core.json_parser.repair_json_parser import RepairJSONParser
 from app.core.llm.openai_llm import OpenAILLM
@@ -12,6 +14,7 @@ from app.extensions.managed_file_storage import ManagedFileStorage
 from app.extensions.skill_package_storage import SkillPackageStorage
 from app.repositories.file_app_config_repository import FileAppConfigRepository
 from app.services.skill_workspace_service import SkillWorkspaceService
+from app.services.bundled_skill_service import BundledSkillService
 from app.services.user_config_service import UserConfigService
 
 settings = get_settings()
@@ -48,6 +51,11 @@ def get_skill_workspace_service() -> SkillWorkspaceService:
         package_service=get_skill_package_service(),
         max_text_file_bytes=settings.skill_package_file_max_bytes,
     )
+
+
+@lru_cache
+def get_bundled_skill_service() -> BundledSkillService:
+    return BundledSkillService(package_service=get_skill_package_service())
 
 
 def get_app_config():

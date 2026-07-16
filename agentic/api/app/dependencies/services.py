@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 from app.dependencies.infrastructure import (
+    get_bundled_skill_service,
     get_file_storage,
     get_json_parser,
     get_llm,
@@ -69,4 +70,5 @@ def get_agent_service() -> AgentService:
         search_engine=get_search_engine(),
         file_storage=get_file_storage(),
         skill_package_storage=get_skill_package_storage(),
+        bundled_skill_service=get_bundled_skill_service(),
     )

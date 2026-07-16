@@ -26,6 +26,7 @@ from app.repositories.uow import IUnitOfWork
 from app.schemas.exceptions import NotFoundError
 from app.core.agent.agent_task_runner import AgentTaskRunner
 from app.services.user_config_service import UserConfigService
+from app.services.bundled_skill_service import BundledSkillService
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,7 @@ class AgentService:
             search_engine: SearchEngine,
             file_storage: FileStorage,
             skill_package_storage: SkillPackageStorage | None = None,
+            bundled_skill_service: BundledSkillService | None = None,
     ) -> None:
         """构造函数，完成Agent服务初始化"""
         self._uow_factory = uow_factory
@@ -71,6 +73,7 @@ class AgentService:
         self._search_engine = search_engine
         self._file_storage = file_storage
         self._skill_package_storage = skill_package_storage
+        self._bundled_skill_service = bundled_skill_service
         logger.info("AgentService初始化成功")
 
     async def _get_task(self, session: Session) -> Optional[Task]:
@@ -126,6 +129,7 @@ class AgentService:
             search_engine=self._search_engine,
             sandbox=sandbox,
             skill_package_storage=self._skill_package_storage,
+            bundled_skill_service=self._bundled_skill_service,
         )
 
         # 6.创建任务Task并更新会话中的信息
