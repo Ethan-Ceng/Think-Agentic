@@ -20,6 +20,7 @@ from app.core.entities.message import Message
 from app.core.entities.tool_result import ToolResult
 from app.repositories.uow import IUnitOfWork
 from app.core.tools.base import BaseTool
+from app.services.skill_runtime_service import SkillRuntimeContext
 from app.services.trace_service import TraceService, elapsed_ms, model_call_timer
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,7 @@ class BaseAgent(ABC):
             json_parser: JSONParser,  # JSON输出解析器
             tools: List[BaseTool],  # 工具列表
             trace_service: TraceService | None = None,
+            skill_runtime_context: SkillRuntimeContext | None = None,
     ) -> None:
         """构造函数，完成Agent的初始化"""
         self._uow_factory = uow_factory
@@ -53,6 +55,31 @@ class BaseAgent(ABC):
         self._json_parser = json_parser
         self._tools = tools
         self._trace_service = trace_service
+        self._skill_runtime_context = skill_runtime_context or SkillRuntimeContext()
+
+    def set_skill_runtime_context(self, context: SkillRuntimeContext) -> None:
+        """Replace the transient per-run Skill context without touching Memory."""
+        self._skill_runtime_context = context
+
+    def get_available_tool_names(self) -> set[str]:
+        """Return both tool-group and callable names used by Skill constraints."""
+        names = {tool.name for tool in self._tools if tool.name}
+        for tool_schema in self._get_available_tools():
+            function = tool_schema.get("function") or {}
+            name = function.get("name")
+            if name:
+                names.add(name)
+        return names
+
+    def _get_llm_messages(self) -> List[Dict[str, Any]]:
+        """Build one model-call view with transient context after the base prompt."""
+        messages = [message.copy() for message in self._memory.get_messages()]
+        prompt_block = self._skill_runtime_context.prompt_block
+        if not prompt_block:
+            return messages
+        insert_at = 1 if messages and messages[0].get("role") == "system" else 0
+        messages.insert(insert_at, {"role": "system", "content": prompt_block})
+        return messages
 
     async def _ensure_memory(self) -> None:
         """确保智能体记忆是存在的"""
@@ -89,6 +116,7 @@ class BaseAgent(ABC):
         error = "调用语言模型发生错误"
         for _ in range(self._agent_config.max_retries):
             available_tools = self._get_available_tools()
+            llm_messages = self._get_llm_messages()
             model_call_id = None
             model_started = model_call_timer()
             try:
@@ -96,7 +124,7 @@ class BaseAgent(ABC):
                     model_call_id = await self._trace_service.record_model_call_started(
                         agent_name=self.name,
                         llm=self._llm,
-                        messages=self._memory.get_messages(),
+                        messages=llm_messages,
                         tools=available_tools,
                         response_format=response_format,
                         tool_choice=self._tool_choice,
@@ -104,7 +132,7 @@ class BaseAgent(ABC):
 
                 # 4.调用语言模型获取响应内容
                 message = await self._llm.invoke(
-                    messages=self._memory.get_messages(),
+                    messages=llm_messages,
                     tools=available_tools,
                     response_format=response_format,
                     tool_choice=self._tool_choice,

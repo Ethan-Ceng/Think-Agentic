@@ -26,6 +26,7 @@ from app.core.tools.a2a import A2ATool
 from app.core.tools.factory import ToolFactory
 from app.core.tools.mcp import MCPTool
 from app.services.trace_service import TraceService
+from app.services.skill_runtime_service import SkillRuntimeContext
 from .base import BaseFlow, FlowStatus
 from ...repositories.uow import IUnitOfWork
 
@@ -93,6 +94,14 @@ class PlannerReActFlow(BaseFlow):
             trace_service=trace_service,
         )
         logger.debug(f"创建执行Agent成功, 会话id: {self._session_id}")
+
+    def set_skill_runtime_context(self, context: SkillRuntimeContext) -> None:
+        """Apply one run's transient Skill context to both model-facing agents."""
+        self.planner.set_skill_runtime_context(context)
+        self.react.set_skill_runtime_context(context)
+
+    def get_available_tool_names(self) -> set[str]:
+        return self.react.get_available_tool_names()
 
     async def invoke(self, message: Message) -> AsyncGenerator[BaseEvent, None]:
         """传递消息，运行流，在六中调用planner&react智能体组合完成任务并返回对应事件"""

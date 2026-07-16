@@ -20,6 +20,8 @@ from app.core.search.base import SearchEngine
 from app.core.task.base import Task
 from app.core.entities.event import BaseEvent, ErrorEvent, MessageEvent, Event, DoneEvent, WaitEvent
 from app.core.entities.session import Session, SessionStatus
+from app.core.entities.skill import SkillRef
+from app.extensions.skill_package_storage import SkillPackageStorage
 from app.repositories.uow import IUnitOfWork
 from app.schemas.exceptions import NotFoundError
 from app.core.agent.agent_task_runner import AgentTaskRunner
@@ -56,6 +58,7 @@ class AgentService:
             json_parser: JSONParser,
             search_engine: SearchEngine,
             file_storage: FileStorage,
+            skill_package_storage: SkillPackageStorage | None = None,
     ) -> None:
         """构造函数，完成Agent服务初始化"""
         self._uow_factory = uow_factory
@@ -67,6 +70,7 @@ class AgentService:
         self._json_parser = json_parser
         self._search_engine = search_engine
         self._file_storage = file_storage
+        self._skill_package_storage = skill_package_storage
         logger.info(f"AgentService初始化成功")
 
     async def _get_task(self, session: Session) -> Optional[Task]:
@@ -121,6 +125,7 @@ class AgentService:
             browser=browser,
             search_engine=self._search_engine,
             sandbox=sandbox,
+            skill_package_storage=self._skill_package_storage,
         )
 
         # 6.创建任务Task并更新会话中的信息
@@ -187,11 +192,13 @@ class AgentService:
             user_id: str,
             message: Optional[str] = None,
             attachments: Optional[List[str]] = None,
+            skills: Optional[List[SkillRef]] = None,
             latest_event_id: Optional[str] = None,
             timestamp: Optional[datetime] = None,
     ) -> AsyncGenerator[BaseEvent, None]:
         """根据传递的信息调用Agent服务发起对话请求"""
         attachments = attachments or []
+        skills = skills or []
         try:
             # 1.检查会话是否存在
             async with self._uow:
@@ -238,6 +245,7 @@ class AgentService:
                     role="user",
                     message=message,
                     attachments=[attachment for attachment in db_attachments if attachment is not None],
+                    skills=skills,
                     # attachments=[File(id=attachment) for attachment in attachments] if attachments else [],
                 )
 

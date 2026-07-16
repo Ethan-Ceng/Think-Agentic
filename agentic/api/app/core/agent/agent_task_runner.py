@@ -15,6 +15,7 @@ from pydantic import TypeAdapter
 
 from app.core.browser.base import Browser
 from app.extensions.file_storage import FileStorage
+from app.extensions.skill_package_storage import SkillPackageStorage
 from app.core.json_parser.base import JSONParser
 from app.core.llm.base import LLM
 from app.core.sandbox.base import Sandbox
@@ -35,6 +36,14 @@ from app.core.flows.planner_react import PlannerReActFlow
 from app.core.tools.a2a import A2ATool
 from app.core.tools.mcp import MCPTool
 from app.services.trace_service import TraceService
+from app.schemas.skill import SkillSelectionRequest
+from app.services.skill_catalog_service import SkillCatalogService
+from app.services.skill_runtime_service import (
+    SkillRuntimeContext,
+    SkillRuntimeError,
+    SkillRuntimeService,
+)
+from app.services.skill_selection_service import SkillSelectionService
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +67,7 @@ class AgentTaskRunner(TaskRunner):
             browser: Browser,  # 浏览器
             search_engine: SearchEngine,  # 搜索引擎
             sandbox: Sandbox,  # 沙箱
+            skill_package_storage: SkillPackageStorage | None = None,
     ) -> None:
         """构造函数，完成Agent任务运行器的创建"""
         self._uow_factory = uow_factory
@@ -92,6 +102,22 @@ class AgentTaskRunner(TaskRunner):
             a2a_tool=self._a2a_tool,
             trace_service=self._trace_service,
         )
+        self._skill_runtime_service: SkillRuntimeService | None = None
+        if skill_package_storage is not None:
+            async def llm_provider(_: str) -> LLM:
+                return llm
+
+            selection_service = SkillSelectionService(
+                catalog_service=SkillCatalogService(uow_factory=uow_factory),
+                llm_provider=llm_provider,
+                trace_service=self._trace_service,
+            )
+            self._skill_runtime_service = SkillRuntimeService(
+                uow_factory=uow_factory,
+                selection_service=selection_service,
+                package_storage=skill_package_storage,
+                sandbox=sandbox,
+            )
 
     async def _put_and_add_event(self, task: Task, event: Event) -> None:
         """往指定任务的消息队列中添加事件"""
@@ -337,6 +363,41 @@ class AgentTaskRunner(TaskRunner):
             # 5.将事件直接返回
             yield event
 
+    async def _prepare_skill_runtime(
+        self, task: Task, event: MessageEvent
+    ) -> SkillRuntimeContext:
+        """Start a fresh trace Run, then select and materialize its Skills."""
+        self._flow.set_skill_runtime_context(SkillRuntimeContext())
+        run_id = await self._trace_service.start_run(
+            user_id=self._user_id,
+            session_id=self._session_id,
+            task_id=task.id,
+            input_event=event,
+        )
+        if self._skill_runtime_service is None:
+            if event.skills:
+                raise SkillRuntimeError("Skill runtime is not configured")
+            return SkillRuntimeContext()
+
+        context = await self._skill_runtime_service.prepare_run(
+            user_id=self._user_id,
+            session_id=self._session_id,
+            run_id=run_id,
+            request=SkillSelectionRequest(
+                user_id=self._user_id,
+                message=event.message or "",
+                attachment_media_types=[
+                    attachment.mime_type
+                    for attachment in event.attachments
+                    if attachment.mime_type
+                ],
+                manual_refs=event.skills,
+                available_tool_names=self._flow.get_available_tool_names(),
+            ),
+        )
+        self._flow.set_skill_runtime_context(context)
+        return context
+
     async def _cleanup_tools(self) -> None:
         """清理MCP和A2A工具资源，确保在同一任务上下文中释放
 
@@ -373,12 +434,7 @@ class AgentTaskRunner(TaskRunner):
                 if isinstance(event, MessageEvent):
                     message = event.message or ""
                     await self._sync_message_attachments_to_sandbox(event)
-                    await self._trace_service.start_run(
-                        user_id=self._user_id,
-                        session_id=self._session_id,
-                        task_id=task.id,
-                        input_event=event,
-                    )
+                    await self._prepare_skill_runtime(task, event)
                     logger.info(f"AgentTaskRunner接收到新消息: {message[:50]}...")
 
                 # 5.将消息事件转换称消息对象
