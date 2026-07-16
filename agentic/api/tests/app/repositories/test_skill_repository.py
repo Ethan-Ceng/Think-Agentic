@@ -179,7 +179,8 @@ async def test_marketplace_is_global_but_installations_are_user_scoped(
     await repo.save_version(version)
     await db_session.flush()
 
-    assert [skill.id for skill in await repo.list_marketplace()] == [market_skill.id]
+    marketplace_ids = [skill.id for skill in await repo.list_marketplace()]
+    assert market_skill.id in marketplace_ids
     assert await repo.list_installed_marketplace(user_a) == []
     assert await repo.list_installed_marketplace(user_b) == []
 

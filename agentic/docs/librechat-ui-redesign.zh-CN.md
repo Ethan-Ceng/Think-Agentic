@@ -2,7 +2,7 @@
 
 整理日期：2026-07-15
 
-状态：活跃规划
+状态：持续演进；Skills、Creator 与 Marketplace 闭环已于 2026-07-16 落地
 
 参考基线：仓库内 `LibreChat` 前端 `v0.8.7`
 
@@ -87,6 +87,8 @@
 | 新建任务首页 | `/` | `web/src/views/HomeView.vue` | 欢迎语、任务输入、附件、建议问题 |
 | 任务会话 | `/sessions/:id` | `web/src/views/SessionView.vue` | 加载指定 Session，进入执行工作台 |
 | 文件管理 | `/files` | `web/src/views/FilesView.vue` | 目录、上传、筛选、搜索、表格/网格、移动、删除、预览 |
+| 我的 Skills | `/skills`、`/skills/:skillId` | `web/src/views/SkillsView.vue`、`SkillDetailView.vue` | 草稿、导入、校验、发布、启停、Creator |
+| Skill 市场 | `/skills/marketplace` | `web/src/views/SkillMarketplaceView.vue` | 搜索、安装、固定版本、显式更新、卸载、Fork |
 
 `/sessions` 当前只重定向到首页，不是独立页面。
 
@@ -130,7 +132,7 @@ Agentic 的任务会话已经不是普通 Chat UI，而是：
 - 暗色主题尚未形成完整体系。
 - 页面级全局搜索缺失。
 - 历史任务缺少收藏、标签、归档和项目分组。
-- 侧边栏尚未实现 Skills 与用户长期记忆的管理面板，未来需要按本文规划提供稳定入口。
+- Skills 侧边栏和独立管理/市场入口已实现；用户长期记忆面板仍待后续数据模型支持。
 - 设置中心同时承载个人设置和系统能力管理，职责过重。
 - 部分组件文件和全局 CSS 体积较大，后续维护成本高。
 - 用户文案以硬编码中文为主，尚未形成统一国际化层。
@@ -224,6 +226,7 @@ Agentic 的任务会话已经不是普通 Chat UI，而是：
 /agents/:id
 /skills
 /skills/:id
+/skills/marketplace
 /share/:id
 ```
 
@@ -820,6 +823,7 @@ pnpm build
 | 第一优先级 | 设计 Token、统一侧栏、首页和 Composer |
 | 最重要新增页面 | 全局搜索 |
 | 会话页改造策略 | 选择性学习，保护 Agent 执行工作台 |
-| Project/Prompt/Agent/Skill/用户长期记忆 | 数据模型就绪后条件实施；当前仅保留 UI 信息架构 |
+| Skill | 已完成个人管理、Creator、运行时选择、Trace 与 Marketplace；后续只做增量体验优化 |
+| Project/Prompt/Agent/用户长期记忆 | 数据模型就绪后条件实施；当前仅保留 UI 信息架构 |
 | 设置中心 | 拆分个人设置与系统能力管理 |
 | 文件中心 | 保留现有独立页面，只吸收交互细节 |
