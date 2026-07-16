@@ -107,3 +107,9 @@ export type RunSkill = {
   sandbox_path: string
   created_at: string
 }
+
+export type SendMessageInput = {
+  message: string
+  attachmentIds: string[]
+  skills: SkillRef[]
+}

@@ -5,6 +5,7 @@ import AssistantAvatar from '@/components/chat/AssistantAvatar.vue'
 import MessageActions from '@/components/chat/MessageActions.vue'
 import ThinkingBlock from '@/components/chat/ThinkingBlock.vue'
 import ToolCallCard from '@/components/chat/ToolCallCard.vue'
+import SkillChip from '@/components/skills/SkillChip.vue'
 import {
   AlertCircle,
   CheckCircle2,
@@ -83,6 +84,9 @@ function handleToolClick(tool: ToolEvent) {
     <div class="message-stack user-stack">
       <div class="message-bubble user-bubble" :class="`status-${getUserStatus(item)}`">
         <p class="message-text">{{ item.data.message ?? '' }}</p>
+      </div>
+      <div v-if="item.data.skills?.length" class="message-skill-chips">
+        <SkillChip v-for="skill in item.data.skills" :key="`${skill.source}:${skill.skill_id ?? skill.name}`" :skill="skill" />
       </div>
       <div class="user-message-meta" :class="`status-${getUserStatus(item)}`">
         <span v-if="item.timeLabel">{{ item.timeLabel }}</span>

@@ -15,6 +15,7 @@ import { useToast } from '@/composables/useToast'
 import { sessionApi } from '@/lib/api/session'
 import type { FileInfo, ResumeMode, ToolEvent } from '@/lib/api/types'
 import type { AttachmentFile, TimelineItem, UserMessageStatus } from '@/lib/session-events'
+import type { SendMessageInput, SkillRef } from '@/types/skill'
 import { eventsToTimeline, formatMessageTimeLabel, getLatestPlanFromEvents } from '@/lib/session-events'
 import { getToolKind } from '@/lib/tool-utils'
 
@@ -22,10 +23,12 @@ const props = withDefaults(defineProps<{
   sessionId: string
   initialMessage?: string
   initialAttachments?: string[]
+  initialSkills?: SkillRef[]
   hasInitialMessage?: boolean
 }>(), {
   initialMessage: undefined,
   initialAttachments: () => [],
+  initialSkills: () => [],
   hasInitialMessage: false,
 })
 
@@ -33,6 +36,7 @@ type PendingUserMessage = {
   id: string
   message: string
   attachmentIds: string[]
+  skills: SkillRef[]
   files: AttachmentFile[]
   createdAt: number
   status: Exclude<UserMessageStatus, 'sent'>
@@ -77,6 +81,7 @@ const timeline = computed<TimelineItem[]>(() => {
       data: {
         role: 'user',
         message: pending.message,
+        skills: pending.skills,
       },
       status: pending.status,
       statusText: getPendingStatusText(pending.status),
@@ -156,11 +161,13 @@ function createPendingMessage(
   message: string,
   attachmentIds: string[],
   files: AttachmentFile[] = [],
+  skills: SkillRef[] = [],
 ): PendingUserMessage {
   return {
     id: `pending-${Date.now()}`,
     message,
     attachmentIds,
+    skills,
     files,
     createdAt: Date.now(),
     status: 'sending',
@@ -195,7 +202,11 @@ async function sendPendingMessage(pending: PendingUserMessage) {
   }
 
   try {
-    await detail.sendMessage(pending.message, pending.attachmentIds)
+    await detail.sendMessage({
+      message: pending.message,
+      attachmentIds: pending.attachmentIds,
+      skills: pending.skills,
+    })
     isNearBottom.value = true
     scrollToConversationBottom('smooth')
   } catch (error) {
@@ -305,14 +316,23 @@ watch(
       !detail.streaming.value
     ) {
       initialMessageSent.value = true
-      const pending = createPendingMessage(props.initialMessage, props.initialAttachments || [])
+      const pending = createPendingMessage(
+        props.initialMessage,
+        props.initialAttachments || [],
+        [],
+        props.initialSkills || [],
+      )
       pendingUserMessage.value = pending
       stoppedAt.value = null
       isNearBottom.value = true
       scrollToConversationBottom('auto')
 
       detail
-        .sendMessage(pending.message, pending.attachmentIds)
+        .sendMessage({
+          message: pending.message,
+          attachmentIds: pending.attachmentIds,
+          skills: pending.skills,
+        })
         .then(() => {
           window.setTimeout(() => {
             void router.replace(`/sessions/${props.sessionId}`)
@@ -387,11 +407,12 @@ watch(
 
 onBeforeUnmount(() => window.clearTimeout(focusTimer))
 
-async function handleSend(message: string, uploadedFiles: FileInfo[]) {
+async function handleSend(input: SendMessageInput, uploadedFiles: FileInfo[]) {
   const pending = createPendingMessage(
-    message,
-    uploadedFiles.map((file) => file.id),
+    input.message,
+    input.attachmentIds,
     uploadedFiles.map(fileInfoToAttachment),
+    input.skills,
   )
   pendingUserMessage.value = pending
   stoppedAt.value = null

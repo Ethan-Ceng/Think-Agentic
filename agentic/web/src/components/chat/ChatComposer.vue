@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import {
   AlertCircle,
   ArrowUp,
@@ -12,6 +12,9 @@ import {
   XCircle,
 } from 'lucide-vue-next'
 import { formatFileSize } from '@/lib/utils'
+import SkillChip from '@/components/skills/SkillChip.vue'
+import SkillPicker from '@/components/skills/SkillPicker.vue'
+import type { SkillRef, SkillSummary } from '@/types/skill'
 
 export type ComposerFileItem = {
   id: string
@@ -31,12 +34,16 @@ const props = withDefaults(defineProps<{
   sending?: boolean
   isRunning?: boolean
   placeholder?: string
+  skills?: SkillSummary[]
+  selectedSkills?: SkillRef[]
 }>(), {
   files: () => [],
   disabled: false,
   uploading: false,
   sending: false,
   isRunning: false,
+  skills: () => [],
+  selectedSkills: () => [],
   placeholder: '分配一个任务或提问任何问题...',
 })
 
@@ -48,9 +55,16 @@ const emit = defineEmits<{
   pasteFiles: [files: File[]]
   send: []
   stop: []
+  selectSkill: [skill: SkillSummary]
+  removeSkill: [skillKey: string]
 }>()
 
 const inputRef = ref<{ focus: () => void } | null>(null)
+const pickerRef = ref<InstanceType<typeof SkillPicker> | null>(null)
+const dismissedFor = ref<string | null>(null)
+const skillTrigger = computed(() => props.modelValue.match(/(?:^|\s)\$([a-z0-9-]*)$/i))
+const pickerOpen = computed(() => Boolean(skillTrigger.value) && dismissedFor.value !== props.modelValue)
+const pickerQuery = computed(() => skillTrigger.value?.[1] ?? '')
 const hasFailedUpload = computed(() => props.files.some((file) => file.uploadStatus === 'failed'))
 const canSend = computed(
   () =>
@@ -70,6 +84,8 @@ function handleKeydown(event: Event | KeyboardEvent) {
   const target = event.target as HTMLElement | null
   if (target?.tagName !== 'TEXTAREA') return
 
+  if (pickerOpen.value && pickerRef.value?.handleKeydown(event)) return
+
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
     event.preventDefault()
     if (props.isRunning) {
@@ -79,6 +95,18 @@ function handleKeydown(event: Event | KeyboardEvent) {
     }
   }
 }
+
+function selectSkill(skill: SkillSummary) {
+  emit('selectSkill', skill)
+  const next = props.modelValue.replace(/\$[a-z0-9-]*$/i, '').replace(/\s+$/, ' ')
+  emit('update:modelValue', next)
+}
+
+function skillKey(skill: SkillRef): string {
+  return `${skill.source}:${skill.skill_id ?? skill.name}`
+}
+
+watch(() => props.modelValue, () => { dismissedFor.value = null })
 
 function handlePaste(event: ClipboardEvent) {
   const pastedFiles = Array.from(event.clipboardData?.files || [])
@@ -146,6 +174,26 @@ defineExpose({ focus })
         </ElTooltip>
       </article>
     </div>
+
+    <div v-if="selectedSkills.length" class="composer-skill-chips">
+      <SkillChip
+        v-for="skill in selectedSkills"
+        :key="skillKey(skill)"
+        :skill="skill"
+        removable
+        @remove="emit('removeSkill', skillKey(skill))"
+      />
+    </div>
+
+    <SkillPicker
+      v-if="pickerOpen"
+      ref="pickerRef"
+      :skills="skills"
+      :query="pickerQuery"
+      :selected="selectedSkills"
+      @select="selectSkill"
+      @close="dismissedFor = modelValue"
+    />
 
     <ElInput
       ref="inputRef"

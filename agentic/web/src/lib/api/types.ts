@@ -1,4 +1,4 @@
-import type { RunSkill } from '@/types/skill'
+import type { RunSkill, SkillRef } from '@/types/skill'
 
 export type ApiResponse<T = unknown> = {
   code: number
@@ -525,12 +525,14 @@ export type ChatMessage = {
     size?: number
     [key: string]: unknown
   }>
+  skills?: SkillRef[]
   [key: string]: unknown
 }
 
 export type ChatParams = {
   message?: string
   attachments?: string[]
+  skills?: SkillRef[]
   event_id?: string
   [key: string]: unknown
 }
