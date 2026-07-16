@@ -2,7 +2,7 @@
 
 import shlex
 from collections.abc import Callable
-from typing import BinaryIO, Protocol
+from typing import Any, BinaryIO, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -42,12 +42,14 @@ class SkillRuntimeService:
         package_storage: SkillPackageStorage,
         sandbox: Sandbox,
         bundled_provider: BundledSkillPackageProvider | None = None,
+        trace_service: Any | None = None,
     ) -> None:
         self._uow_factory = uow_factory
         self._selection_service = selection_service
         self._package_storage = package_storage
         self._sandbox = sandbox
         self._bundled_provider = bundled_provider
+        self._trace_service = trace_service
 
     async def prepare_run(
         self,
@@ -61,60 +63,78 @@ class SkillRuntimeService:
         self._validate_segment(session_id, "session_id")
         self._validate_segment(run_id, "run_id")
 
-        result = await self._selection_service.select(request)
-        if not result.selected:
-            return SkillRuntimeContext()
+        try:
+            if self._trace_service:
+                await self._trace_service.record_skill_selection_started(request)
+            result = await self._selection_service.select(request)
+            if not result.selected:
+                context = SkillRuntimeContext()
+                if self._trace_service:
+                    await self._trace_service.record_skill_selection_completed(
+                        result, context
+                    )
+                return context
 
-        self._reject_name_conflicts(result.selected)
-        run_root = f"{SKILL_SANDBOX_BASE}/{run_id}"
-        sandbox_roots: dict[str, str] = {}
-        skill_documents: dict[str, str] = {}
+            self._reject_name_conflicts(result.selected)
+            run_root = f"{SKILL_SANDBOX_BASE}/{run_id}"
+            sandbox_roots: dict[str, str] = {}
+            skill_documents: dict[str, str] = {}
 
-        for selected in result.selected:
-            name = selected.manifest.name
-            self._validate_segment(name, "Skill name")
-            if selected.ref.name != name:
-                raise SkillRuntimeError(
-                    f"Selected Skill name does not match its manifest: {selected.ref.name}"
-                )
-            package = await self._download_authorized_package(user_id, selected)
-            archive_path = f"{run_root}/.packages/{name}.skill"
-            root = f"{run_root}/{name}"
-            try:
-                upload = await self._sandbox.upload_file(
-                    file_data=package,
-                    filepath=archive_path,
-                    filename=f"{name}.skill",
-                )
-                self._require_success(upload, f"Unable to upload Skill package: {name}")
-                await self._extract_package(
-                    session_id=session_id,
-                    run_id=run_id,
-                    archive_path=archive_path,
-                    run_root=run_root,
-                    root=root,
-                    name=name,
-                )
-                skill_documents[name] = await self._read_skill_document(root, name)
-                sandbox_roots[name] = root
-            finally:
-                close = getattr(package, "close", None)
-                if close:
-                    close()
+            for selected in result.selected:
+                name = selected.manifest.name
+                self._validate_segment(name, "Skill name")
+                if selected.ref.name != name:
+                    raise SkillRuntimeError(
+                        f"Selected Skill name does not match its manifest: {selected.ref.name}"
+                    )
+                package = await self._download_authorized_package(user_id, selected)
+                archive_path = f"{run_root}/.packages/{name}.skill"
+                root = f"{run_root}/{name}"
                 try:
-                    await self._sandbox.delete_file(archive_path)
-                except Exception:
-                    # The immutable archive is harmless inside the owning run sandbox;
-                    # cleanup must not invalidate an otherwise successful materialization.
-                    pass
+                    upload = await self._sandbox.upload_file(
+                        file_data=package,
+                        filepath=archive_path,
+                        filename=f"{name}.skill",
+                    )
+                    self._require_success(
+                        upload, f"Unable to upload Skill package: {name}"
+                    )
+                    await self._extract_package(
+                        session_id=session_id,
+                        run_id=run_id,
+                        archive_path=archive_path,
+                        run_root=run_root,
+                        root=root,
+                        name=name,
+                    )
+                    skill_documents[name] = await self._read_skill_document(root, name)
+                    sandbox_roots[name] = root
+                finally:
+                    close = getattr(package, "close", None)
+                    if close:
+                        close()
+                    try:
+                        await self._sandbox.delete_file(archive_path)
+                    except Exception:
+                        # Cleanup must not invalidate successful materialization.
+                        pass
 
-        return SkillRuntimeContext(
-            selected=result.selected,
-            prompt_block=self._build_prompt_block(
-                result.selected, sandbox_roots, skill_documents
-            ),
-            sandbox_roots=sandbox_roots,
-        )
+            context = SkillRuntimeContext(
+                selected=result.selected,
+                prompt_block=self._build_prompt_block(
+                    result.selected, sandbox_roots, skill_documents
+                ),
+                sandbox_roots=sandbox_roots,
+            )
+            if self._trace_service:
+                await self._trace_service.record_skill_selection_completed(
+                    result, context
+                )
+            return context
+        except Exception as error:
+            if self._trace_service:
+                await self._trace_service.record_skill_selection_failed(error)
+            raise
 
     async def _download_authorized_package(
         self, user_id: str, selected: SelectedSkill

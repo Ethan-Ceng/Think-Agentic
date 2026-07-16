@@ -127,6 +127,23 @@ class PublishedSkillResponse(BaseModel):
     skill: SkillResponse
     version: SkillVersionResponse
 
+
+class RunSkillResponse(BaseModel):
+    id: str
+    run_id: str
+    skill_id: str | None = None
+    skill_version_id: str | None = None
+    name: str
+    source: SkillSource
+    selection_mode: SkillSelectionMode
+    content_sha256: str
+    confidence: float | None = None
+    reason: str
+    sandbox_path: str
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
 __all__ = [
     "SelectedSkill",
     "SkillManifest",
@@ -134,6 +151,7 @@ __all__ = [
     "SkillSelectionMode",
     "SkillSource",
     "PublishedSkillResponse",
+    "RunSkillResponse",
     "SkillAutoInvokeRequest",
     "SkillCatalogItem",
     "SkillDetailResponse",

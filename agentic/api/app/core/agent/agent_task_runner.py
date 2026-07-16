@@ -117,6 +117,7 @@ class AgentTaskRunner(TaskRunner):
                 selection_service=selection_service,
                 package_storage=skill_package_storage,
                 sandbox=sandbox,
+                trace_service=self._trace_service,
             )
 
     async def _put_and_add_event(self, task: Task, event: Event) -> None:
