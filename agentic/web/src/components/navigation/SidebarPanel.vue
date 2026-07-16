@@ -3,9 +3,12 @@ import { ref, watch } from 'vue'
 import { Command, Plus, Search, X } from 'lucide-vue-next'
 import { useRoute, useRouter } from 'vue-router'
 import SessionSections from '@/components/navigation/SessionSections.vue'
+import SkillsSidePanel from '@/components/navigation/SkillsSidePanel.vue'
+import type { SidebarSection } from '@/composables/useSidebar'
 
 defineProps<{
   expanded: boolean
+  section: SidebarSection
 }>()
 
 const emit = defineEmits<{
@@ -44,7 +47,8 @@ function submitSearch() {
       </button>
     </header>
 
-    <div class="sidebar-panel-body">
+    <SkillsSidePanel v-if="section === 'skills'" @close="emit('close')" />
+    <div v-else class="sidebar-panel-body">
       <button class="sidebar-create-button" type="button" @click="emit('create')">
         <span><Plus :size="17" />新建任务</span>
         <kbd><Command :size="12" /> K</kbd>

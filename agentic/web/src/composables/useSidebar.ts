@@ -3,11 +3,14 @@ import { inject, provide } from 'vue'
 
 export type SidebarContext = {
   open: Ref<boolean>
+  section: Ref<SidebarSection>
   mobile: Ref<boolean>
-  toggle: () => void
+  toggle: (section?: SidebarSection) => void
   close: () => void
-  openSidebar: () => void
+  openSidebar: (section?: SidebarSection) => void
 }
+
+export type SidebarSection = 'sessions' | 'skills'
 
 const SidebarKey: InjectionKey<SidebarContext> = Symbol('SidebarContext')
 

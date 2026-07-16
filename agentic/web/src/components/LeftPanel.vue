@@ -81,11 +81,13 @@ onBeforeUnmount(() => window.cancelAnimationFrame(resizeFrame))
   >
     <SidebarRail
       :expanded="sidebar.open.value"
+      :section="sidebar.section.value"
       @toggle="sidebar.toggle"
       @search="focusSearch"
     />
     <SidebarPanel
       :expanded="sidebar.open.value"
+      :section="sidebar.section.value"
       @create="createTask"
       @close="sidebar.close"
     />

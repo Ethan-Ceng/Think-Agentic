@@ -1,16 +1,18 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Bot, Files, History, PanelLeftClose, PanelLeftOpen, Plus, Search } from 'lucide-vue-next'
+import { Bot, Files, History, PanelLeftClose, PanelLeftOpen, Plus, Search, Sparkles } from 'lucide-vue-next'
 import { useRoute, useRouter } from 'vue-router'
 import SettingsButton from '@/components/SettingsButton.vue'
 import UserMenu from '@/components/UserMenu.vue'
+import type { SidebarSection } from '@/composables/useSidebar'
 
 const props = defineProps<{
   expanded: boolean
+  section: SidebarSection
 }>()
 
 const emit = defineEmits<{
-  toggle: []
+  toggle: [section?: SidebarSection]
   search: []
 }>()
 
@@ -61,13 +63,26 @@ function createTask() {
       <ElTooltip content="任务历史" placement="right" :show-after="400">
         <button
           class="rail-button"
-          :class="{ active: expanded }"
+          :class="{ active: expanded && section === 'sessions' }"
           type="button"
           aria-label="任务历史"
           :aria-expanded="expanded"
-          @click="emit('toggle')"
+          @click="emit('toggle', 'sessions')"
         >
           <History :size="19" />
+        </button>
+      </ElTooltip>
+
+      <ElTooltip content="Skills" placement="right" :show-after="400">
+        <button
+          class="rail-button"
+          :class="{ active: expanded && section === 'skills' }"
+          type="button"
+          aria-label="Skills"
+          :aria-expanded="expanded && section === 'skills'"
+          @click="emit('toggle', 'skills')"
+        >
+          <Sparkles :size="19" />
         </button>
       </ElTooltip>
 
