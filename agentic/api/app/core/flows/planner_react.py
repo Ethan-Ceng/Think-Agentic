@@ -15,6 +15,7 @@ from app.core.sandbox.base import Sandbox
 from app.core.search.base import SearchEngine
 from app.core.entities.app_config import AgentConfig
 from app.core.entities.tool_config import ToolConfig
+from app.core.entities.skill import SkillSource
 from app.core.entities.event import BaseEvent, PlanEvent, PlanEventStatus, TitleEvent, MessageEvent
 from app.core.entities.event import DoneEvent
 from app.core.entities.message import Message
@@ -25,6 +26,7 @@ from app.core.agent.react import ReActAgent
 from app.core.tools.a2a import A2ATool
 from app.core.tools.factory import ToolFactory
 from app.core.tools.mcp import MCPTool
+from app.core.tools.skill_draft import SkillDraftTool
 from app.services.trace_service import TraceService
 from app.services.skill_runtime_service import SkillRuntimeContext
 from .base import BaseFlow, FlowStatus
@@ -50,6 +52,7 @@ class PlannerReActFlow(BaseFlow):
             mcp_tool: MCPTool,  # mcp工具
             a2a_tool: A2ATool,  # a2a远程agent
             trace_service: TraceService | None = None,
+            skill_draft_tool: SkillDraftTool | None = None,
     ) -> None:
         """构造函数，完成规划与执行流的初始化"""
         # 1.流初始化数据配置
@@ -60,13 +63,17 @@ class PlannerReActFlow(BaseFlow):
         self.plan: Optional[Plan] = None
 
         # 2.初始化Agent预设工具列表
-        tools = ToolFactory(tool_config=tool_config).build(
+        self._tool_factory = ToolFactory(tool_config=tool_config)
+        tools = self._tool_factory.build(
             sandbox=sandbox,
             browser=browser,
             search_engine=search_engine,
             mcp_tool=mcp_tool,
             a2a_tool=a2a_tool,
         )
+        self._tools = tools
+        self._skill_draft_tool = skill_draft_tool
+        self._filtered_skill_draft_tool = None
         react_agent_config = agent_config.model_copy(
             update={"max_iterations": tool_config.runtime_policy.max_tool_iterations}
         )
@@ -97,6 +104,18 @@ class PlannerReActFlow(BaseFlow):
 
     def set_skill_runtime_context(self, context: SkillRuntimeContext) -> None:
         """Apply one run's transient Skill context to both model-facing agents."""
+        self._tools[:] = [tool for tool in self._tools if tool.name != "skill_draft"]
+        creator_selected = any(
+            selected.ref.source is SkillSource.BUNDLED
+            and selected.ref.name == "skill-creator"
+            for selected in context.selected
+        )
+        if creator_selected and self._skill_draft_tool is not None:
+            if self._filtered_skill_draft_tool is None:
+                self._filtered_skill_draft_tool = self._tool_factory.build_contextual(
+                    self._skill_draft_tool
+                )
+            self._tools.append(self._filtered_skill_draft_tool)
         self.planner.set_skill_runtime_context(context)
         self.react.set_skill_runtime_context(context)
 

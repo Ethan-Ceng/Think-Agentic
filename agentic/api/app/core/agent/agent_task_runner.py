@@ -45,6 +45,8 @@ from app.services.skill_runtime_service import (
 )
 from app.services.skill_selection_service import SkillSelectionService
 from app.services.bundled_skill_service import BundledSkillService
+from app.services.skill_workspace_service import SkillWorkspaceService
+from app.core.tools.skill_draft import SkillDraftTool
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +72,7 @@ class AgentTaskRunner(TaskRunner):
             sandbox: Sandbox,  # 沙箱
             skill_package_storage: SkillPackageStorage | None = None,
             bundled_skill_service: BundledSkillService | None = None,
+            skill_workspace_service: SkillWorkspaceService | None = None,
     ) -> None:
         """构造函数，完成Agent任务运行器的创建"""
         self._uow_factory = uow_factory
@@ -103,6 +106,12 @@ class AgentTaskRunner(TaskRunner):
             mcp_tool=self._mcp_tool,
             a2a_tool=self._a2a_tool,
             trace_service=self._trace_service,
+            skill_draft_tool=SkillDraftTool(
+                user_id=user_id,
+                workspace=skill_workspace_service,
+            )
+            if skill_workspace_service is not None
+            else None,
         )
         self._skill_runtime_service: SkillRuntimeService | None = None
         if skill_package_storage is not None:

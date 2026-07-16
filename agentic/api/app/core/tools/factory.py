@@ -48,3 +48,12 @@ class ToolFactory:
             )
             for tool in tools
         ]
+
+    def build_contextual(self, runtime_tool: BaseTool) -> BaseTool:
+        """Apply the same Run ToolConfig policy to a context-gated tool."""
+        self.registry.register_runtime_tool(runtime_tool)
+        return FilteredTool(
+            inner=runtime_tool,
+            tool_config=self.tool_config,
+            registry=self.registry,
+        )
