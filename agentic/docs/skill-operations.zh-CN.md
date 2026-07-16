@@ -12,6 +12,16 @@
 
 版本对象只追加不覆盖。数据库提交失败时服务会尝试删除刚上传对象；删除失败可能留下孤儿，但不会产生可见版本。
 
+本地部署必须为三类数据配置互不重叠的根目录：
+
+```text
+/app/storage/files                 # 普通用户文件
+/app/storage/skills/packages       # 个人与 Marketplace 的不可变 Skill 包
+/app/storage/skill-workspaces      # 用户隔离的 Skill 草稿
+```
+
+服务启动时会拒绝任意相同或父子嵌套的根目录，避免普通文件、发布包和可变草稿混在一起。迁移既有目录时应先停止写入、保留相对路径复制数据，再更新环境变量并抽样校验数据库中的 `storage_key` 与包 SHA-256。
+
 ## Marketplace 存储配置
 
 默认本地配置：

@@ -4,10 +4,21 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 API_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _storage_paths_overlap(left: str, right: str) -> bool:
+    left_path = Path(left).expanduser().resolve(strict=False)
+    right_path = Path(right).expanduser().resolve(strict=False)
+    return (
+        left_path == right_path
+        or left_path in right_path.parents
+        or right_path in left_path.parents
+    )
 
 
 class Settings(BaseSettings):
@@ -81,6 +92,27 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    @model_validator(mode="after")
+    def validate_storage_roots(self) -> "Settings":
+        roots = {
+            "ordinary files": self.local_storage_path,
+            "Skill packages": self.skill_package_storage_path,
+            "Skill workspaces": self.skill_workspace_storage_path,
+        }
+        pairs = (
+            ("ordinary files", "Skill packages"),
+            ("ordinary files", "Skill workspaces"),
+            ("Skill packages", "Skill workspaces"),
+        )
+        for left_name, right_name in pairs:
+            if _storage_paths_overlap(roots[left_name], roots[right_name]):
+                raise ValueError(
+                    "storage roots must not overlap: "
+                    f"{left_name}={roots[left_name]!r}, "
+                    f"{right_name}={roots[right_name]!r}"
+                )
+        return self
 
 
 @lru_cache
