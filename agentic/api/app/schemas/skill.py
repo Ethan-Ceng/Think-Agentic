@@ -42,6 +42,25 @@ class SkillAutoInvokeRequest(BaseModel):
     enabled: bool
 
 
+class MarketplaceInstallRequest(BaseModel):
+    version_id: str | None = Field(default=None, min_length=1)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class MarketplaceForkRequest(MarketplaceInstallRequest):
+    display_name: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class MarketplaceInstallationResponse(BaseModel):
+    pinned_version_id: str
+    enabled: bool
+    auto_invoke: bool
+    auto_update: bool
+    installed_at: datetime
+    updated_at: datetime
+
+
 class SkillCatalogItem(BaseModel):
     ref: SkillRef
     display_name: str = Field(min_length=1, max_length=128)
@@ -97,6 +116,8 @@ class SkillResponse(BaseModel):
     enabled: bool
     auto_invoke: bool
     current_version_id: str | None
+    forked_from_skill_id: str | None
+    forked_from_version_id: str | None
     updated_at: datetime
     created_at: datetime
 
@@ -116,6 +137,17 @@ class SkillVersionResponse(BaseModel):
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class MarketplaceSkillResponse(BaseModel):
+    id: str
+    name: str
+    display_name: str
+    description: str
+    latest_version: SkillVersionResponse
+    versions: list[SkillVersionResponse]
+    installation: MarketplaceInstallationResponse | None
+    update_available: bool
 
 
 class SkillDetailResponse(BaseModel):
@@ -151,6 +183,10 @@ __all__ = [
     "SkillSelectionMode",
     "SkillSource",
     "PublishedSkillResponse",
+    "MarketplaceForkRequest",
+    "MarketplaceInstallRequest",
+    "MarketplaceInstallationResponse",
+    "MarketplaceSkillResponse",
     "RunSkillResponse",
     "SkillAutoInvokeRequest",
     "SkillCatalogItem",

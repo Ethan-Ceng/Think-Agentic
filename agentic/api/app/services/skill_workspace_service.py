@@ -1,6 +1,7 @@
 """Authenticated-user-scoped workspaces for creating Skill drafts."""
 
 import io
+import json
 import os
 import re
 import shutil
@@ -36,6 +37,8 @@ class StagedSkillPackage:
     package_bytes: bytes
     build: PackageBuildResult
     revision: str
+    forked_from_skill_id: str | None = None
+    forked_from_version_id: str | None = None
 
 
 class SkillWorkspaceService:
@@ -66,6 +69,24 @@ class SkillWorkspaceService:
         self, user_id: str, draft_id: str
     ) -> tuple[SkillWorkspaceEntry, ...]:
         return await run_in_threadpool(self._list_tree, user_id, draft_id)
+
+    async def create_draft_from_package(
+        self,
+        user_id: str,
+        draft_id: str,
+        package_bytes: bytes,
+        *,
+        forked_from_skill_id: str,
+        forked_from_version_id: str,
+    ) -> SkillDraftWorkspace:
+        return await run_in_threadpool(
+            self._create_draft_from_package,
+            user_id,
+            draft_id,
+            package_bytes,
+            forked_from_skill_id,
+            forked_from_version_id,
+        )
 
     async def read_text(
         self, user_id: str, draft_id: str, relative_path: str
@@ -139,6 +160,42 @@ class SkillWorkspaceService:
                 sorted(entries, key=lambda entry: (entry.path.casefold(), entry.kind))
             )
 
+    def _create_draft_from_package(
+        self,
+        user_id: str,
+        draft_id: str,
+        package_bytes: bytes,
+        forked_from_skill_id: str,
+        forked_from_version_id: str,
+    ) -> SkillDraftWorkspace:
+        self._validate_identity(user_id, "user_id")
+        self._validate_identity(draft_id, "draft_id")
+        self._validate_identity(forked_from_skill_id, "forked_from_skill_id")
+        self._validate_identity(forked_from_version_id, "forked_from_version_id")
+        draft_root = self._draft_root(user_id, draft_id)
+        with tempfile.TemporaryDirectory(prefix="agentic-skill-fork-") as temp:
+            extracted = self._package_service.extract_archive(
+                io.BytesIO(package_bytes), Path(temp) / "extracted"
+            )
+            source = Path(temp) / "extracted" / extracted.inspected.root_name
+            self._validate_skill_name(source.name)
+            with self._lock(user_id, draft_id):
+                if draft_root.exists():
+                    raise BadRequestError("Skill draft already exists")
+                draft_root.mkdir(parents=True)
+                shutil.copytree(source, draft_root / source.name)
+                self._atomic_write(
+                    draft_root / ".lineage.json",
+                    json.dumps(
+                        {
+                            "forked_from_skill_id": forked_from_skill_id,
+                            "forked_from_version_id": forked_from_version_id,
+                        },
+                        sort_keys=True,
+                    ),
+                )
+        return SkillDraftWorkspace(draft_id=draft_id, skill_name=source.name)
+
     def _read_text(
         self, user_id: str, draft_id: str, relative_path: str
     ) -> str:
@@ -183,10 +240,18 @@ class SkillWorkspaceService:
                 output = io.BytesIO()
                 build = self._package_service.build_archive(snapshot_root, output)
                 package_bytes = output.getvalue()
+            lineage_path = self._draft_root(user_id, draft_id) / ".lineage.json"
+            lineage = (
+                json.loads(lineage_path.read_text(encoding="utf-8"))
+                if lineage_path.is_file() and not lineage_path.is_symlink()
+                else {}
+            )
         return StagedSkillPackage(
             package_bytes=package_bytes,
             build=build,
             revision=build.inspected.content_sha256,
+            forked_from_skill_id=lineage.get("forked_from_skill_id"),
+            forked_from_version_id=lineage.get("forked_from_version_id"),
         )
 
     def _delete_draft(self, user_id: str, draft_id: str) -> None:

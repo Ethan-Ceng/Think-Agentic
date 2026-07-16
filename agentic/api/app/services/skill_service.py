@@ -167,6 +167,8 @@ class SkillService:
             display_name=None,
             changelog=changelog,
             draft_id=draft_id,
+            forked_from_skill_id=staged.forked_from_skill_id,
+            forked_from_version_id=staged.forked_from_version_id,
         )
 
     async def import_archive(
@@ -188,6 +190,46 @@ class SkillService:
             display_name=display_name,
             changelog=changelog,
             draft_id=None,
+        )
+
+    async def fork_marketplace_archive(
+        self,
+        user_id: str,
+        archive: BinaryIO,
+        *,
+        source_skill: Skill,
+        source_version: SkillVersion,
+        display_name: str | None = None,
+    ) -> SkillDraft:
+        try:
+            normalized, build = self._normalize_archive(archive)
+        except SkillPackageError as exc:
+            self._raise_validation(exc)
+        if (
+            source_skill.scope is not SkillScope.MARKETPLACE
+            or source_version.skill_id != source_skill.id
+            or build.inspected.manifest.name != source_skill.name
+            or build.archive_sha256 != source_version.package_sha256
+        ):
+            raise ConflictError("Marketplace Skill package lineage is inconsistent")
+        existing, _ = await self._find_by_name(user_id, source_skill.name)
+        if existing is not None:
+            raise ConflictError(
+                "A personal Skill with this name already exists; archive it before forking"
+            )
+        draft_id = str(uuid.uuid4())
+        created = await self._workspace_service.create_draft_from_package(
+            user_id,
+            draft_id,
+            normalized,
+            forked_from_skill_id=source_skill.id,
+            forked_from_version_id=source_version.id,
+        )
+        staged = await self._workspace_service.stage_publish(user_id, draft_id)
+        return SkillDraft(
+            draft_id=created.draft_id,
+            skill_name=created.skill_name,
+            revision=staged.revision,
         )
 
     async def list_skills(self, user_id: str) -> list[Skill]:
@@ -279,15 +321,23 @@ class SkillService:
         display_name: str | None,
         changelog: str,
         draft_id: str | None,
+        forked_from_skill_id: str | None = None,
+        forked_from_version_id: str | None = None,
     ) -> PublishedSkill:
         manifest = build.inspected.manifest
         existing, latest = await self._find_by_name(user_id, manifest.name)
+        if existing is not None and forked_from_skill_id is not None:
+            raise ConflictError(
+                "A personal Skill with this name already exists; archive it before forking"
+            )
         skill = existing or Skill(
             owner_user_id=user_id,
             name=manifest.name,
             display_name=(display_name or self._display_name(manifest.name)).strip(),
             description=manifest.description,
             scope=SkillScope.PERSONAL,
+            forked_from_skill_id=forked_from_skill_id,
+            forked_from_version_id=forked_from_version_id,
         )
         version_number = latest.version + 1 if latest else 1
         stored = await self._package_storage.upload_personal(

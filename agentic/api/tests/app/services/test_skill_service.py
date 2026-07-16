@@ -280,6 +280,53 @@ def test_import_validates_and_publishes_standard_package(tmp_path: Path) -> None
     asyncio.run(run())
 
 
+def test_marketplace_fork_stays_draft_until_explicit_publish_and_keeps_lineage(
+    tmp_path: Path,
+) -> None:
+    service, _ = make_service(tmp_path)
+    archive = io.BytesIO()
+    build = SkillPackageService().build_archive(FIXTURE_ROOT, archive)
+    source = Skill(
+        id="market-source",
+        name="report-writer",
+        display_name="Report Writer",
+        description="Create evidence-based reports.",
+        scope=SkillScope.MARKETPLACE,
+        current_version_id="market-version",
+    )
+    source_version = SkillVersion(
+        id="market-version",
+        skill_id=source.id,
+        version=3,
+        manifest=build.inspected.manifest.model_dump(mode="json", by_alias=True),
+        storage_provider="local",
+        storage_key="marketplace/market-source/3.skill",
+        package_sha256=build.archive_sha256,
+        package_size=len(archive.getvalue()),
+        file_count=len(build.inspected.files),
+    )
+
+    async def run() -> None:
+        draft = await service.fork_marketplace_archive(
+            "user-1",
+            io.BytesIO(archive.getvalue()),
+            source_skill=source,
+            source_version=source_version,
+        )
+        assert "SKILL.md" in {
+            item.path for item in await service.list_draft_tree("user-1", draft.draft_id)
+        }
+        assert await service.list_skills("user-1") == []
+
+        published = await service.publish_draft(
+            "user-1", draft.draft_id, expected_revision=draft.revision
+        )
+        assert published.skill.forked_from_skill_id == source.id
+        assert published.skill.forked_from_version_id == source_version.id
+
+    asyncio.run(run())
+
+
 def test_invalid_import_returns_diagnostics_without_storage_or_database_rows(
     tmp_path: Path,
 ) -> None:

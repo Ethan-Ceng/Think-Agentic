@@ -3,14 +3,27 @@
 import io
 import tempfile
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
-from typing import Callable
+from typing import Any, BinaryIO, Callable, Protocol
 
-from app.core.entities.skill import Skill, SkillScope, SkillVersion
+from app.core.entities.skill import Skill, SkillInstallation, SkillScope, SkillVersion
 from app.core.skills.package import PackageBuildResult, SkillPackageService
 from app.extensions.skill_package_storage import SkillPackageStorage, StoredSkillPackage
 from app.repositories.uow import IUnitOfWork
-from app.schemas.exceptions import BadRequestError, ConflictError
+from app.schemas.exceptions import BadRequestError, ConflictError, NotFoundError
+
+
+class PersonalSkillForker(Protocol):
+    async def fork_marketplace_archive(
+        self,
+        user_id: str,
+        archive: BinaryIO,
+        *,
+        source_skill: Skill,
+        source_version: SkillVersion,
+        display_name: str | None,
+    ) -> Any: ...
 
 
 @dataclass(frozen=True)
@@ -30,6 +43,21 @@ class MarketplaceImportResult:
         }
 
 
+@dataclass(frozen=True)
+class MarketplaceSkillView:
+    skill: Skill
+    versions: tuple[SkillVersion, ...]
+    latest_version: SkillVersion
+    installation: SkillInstallation | None
+
+    @property
+    def update_available(self) -> bool:
+        return bool(
+            self.installation
+            and self.installation.pinned_version_id != self.latest_version.id
+        )
+
+
 class MarketplaceSkillService:
     def __init__(
         self,
@@ -37,10 +65,196 @@ class MarketplaceSkillService:
         uow_factory: Callable[[], IUnitOfWork],
         package_service: SkillPackageService,
         package_storage: SkillPackageStorage,
+        personal_skill_service: PersonalSkillForker | None = None,
     ) -> None:
         self._uow_factory = uow_factory
         self._package_service = package_service
         self._package_storage = package_storage
+        self._personal_skill_service = personal_skill_service
+
+    async def list_marketplace(self, user_id: str) -> list[MarketplaceSkillView]:
+        uow = self._uow_factory()
+        async with uow:
+            installations = {
+                item.skill_id: item
+                for item in await uow.skill.list_installed_marketplace(user_id)
+            }
+            result: list[MarketplaceSkillView] = []
+            for skill in await uow.skill.list_marketplace():
+                versions = await uow.skill.list_marketplace_versions(skill.id)
+                result.append(
+                    self._view(skill, versions, installations.get(skill.id))
+                )
+        return result
+
+    async def get_marketplace(
+        self, user_id: str, skill_id: str
+    ) -> MarketplaceSkillView:
+        uow = self._uow_factory()
+        async with uow:
+            skill = await uow.skill.get_marketplace_by_id(skill_id)
+            if skill is None:
+                raise NotFoundError("Marketplace Skill does not exist")
+            versions = await uow.skill.list_marketplace_versions(skill_id)
+            installation = await uow.skill.get_installation(user_id, skill_id)
+        return self._view(skill, versions, installation)
+
+    async def install(
+        self,
+        user_id: str,
+        skill_id: str,
+        *,
+        version_id: str | None = None,
+    ) -> MarketplaceSkillView:
+        uow = self._uow_factory()
+        async with uow:
+            skill, versions, selected = await self._resolve_version(
+                uow, skill_id, version_id
+            )
+            if await uow.skill.get_installation(user_id, skill_id):
+                raise ConflictError(
+                    "Marketplace Skill is already installed; use explicit update"
+                )
+            installation = SkillInstallation(
+                user_id=user_id,
+                skill_id=skill_id,
+                pinned_version_id=selected.id,
+                auto_update=False,
+            )
+            await uow.skill.save_installation(installation)
+        return self._view(skill, versions, installation)
+
+    async def update(
+        self,
+        user_id: str,
+        skill_id: str,
+        *,
+        version_id: str | None = None,
+    ) -> MarketplaceSkillView:
+        uow = self._uow_factory()
+        async with uow:
+            skill, versions, selected = await self._resolve_version(
+                uow, skill_id, version_id
+            )
+            installation = await uow.skill.get_installation(user_id, skill_id)
+            if installation is None:
+                raise NotFoundError("Marketplace Skill is not installed")
+            installation = installation.model_copy(
+                update={
+                    "pinned_version_id": selected.id,
+                    "auto_update": False,
+                    "updated_at": datetime.now(),
+                }
+            )
+            await uow.skill.save_installation(installation)
+        return self._view(skill, versions, installation)
+
+    async def uninstall(self, user_id: str, skill_id: str) -> None:
+        uow = self._uow_factory()
+        async with uow:
+            if not await uow.skill.delete_installation(user_id, skill_id):
+                raise NotFoundError("Marketplace Skill is not installed")
+
+    async def set_enabled(
+        self, user_id: str, skill_id: str, enabled: bool
+    ) -> MarketplaceSkillView:
+        return await self._set_installation_flag(
+            user_id, skill_id, enabled=enabled
+        )
+
+    async def set_auto_invoke(
+        self, user_id: str, skill_id: str, enabled: bool
+    ) -> MarketplaceSkillView:
+        return await self._set_installation_flag(
+            user_id, skill_id, auto_invoke=enabled
+        )
+
+    async def fork(
+        self,
+        user_id: str,
+        skill_id: str,
+        *,
+        version_id: str | None = None,
+        display_name: str | None = None,
+    ) -> Any:
+        if self._personal_skill_service is None:
+            raise RuntimeError("Personal Skill service is required for Marketplace forks")
+        uow = self._uow_factory()
+        async with uow:
+            skill, _, version = await self._resolve_version(uow, skill_id, version_id)
+        archive = await self._package_storage.download_marketplace(
+            storage_provider=version.storage_provider,
+            storage_key=version.storage_key,
+            storage_config=version.storage_config,
+            expected_sha256=version.package_sha256,
+        )
+        return await self._personal_skill_service.fork_marketplace_archive(
+            user_id,
+            archive,
+            source_skill=skill,
+            source_version=version,
+            display_name=display_name,
+        )
+
+    async def _set_installation_flag(
+        self,
+        user_id: str,
+        skill_id: str,
+        *,
+        enabled: bool | None = None,
+        auto_invoke: bool | None = None,
+    ) -> MarketplaceSkillView:
+        uow = self._uow_factory()
+        async with uow:
+            skill = await uow.skill.get_marketplace_by_id(skill_id)
+            installation = await uow.skill.get_installation(user_id, skill_id)
+            if skill is None or installation is None:
+                raise NotFoundError("Marketplace Skill is not installed")
+            versions = await uow.skill.list_marketplace_versions(skill_id)
+            changes: dict[str, Any] = {"updated_at": datetime.now()}
+            if enabled is not None:
+                changes["enabled"] = enabled
+            if auto_invoke is not None:
+                changes["auto_invoke"] = auto_invoke
+            installation = installation.model_copy(update=changes)
+            await uow.skill.save_installation(installation)
+        return self._view(skill, versions, installation)
+
+    async def _resolve_version(
+        self, uow: IUnitOfWork, skill_id: str, version_id: str | None
+    ) -> tuple[Skill, list[SkillVersion], SkillVersion]:
+        skill = await uow.skill.get_marketplace_by_id(skill_id)
+        if skill is None:
+            raise NotFoundError("Marketplace Skill does not exist")
+        versions = sorted(
+            await uow.skill.list_marketplace_versions(skill_id),
+            key=lambda item: item.version,
+        )
+        selected_id = version_id or skill.current_version_id
+        selected = next((item for item in versions if item.id == selected_id), None)
+        if selected is None:
+            raise NotFoundError("Marketplace Skill version does not exist")
+        return skill, versions, selected
+
+    @staticmethod
+    def _view(
+        skill: Skill,
+        versions: list[SkillVersion],
+        installation: SkillInstallation | None,
+    ) -> MarketplaceSkillView:
+        ordered = tuple(sorted(versions, key=lambda item: item.version))
+        latest = next(
+            (item for item in ordered if item.id == skill.current_version_id),
+            ordered[-1] if ordered else None,
+        )
+        if latest is None:
+            raise ConflictError("Marketplace Skill has no published version")
+        return MarketplaceSkillView(
+            skill=skill,
+            versions=ordered,
+            latest_version=latest,
+            installation=installation,
+        )
 
     async def import_package(
         self,

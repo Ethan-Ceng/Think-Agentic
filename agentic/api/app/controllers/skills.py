@@ -5,9 +5,17 @@ from dataclasses import asdict
 from fastapi import APIRouter, Depends, File, Form, UploadFile
 
 from app.core.entities.user import User
-from app.dependencies import get_current_user, get_skill_service
+from app.dependencies import (
+    get_current_user,
+    get_marketplace_skill_service,
+    get_skill_service,
+)
 from app.schemas import Response
 from app.schemas.skill import (
+    MarketplaceForkRequest,
+    MarketplaceInstallRequest,
+    MarketplaceInstallationResponse,
+    MarketplaceSkillResponse,
     PublishedSkillResponse,
     SkillAutoInvokeRequest,
     SkillDetailResponse,
@@ -16,6 +24,10 @@ from app.schemas.skill import (
     SkillDraftPublishRequest,
     SkillResponse,
     SkillUpdateRequest,
+)
+from app.services.marketplace_skill_service import (
+    MarketplaceSkillService,
+    MarketplaceSkillView,
 )
 from app.services.skill_service import SkillService
 
@@ -35,6 +47,26 @@ def _detail_response(detail) -> SkillDetailResponse:
     return SkillDetailResponse(
         skill=SkillResponse.model_validate(detail.skill),
         version=detail.version,
+    )
+
+
+def _marketplace_response(view: MarketplaceSkillView) -> MarketplaceSkillResponse:
+    installation = (
+        MarketplaceInstallationResponse.model_validate(
+            view.installation, from_attributes=True
+        )
+        if view.installation
+        else None
+    )
+    return MarketplaceSkillResponse(
+        id=view.skill.id,
+        name=view.skill.name,
+        display_name=view.skill.display_name,
+        description=view.skill.description,
+        latest_version=view.latest_version,
+        versions=list(view.versions),
+        installation=installation,
+        update_available=view.update_available,
     )
 
 
@@ -64,6 +96,139 @@ async def import_skill(
         changelog=changelog,
     )
     return Response.success(msg="Skill 导入成功", data=_published_response(published))
+
+
+@skills_router.get("/marketplace", summary="Browse Marketplace Skills")
+async def list_marketplace_skills(
+    current_user: User = Depends(get_current_user),
+    service: MarketplaceSkillService = Depends(get_marketplace_skill_service),
+) -> Response[list[MarketplaceSkillResponse]]:
+    views = await service.list_marketplace(current_user.id)
+    return Response.success(data=[_marketplace_response(view) for view in views])
+
+
+@skills_router.get("/marketplace/{skill_id}", summary="Get a Marketplace Skill")
+async def get_marketplace_skill(
+    skill_id: str,
+    current_user: User = Depends(get_current_user),
+    service: MarketplaceSkillService = Depends(get_marketplace_skill_service),
+) -> Response[MarketplaceSkillResponse]:
+    return Response.success(
+        data=_marketplace_response(
+            await service.get_marketplace(current_user.id, skill_id)
+        )
+    )
+
+
+@skills_router.post(
+    "/marketplace/{skill_id}/install", summary="Install Marketplace Skill"
+)
+async def install_marketplace_skill(
+    skill_id: str,
+    body: MarketplaceInstallRequest,
+    current_user: User = Depends(get_current_user),
+    service: MarketplaceSkillService = Depends(get_marketplace_skill_service),
+) -> Response[MarketplaceSkillResponse]:
+    view = await service.install(
+        current_user.id, skill_id, version_id=body.version_id
+    )
+    return Response.success(
+        msg="Marketplace Skill installed", data=_marketplace_response(view)
+    )
+
+
+@skills_router.post(
+    "/marketplace/{skill_id}/update", summary="Update Marketplace Skill"
+)
+async def update_marketplace_skill(
+    skill_id: str,
+    body: MarketplaceInstallRequest,
+    current_user: User = Depends(get_current_user),
+    service: MarketplaceSkillService = Depends(get_marketplace_skill_service),
+) -> Response[MarketplaceSkillResponse]:
+    view = await service.update(
+        current_user.id, skill_id, version_id=body.version_id
+    )
+    return Response.success(
+        msg="Marketplace Skill updated", data=_marketplace_response(view)
+    )
+
+
+@skills_router.delete(
+    "/marketplace/{skill_id}/install", summary="Uninstall Marketplace Skill"
+)
+async def uninstall_marketplace_skill(
+    skill_id: str,
+    current_user: User = Depends(get_current_user),
+    service: MarketplaceSkillService = Depends(get_marketplace_skill_service),
+) -> Response[dict]:
+    await service.uninstall(current_user.id, skill_id)
+    return Response.success(msg="Marketplace Skill uninstalled")
+
+
+@skills_router.post(
+    "/marketplace/{skill_id}/enable", summary="Enable Marketplace Skill"
+)
+async def enable_marketplace_skill(
+    skill_id: str,
+    current_user: User = Depends(get_current_user),
+    service: MarketplaceSkillService = Depends(get_marketplace_skill_service),
+) -> Response[MarketplaceSkillResponse]:
+    return Response.success(
+        data=_marketplace_response(
+            await service.set_enabled(current_user.id, skill_id, True)
+        )
+    )
+
+
+@skills_router.post(
+    "/marketplace/{skill_id}/disable", summary="Disable Marketplace Skill"
+)
+async def disable_marketplace_skill(
+    skill_id: str,
+    current_user: User = Depends(get_current_user),
+    service: MarketplaceSkillService = Depends(get_marketplace_skill_service),
+) -> Response[MarketplaceSkillResponse]:
+    return Response.success(
+        data=_marketplace_response(
+            await service.set_enabled(current_user.id, skill_id, False)
+        )
+    )
+
+
+@skills_router.post(
+    "/marketplace/{skill_id}/auto-invoke",
+    summary="Configure Marketplace Skill automatic invocation",
+)
+async def set_marketplace_auto_invoke(
+    skill_id: str,
+    body: SkillAutoInvokeRequest,
+    current_user: User = Depends(get_current_user),
+    service: MarketplaceSkillService = Depends(get_marketplace_skill_service),
+) -> Response[MarketplaceSkillResponse]:
+    return Response.success(
+        data=_marketplace_response(
+            await service.set_auto_invoke(current_user.id, skill_id, body.enabled)
+        )
+    )
+
+
+@skills_router.post(
+    "/marketplace/{skill_id}/fork", summary="Fork Marketplace Skill"
+)
+async def fork_marketplace_skill(
+    skill_id: str,
+    body: MarketplaceForkRequest,
+    current_user: User = Depends(get_current_user),
+    service: MarketplaceSkillService = Depends(get_marketplace_skill_service),
+) -> Response[dict]:
+    draft = await service.fork(
+        current_user.id,
+        skill_id,
+        version_id=body.version_id,
+        display_name=body.display_name,
+    )
+    return Response.success(msg="Marketplace Skill forked", data=asdict(draft))
 
 
 @skills_router.get("/{skill_id}", summary="获取个人 Skill")

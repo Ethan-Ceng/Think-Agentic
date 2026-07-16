@@ -16,6 +16,7 @@ from app.dependencies.uow import get_uow
 from app.services.agent_service import AgentService
 from app.services.auth_service import AuthService
 from app.services.file_service import FileService
+from app.services.marketplace_skill_service import MarketplaceSkillService
 from app.services.session_service import SessionService
 from app.services.trace_service import TraceService
 from app.services.search_service import SearchService
@@ -56,6 +57,15 @@ def get_skill_service() -> SkillService:
         package_service=get_skill_package_service(),
         package_storage=get_skill_package_storage(),
         workspace_service=get_skill_workspace_service(),
+    )
+
+
+def get_marketplace_skill_service() -> MarketplaceSkillService:
+    return MarketplaceSkillService(
+        uow_factory=get_uow,
+        package_service=get_skill_package_service(),
+        package_storage=get_skill_package_storage(),
+        personal_skill_service=get_skill_service(),
     )
 
 
