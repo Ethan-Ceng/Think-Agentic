@@ -120,6 +120,45 @@ class DBSkillRepository(SkillRepository):
         records = (await self.db_session.execute(stmt)).scalars().all()
         return [record.to_domain() for record in records]
 
+    async def get_marketplace_by_id(self, skill_id: str) -> Skill | None:
+        stmt = select(SkillModel).where(
+            SkillModel.id == skill_id,
+            SkillModel.scope == SkillScope.MARKETPLACE,
+            SkillModel.status == SkillStatus.ACTIVE,
+        )
+        record = (await self.db_session.execute(stmt)).scalar_one_or_none()
+        return record.to_domain() if record is not None else None
+
+    async def update_marketplace(
+        self,
+        skill_id: str,
+        *,
+        display_name: str | None = None,
+        description: str | None = None,
+        current_version_id: str | None = None,
+    ) -> bool:
+        values = {
+            key: value
+            for key, value in {
+                "display_name": display_name,
+                "description": description,
+                "current_version_id": current_version_id,
+            }.items()
+            if value is not None
+        }
+        if not values:
+            return False
+        result = await self.db_session.execute(
+            update(SkillModel)
+            .where(
+                SkillModel.id == skill_id,
+                SkillModel.scope == SkillScope.MARKETPLACE,
+                SkillModel.status == SkillStatus.ACTIVE,
+            )
+            .values(**values)
+        )
+        return bool(result.rowcount)
+
     async def save_version(self, version: SkillVersion) -> None:
         record = await self.db_session.get(SkillVersionModel, version.id)
         if record is None:
@@ -157,6 +196,20 @@ class DBSkillRepository(SkillRepository):
         )
         record = (await self.db_session.execute(stmt)).scalar_one_or_none()
         return record.to_domain() if record is not None else None
+
+    async def list_marketplace_versions(self, skill_id: str) -> list[SkillVersion]:
+        stmt = (
+            select(SkillVersionModel)
+            .join(SkillModel, SkillModel.id == SkillVersionModel.skill_id)
+            .where(
+                SkillVersionModel.skill_id == skill_id,
+                SkillModel.scope == SkillScope.MARKETPLACE,
+                SkillModel.status == SkillStatus.ACTIVE,
+            )
+            .order_by(SkillVersionModel.version.asc())
+        )
+        records = (await self.db_session.execute(stmt)).scalars().all()
+        return [record.to_domain() for record in records]
 
     async def save_installation(self, installation: SkillInstallation) -> None:
         skill = await self.db_session.get(SkillModel, installation.skill_id)

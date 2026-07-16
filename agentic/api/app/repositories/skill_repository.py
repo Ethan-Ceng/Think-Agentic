@@ -26,6 +26,17 @@ class SkillRepository(Protocol):
 
     async def list_marketplace(self) -> list[Skill]: ...
 
+    async def get_marketplace_by_id(self, skill_id: str) -> Skill | None: ...
+
+    async def update_marketplace(
+        self,
+        skill_id: str,
+        *,
+        display_name: str | None = None,
+        description: str | None = None,
+        current_version_id: str | None = None,
+    ) -> bool: ...
+
     async def save_version(self, version: SkillVersion) -> None: ...
 
     async def get_personal_version(
@@ -35,6 +46,8 @@ class SkillRepository(Protocol):
     async def get_marketplace_version(
         self, version_id: str
     ) -> SkillVersion | None: ...
+
+    async def list_marketplace_versions(self, skill_id: str) -> list[SkillVersion]: ...
 
     async def save_installation(self, installation: SkillInstallation) -> None: ...
 
