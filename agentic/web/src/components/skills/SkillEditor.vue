@@ -9,7 +9,9 @@ import type {
   SkillValidationResult,
 } from '@/types/skill'
 
-const props = defineProps<{ draftId: string }>()
+const props = withDefaults(defineProps<{ draftId: string; handoff?: boolean }>(), {
+  handoff: false,
+})
 const emit = defineEmits<{ published: [skill: PublishedSkill] }>()
 const store = useSkillsStore()
 
@@ -112,6 +114,7 @@ onMounted(() => void loadTree())
 
 <template>
   <section class="skill-editor">
+    <p v-if="handoff" class="creator-handoff">AI 已交接此草稿。请检查文件变更并重新校验；只有你可以点击发布。</p>
     <header class="skill-editor-toolbar">
       <strong data-testid="active-path">{{ activePath || '未选择文件' }}</strong>
       <span v-if="dirty" data-testid="dirty-indicator">未保存</span>
@@ -147,4 +150,5 @@ onMounted(() => void loadTree())
 .skill-editor-workspace { display: flex; flex: 1; min-height: 300px; }
 textarea { flex: 1; min-width: 0; padding: 18px; border: 0; outline: 0; resize: none; background: var(--surface-primary); color: var(--text-primary); font: 13px/1.65 var(--font-mono, monospace); }
 .skill-editor-error { margin: 0; padding: 8px 12px; background: var(--status-error-soft); color: var(--status-error); font-size: 12px; }
+.creator-handoff { margin: 0; padding: 9px 12px; border-bottom: 1px solid var(--border-light); background: var(--accent-soft); color: var(--text-secondary); font-size: 12px; }
 </style>

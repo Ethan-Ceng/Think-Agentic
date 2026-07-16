@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref, watch } from 'vue'
-import { PanelLeftOpen, Plus, Upload } from 'lucide-vue-next'
+import { PanelLeftOpen, Plus, Sparkles, Upload } from 'lucide-vue-next'
 import { useRoute, useRouter } from 'vue-router'
 import SkillEditor from '@/components/skills/SkillEditor.vue'
 import SkillListItem from '@/components/skills/SkillListItem.vue'
+import SkillCreatorDialog from '@/components/skills/SkillCreatorDialog.vue'
 import { useSidebar } from '@/composables/useSidebar'
 import { useAuthStore } from '@/stores/auth'
 import { useSkillsStore } from '@/stores/skills'
@@ -15,6 +16,7 @@ const sidebar = useSidebar()
 const auth = useAuthStore()
 const store = useSkillsStore()
 const draftId = ref('')
+const creatorOpen = ref(route.query.action === 'creator')
 const importFile = ref<File | null>(null)
 const importName = ref('')
 const busy = ref(false)
@@ -22,11 +24,22 @@ const formError = ref('')
 const draft = reactive({ name: '', display_name: '', description: '' })
 
 const action = ref(typeof route.query.action === 'string' ? route.query.action : '')
-watch(() => route.query.action, (value) => { action.value = typeof value === 'string' ? value : '' })
+watch(() => route.query.action, (value) => {
+  action.value = typeof value === 'string' ? value : ''
+  if (value === 'creator') creatorOpen.value = true
+})
+watch(() => route.query.draft, (value) => {
+  if (typeof value === 'string' && value) draftId.value = value
+}, { immediate: true })
 
 function closeAction(): void {
   action.value = ''
   void router.replace({ name: 'skills' })
+}
+
+function closeCreator(): void {
+  creatorOpen.value = false
+  if (route.query.action === 'creator') void router.replace({ name: 'skills' })
 }
 
 async function createDraft(): Promise<void> {
@@ -76,6 +89,7 @@ onMounted(async () => {
 <template>
   <div class="skills-view">
     <header class="skills-view-header">
+      <button type="button" data-testid="open-skill-creator" @click="creatorOpen = true"><Sparkles :size="16" />用 AI 创建</button>
       <button v-if="sidebar.mobile.value && !sidebar.open.value" type="button" aria-label="打开侧边栏" @click="sidebar.openSidebar('skills')"><PanelLeftOpen :size="18" /></button>
       <div><h1>Skills</h1><p>管理可复用的标准 Skill 包，以及 Agent 的启用与自动识别策略。</p></div>
       <button type="button" @click="action = 'import'"><Upload :size="16" />导入标准包</button>
@@ -99,7 +113,7 @@ onMounted(async () => {
       <p v-if="formError" class="form-error">{{ formError }}</p>
     </section>
 
-    <SkillEditor v-if="draftId" :draft-id="draftId" @published="handlePublished" />
+    <SkillEditor v-if="draftId" :draft-id="draftId" :handoff="typeof route.query.draft === 'string'" @published="handlePublished" />
     <template v-else>
       <div v-if="store.loading" class="page-state">正在加载 Skills…</div>
       <div v-else-if="store.error" class="page-state"><strong>加载失败</strong><span>{{ store.error }}</span><button type="button" @click="store.loadSkills">重试</button></div>
@@ -108,6 +122,7 @@ onMounted(async () => {
         <SkillListItem v-for="skill in store.skills" :key="skill.id" :skill="skill" @enabled="store.setEnabled(skill.id, $event)" @auto-invoke="store.setAutoInvoke(skill.id, $event)" />
       </div>
     </template>
+    <SkillCreatorDialog :open="creatorOpen" @close="closeCreator" />
   </div>
 </template>
 

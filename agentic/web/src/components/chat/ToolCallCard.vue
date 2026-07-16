@@ -16,6 +16,7 @@ import {
 import { computed, ref, type Component } from 'vue'
 import { useToast } from '@/composables/useToast'
 import type { ToolEvent } from '@/lib/api/types'
+import SkillDraftHandoffButton from '@/components/skills/SkillDraftHandoffButton.vue'
 import {
   getFriendlyToolLabel,
   getToolKind,
@@ -84,6 +85,13 @@ const cardTitle = computed(() => `${toolKindLabel.value} · ${label.value}`)
 const ariaLabel = computed(() => `查看${toolKindLabel.value}调用详情：${label.value}`)
 const argsCopyText = computed(() => stringifyToolValue(props.data?.args || {}))
 const resultCopyText = computed(() => getToolResultText(props.data))
+const draftId = computed(() => {
+  if (props.data?.function !== 'skill_draft_create') return ''
+  const data = props.data.function_result?.data
+  if (!data || typeof data !== 'object') return ''
+  const value = (data as Record<string, unknown>).draft_id
+  return typeof value === 'string' ? value : ''
+})
 const eventDomId = computed(() => {
   const eventId = (props.data as { event_id?: string } | null)?.event_id
   return eventId ? `event-${eventId}` : undefined
@@ -162,6 +170,7 @@ async function copyText(text: string, target: 'args' | 'result') {
     </ElTag>
 
     <span class="tool-call-actions" @click.stop>
+      <SkillDraftHandoffButton v-if="draftId" :draft-id="draftId" />
       <ElTooltip :content="copiedTarget === 'args' ? '已复制参数' : '复制参数'" placement="top">
         <button
           class="tool-copy-button"

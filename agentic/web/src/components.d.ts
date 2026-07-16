@@ -59,6 +59,8 @@ declare module 'vue' {
     SidebarPanel: typeof import('./components/navigation/SidebarPanel.vue')['default']
     SidebarRail: typeof import('./components/navigation/SidebarRail.vue')['default']
     SkillChip: typeof import('./components/skills/SkillChip.vue')['default']
+    SkillCreatorDialog: typeof import('./components/skills/SkillCreatorDialog.vue')['default']
+    SkillDraftHandoffButton: typeof import('./components/skills/SkillDraftHandoffButton.vue')['default']
     SkillEditor: typeof import('./components/skills/SkillEditor.vue')['default']
     SkillFileTree: typeof import('./components/skills/SkillFileTree.vue')['default']
     SkillListItem: typeof import('./components/skills/SkillListItem.vue')['default']

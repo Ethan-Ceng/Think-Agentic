@@ -1,14 +1,16 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
-import { ArrowLeft, Archive } from 'lucide-vue-next'
+import { ArrowLeft, Archive, Sparkles } from 'lucide-vue-next'
 import { useRoute, useRouter } from 'vue-router'
 import { useSkillsStore } from '@/stores/skills'
+import SkillCreatorDialog from '@/components/skills/SkillCreatorDialog.vue'
 
 const route = useRoute()
 const router = useRouter()
 const store = useSkillsStore()
 const skillId = String(route.params.skillId)
 const editing = ref(false)
+const creatorOpen = ref(false)
 const busy = ref(false)
 const error = ref('')
 const form = reactive({ display_name: '', description: '' })
@@ -49,6 +51,7 @@ onMounted(() => void load())
     <header><RouterLink to="/skills"><ArrowLeft :size="17" />Skills</RouterLink><button type="button" :disabled="busy" @click="archive"><Archive :size="16" />归档</button></header>
     <div v-if="error" class="page-state"><strong>无法加载 Skill</strong><span>{{ error }}</span></div>
     <section v-else-if="store.details[skillId]" class="skill-detail-card">
+      <button type="button" data-testid="improve-skill-with-ai" @click="creatorOpen = true"><Sparkles :size="16" />用 AI 改进</button>
       <template v-if="editing">
         <label>显示名称<input v-model="form.display_name"></label>
         <label>说明<textarea v-model="form.description" /></label>
@@ -63,6 +66,11 @@ onMounted(() => void load())
       </template>
     </section>
     <div v-else class="page-state">正在加载…</div>
+    <SkillCreatorDialog
+      :open="creatorOpen"
+      :initial-goal="store.details[skillId] ? `改进 Skill ${store.details[skillId].skill.name}：${store.details[skillId].skill.description}` : ''"
+      @close="creatorOpen = false"
+    />
   </div>
 </template>
 
