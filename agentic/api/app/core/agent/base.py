@@ -147,7 +147,7 @@ class BaseAgent(ABC):
                 # 5.处理AI响应内容避免空回复
                 if message.get("role") == "assistant":
                     if not message.get("content") and not message.get("tool_calls"):
-                        logger.warning(f"LLM回复了空内容，执行重试")
+                        logger.warning("LLM回复了空内容，执行重试")
                         await self._add_to_memory([
                             {"role": "assistant", "content": ""},
                             {"role": "user", "content": "AI无响应内容，请继续。"}

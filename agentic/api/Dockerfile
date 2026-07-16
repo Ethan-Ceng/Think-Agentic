@@ -24,8 +24,8 @@ RUN uv pip install --system --no-cache -r requirements.txt
 # 8.拷贝项目文件(忽略开发环境的库)
 COPY . .
 
-# 9.为运行脚本配置权限
-RUN chmod +x run.sh
+# 9.规范化 Windows 工作树换行并为运行脚本配置权限
+RUN sed -i 's/\r$//' run.sh && chmod +x run.sh
 
 # 10.设置Python路径变量
 ENV PYTHONPATH=/app

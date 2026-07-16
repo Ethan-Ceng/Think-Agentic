@@ -8,12 +8,14 @@ import {
   CheckCircle2,
   RefreshCw,
   Route,
+  Sparkles,
   Timer,
   Wrench,
   X,
 } from 'lucide-vue-next'
 import { runsApi } from '@/lib/api/runs'
 import UiState from '@/components/ui/UiState.vue'
+import RunSkillsPanel from '@/components/skills/RunSkillsPanel.vue'
 import type {
   AgentRun,
   ModelCallRecord,
@@ -25,7 +27,7 @@ import type {
   TraceEventRecord,
 } from '@/lib/api/types'
 
-type TraceTab = 'timeline' | 'steps' | 'tools' | 'models'
+type TraceTab = 'timeline' | 'steps' | 'tools' | 'models' | 'skills'
 type TagType = 'success' | 'warning' | 'info' | 'danger'
 
 const props = defineProps<{
@@ -87,6 +89,7 @@ const tabs = computed(() => [
   { key: 'steps' as const, label: '步骤', count: orderedSteps.value.length, icon: Route },
   { key: 'tools' as const, label: '工具', count: orderedToolCalls.value.length, icon: Wrench },
   { key: 'models' as const, label: '模型', count: orderedModelCalls.value.length, icon: Bot },
+  { key: 'skills' as const, label: 'Skills', count: detail.value?.skills?.length || 0, icon: Sparkles },
 ])
 
 watch(
@@ -138,9 +141,12 @@ async function loadRunDetail(runId: string, seq = requestSeq) {
   }
 
   try {
-    const data = await runsApi.getRun(runId)
+    const [data, skills] = await Promise.all([
+      runsApi.getRun(runId),
+      runsApi.listSkills(runId),
+    ])
     if (seq !== requestSeq) return
-    detail.value = data
+    detail.value = { ...data, skills }
   } catch (err) {
     if (seq !== requestSeq) return
     error.value = err instanceof Error ? err.message : '加载 Trace 详情失败'
@@ -505,6 +511,12 @@ function stepResultPreview(step: RunStepRecord): string {
 
             <UiState v-if="orderedToolCalls.length === 0" compact title="暂无工具调用" />
           </section>
+
+          <RunSkillsPanel
+            v-else-if="activeTab === 'skills'"
+            :skills="detail.skills || []"
+            :events="detail.events || []"
+          />
 
           <section v-else class="trace-list">
             <article v-for="call in orderedModelCalls" :key="call.id" class="trace-record">

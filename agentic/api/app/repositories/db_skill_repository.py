@@ -27,6 +27,10 @@ class DBSkillRepository(SkillRepository):
         record = await self.db_session.get(SkillModel, skill.id)
         if record is None:
             self.db_session.add(SkillModel.from_domain(skill))
+            # The publish flow follows this insert with Core UPDATE statements.
+            # AsyncSession does not guarantee an autoflush before those statements,
+            # so make the parent row visible before creating its version/pointer.
+            await self.db_session.flush()
             return
         raise ValueError(f"Skill {skill.id} already exists")
 
@@ -120,6 +124,9 @@ class DBSkillRepository(SkillRepository):
         record = await self.db_session.get(SkillVersionModel, version.id)
         if record is None:
             self.db_session.add(SkillVersionModel.from_domain(version))
+            # current_version_id is updated with a Core UPDATE immediately after
+            # this call and references this row through a foreign key.
+            await self.db_session.flush()
 
     async def get_personal_version(
         self, user_id: str, version_id: str

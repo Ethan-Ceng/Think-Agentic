@@ -321,7 +321,7 @@ class DockerSandbox(Sandbox):
                 # 6.读取services数据并判断
                 services = tool_result.data or []
                 if not services:
-                    logger.warning(f"Supervisor进程中未发现任何服务")
+                    logger.warning("Supervisor进程中未发现任何服务")
                     await asyncio.sleep(retry_interval)
                     continue
 

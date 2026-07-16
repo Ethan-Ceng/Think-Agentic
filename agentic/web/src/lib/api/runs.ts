@@ -6,6 +6,7 @@ import type {
   RunModelCallsData,
   RunToolCallsData,
 } from './types'
+import type { RunSkill } from '@/types/skill'
 
 export const runsApi = {
   listRuns: (params?: { session_id?: string; limit?: number }): Promise<RunListData> => {
@@ -14,6 +15,10 @@ export const runsApi = {
 
   getRun: (runId: string): Promise<RunDetailData> => {
     return get<RunDetailData>(`/runs/${runId}`)
+  },
+
+  listSkills: (runId: string): Promise<RunSkill[]> => {
+    return get<RunSkill[]>(`/runs/${runId}/skills`)
   },
 
   listEvents: (runId: string): Promise<RunEventsData> => {

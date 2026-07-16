@@ -150,7 +150,7 @@ class PlannerReActFlow(BaseFlow):
                 self.status = FlowStatus.PLANNING
             elif self.status == FlowStatus.PLANNING:
                 # 10.流状态为规划中，则调用规划Agent
-                logger.info(f"Planner&ReAct流开始创建计划/Plan")
+                logger.info("Planner&ReAct流开始创建计划/Plan")
                 async for event in self.planner.create_plan(message):
                     # 11.判断规划Agent是否返回规划事件
                     if isinstance(event, PlanEvent) and event.status == PlanEventStatus.CREATED:
@@ -171,7 +171,7 @@ class PlannerReActFlow(BaseFlow):
 
                 # 16.判断计划是否生成，步骤是否正常
                 if not self.plan or len(self.plan.steps) == 0:
-                    logger.info(f"Planner&ReAct流创建计划失败或无子步骤")
+                    logger.info("Planner&ReAct流创建计划失败或无子步骤")
                     self.status = FlowStatus.COMPLETED
             elif self.status == FlowStatus.EXECUTING:
                 # 17.流的状态为执行中，先将计划状态调整为运行中，同时调用执行Agent完成每个子步骤
@@ -199,7 +199,7 @@ class PlannerReActFlow(BaseFlow):
                 self.status = FlowStatus.UPDATING
             elif self.status == FlowStatus.UPDATING:
                 # 23.流状态为更新表示需要更新计划
-                logger.info(f"Planner&ReAct流开始更新计划")
+                logger.info("Planner&ReAct流开始更新计划")
                 async for event in self.planner.update_plan(self.plan, step):
                     yield event
 
@@ -208,7 +208,7 @@ class PlannerReActFlow(BaseFlow):
                 self.status = FlowStatus.EXECUTING
             elif self.status == FlowStatus.SUMMARIZING:
                 # 25.流状态为总结中，则意味着所有子步骤都执行完成
-                logger.info(f"Planner&ReAct流开始总结")
+                logger.info("Planner&ReAct流开始总结")
                 async for event in self.react.summarize():
                     yield event
 
@@ -223,7 +223,7 @@ class PlannerReActFlow(BaseFlow):
                 break
         # 28.任务已经结束则返回结束事件
         yield DoneEvent()
-        logger.info(f"Planner&ReAct流处理任务消息已完毕")
+        logger.info("Planner&ReAct流处理任务消息已完毕")
 
     @property
     def done(self) -> bool:

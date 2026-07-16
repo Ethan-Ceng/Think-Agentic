@@ -71,7 +71,7 @@ class AgentService:
         self._search_engine = search_engine
         self._file_storage = file_storage
         self._skill_package_storage = skill_package_storage
-        logger.info(f"AgentService初始化成功")
+        logger.info("AgentService初始化成功")
 
     async def _get_task(self, session: Session) -> Optional[Task]:
         """根据传递的任务会话获取任务实例"""

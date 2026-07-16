@@ -42,6 +42,7 @@ declare module 'vue' {
     PlanPanel: typeof import('./components/chat/PlanPanel.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
+    RunSkillsPanel: typeof import('./components/skills/RunSkillsPanel.vue')['default']
     SessionDetailView: typeof import('./components/SessionDetailView.vue')['default']
     SessionHeader: typeof import('./components/SessionHeader.vue')['default']
     SessionList: typeof import('./components/SessionList.vue')['default']

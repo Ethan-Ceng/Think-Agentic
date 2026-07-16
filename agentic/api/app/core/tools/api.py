@@ -12,7 +12,7 @@ import re
 import socket
 import unicodedata
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 from urllib.parse import urlparse
 

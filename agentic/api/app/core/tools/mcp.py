@@ -71,7 +71,7 @@ class MCPClientManager:
             logger.info(f"从config.yaml中加载了{len(self._mcp_config.mcpServers)}个MCP服务器")
             await self._connect_mcp_servers()
             self._initialized = True
-            logger.info(f"MCP客户端管理器加载成功")
+            logger.info("MCP客户端管理器加载成功")
         except Exception as e:
             # 3.记录错误信息并直接抛出
             logger.error(f"MCP客户端管理器加载失败: {str(e)}")
@@ -334,7 +334,7 @@ class MCPClientManager:
 
         try:
             await self._exit_stack.aclose()
-            logger.info(f"清除MCP客户端管理器成功")
+            logger.info("清除MCP客户端管理器成功")
         except RuntimeError as e:
             # 防御性处理：anyio.create_task_group() 在不同任务中退出的已知问题
             if "Attempted to exit cancel scope in a different task" in str(e):
