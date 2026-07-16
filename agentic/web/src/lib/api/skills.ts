@@ -1,6 +1,7 @@
 import { del, get, patch, post, put } from './fetch'
 import type {
   PublishedSkill,
+  MarketplaceSkill,
   SkillDetail,
   SkillDraft,
   SkillDraftFile,
@@ -16,6 +17,36 @@ function encodePath(path: string): string {
 export const skillsApi = {
   list(): Promise<SkillSummary[]> {
     return get('/skills')
+  },
+
+  listMarketplace(): Promise<MarketplaceSkill[]> {
+    return get('/skills/marketplace')
+  },
+
+  getMarketplace(skillId: string): Promise<MarketplaceSkill> {
+    return get(`/skills/marketplace/${encodeURIComponent(skillId)}`)
+  },
+
+  installMarketplace(skillId: string, versionId?: string): Promise<MarketplaceSkill> {
+    return post(`/skills/marketplace/${encodeURIComponent(skillId)}/install`, {
+      version_id: versionId,
+    })
+  },
+
+  updateMarketplace(skillId: string, versionId?: string): Promise<MarketplaceSkill> {
+    return post(`/skills/marketplace/${encodeURIComponent(skillId)}/update`, {
+      version_id: versionId,
+    })
+  },
+
+  uninstallMarketplace(skillId: string): Promise<Record<string, never>> {
+    return del(`/skills/marketplace/${encodeURIComponent(skillId)}/install`)
+  },
+
+  forkMarketplace(skillId: string, versionId?: string): Promise<SkillDraft> {
+    return post(`/skills/marketplace/${encodeURIComponent(skillId)}/fork`, {
+      version_id: versionId,
+    })
   },
 
   import(file: File, displayName?: string, changelog = ''): Promise<PublishedSkill> {

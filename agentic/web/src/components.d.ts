@@ -38,6 +38,8 @@ declare module 'vue' {
     FilePreviewPanel: typeof import('./components/FilePreviewPanel.vue')['default']
     LeftPanel: typeof import('./components/LeftPanel.vue')['default']
     MarkdownContent: typeof import('./components/MarkdownContent.vue')['default']
+    MarketplaceSkillCard: typeof import('./components/skills/MarketplaceSkillCard.vue')['default']
+    MarketplaceSkillDetail: typeof import('./components/skills/MarketplaceSkillDetail.vue')['default']
     MessageActions: typeof import('./components/chat/MessageActions.vue')['default']
     PlanPanel: typeof import('./components/chat/PlanPanel.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']

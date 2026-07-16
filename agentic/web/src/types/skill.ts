@@ -29,6 +29,8 @@ export type SkillSummary = {
   enabled: boolean
   auto_invoke: boolean
   current_version_id: string | null
+  forked_from_skill_id?: string | null
+  forked_from_version_id?: string | null
   updated_at: string
   created_at: string
 }
@@ -60,6 +62,26 @@ export type SkillDraft = {
   draft_id: string
   skill_name: string
   revision: string
+}
+
+export type MarketplaceInstallation = {
+  pinned_version_id: string
+  enabled: boolean
+  auto_invoke: boolean
+  auto_update: boolean
+  installed_at: string
+  updated_at: string
+}
+
+export type MarketplaceSkill = {
+  id: string
+  name: string
+  display_name: string
+  description: string
+  latest_version: SkillVersion
+  versions: SkillVersion[]
+  installation: MarketplaceInstallation | null
+  update_available: boolean
 }
 
 export type SkillDraftTreeEntry = {

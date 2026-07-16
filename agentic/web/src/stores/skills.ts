@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import { skillsApi } from '@/lib/api/skills'
 import type {
   PublishedSkill,
+  MarketplaceSkill,
   SkillDetail,
   SkillDraft,
   SkillDraftFile,
@@ -18,9 +19,11 @@ function errorMessage(error: unknown): string {
 export const useSkillsStore = defineStore('skills', () => {
   const skills = ref<SkillSummary[]>([])
   const details = ref<Record<string, SkillDetail>>({})
+  const marketplace = ref<MarketplaceSkill[]>([])
   const validations = ref<Record<string, SkillValidationResult>>({})
   const loading = ref(false)
   const error = ref<string | null>(null)
+  const marketplaceError = ref<string | null>(null)
   const ownerUserId = ref<string | null>(null)
 
   const activeSkills = computed(() => skills.value.filter((skill) => skill.status === 'active'))
@@ -30,8 +33,10 @@ export const useSkillsStore = defineStore('skills', () => {
     ownerUserId.value = userId
     skills.value = []
     details.value = {}
+    marketplace.value = []
     validations.value = {}
     error.value = null
+    marketplaceError.value = null
     loading.value = false
   }
 
@@ -54,6 +59,71 @@ export const useSkillsStore = defineStore('skills', () => {
       throw cause
     } finally {
       loading.value = false
+    }
+  }
+
+  function replaceMarketplace(updated: MarketplaceSkill): MarketplaceSkill {
+    const index = marketplace.value.findIndex((skill) => skill.id === updated.id)
+    if (index === -1) marketplace.value.push(updated)
+    else marketplace.value[index] = updated
+    return updated
+  }
+
+  async function loadMarketplace(): Promise<MarketplaceSkill[]> {
+    loading.value = true
+    marketplaceError.value = null
+    try {
+      marketplace.value = await skillsApi.listMarketplace()
+      return marketplace.value
+    } catch (cause) {
+      marketplaceError.value = errorMessage(cause)
+      throw cause
+    } finally {
+      loading.value = false
+    }
+  }
+
+  async function installMarketplace(skillId: string): Promise<MarketplaceSkill> {
+    marketplaceError.value = null
+    try {
+      return replaceMarketplace(await skillsApi.installMarketplace(skillId))
+    } catch (cause) {
+      marketplaceError.value = errorMessage(cause)
+      throw cause
+    }
+  }
+
+  async function updateMarketplace(skillId: string): Promise<MarketplaceSkill> {
+    marketplaceError.value = null
+    try {
+      return replaceMarketplace(await skillsApi.updateMarketplace(skillId))
+    } catch (cause) {
+      marketplaceError.value = errorMessage(cause)
+      throw cause
+    }
+  }
+
+  async function uninstallMarketplace(skillId: string): Promise<void> {
+    marketplaceError.value = null
+    try {
+      await skillsApi.uninstallMarketplace(skillId)
+      const existing = marketplace.value.find((skill) => skill.id === skillId)
+      if (existing) {
+        replaceMarketplace({ ...existing, installation: null, update_available: false })
+      }
+    } catch (cause) {
+      marketplaceError.value = errorMessage(cause)
+      throw cause
+    }
+  }
+
+  async function forkMarketplace(skillId: string): Promise<SkillDraft> {
+    marketplaceError.value = null
+    try {
+      return await skillsApi.forkMarketplace(skillId)
+    } catch (cause) {
+      marketplaceError.value = errorMessage(cause)
+      throw cause
     }
   }
 
@@ -146,13 +216,20 @@ export const useSkillsStore = defineStore('skills', () => {
 
   return {
     skills,
+    marketplace,
     activeSkills,
     details,
     validations,
     loading,
     error,
+    marketplaceError,
     resetForUser,
     loadSkills,
+    loadMarketplace,
+    installMarketplace,
+    updateMarketplace,
+    uninstallMarketplace,
+    forkMarketplace,
     loadSkill,
     setEnabled,
     setAutoInvoke,

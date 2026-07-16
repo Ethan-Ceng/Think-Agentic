@@ -62,6 +62,10 @@ onMounted(() => {
       <button type="button" aria-label="刷新 Skills" @click="load"><RefreshCw :size="15" /></button>
     </div>
     <div class="sidebar-section-heading"><span>我的 Skills</span><RouterLink to="/skills">管理</RouterLink></div>
+    <nav class="skills-destinations" aria-label="Skills 导航">
+      <RouterLink to="/skills">我的 Skills</RouterLink>
+      <RouterLink to="/skills/marketplace">Skill 市场</RouterLink>
+    </nav>
 
     <div v-if="store.loading" data-testid="skills-loading" class="sidebar-empty-state">正在加载…</div>
     <div v-else-if="store.error" data-testid="skills-error" class="sidebar-empty-state">
@@ -90,5 +94,8 @@ onMounted(() => {
 .skills-panel-actions button, .sidebar-empty-state button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 34px; padding: 0 9px; border: 1px solid var(--border-light); border-radius: var(--radius-sm); background: var(--surface-primary); color: var(--text-secondary); cursor: pointer; font-size: 12px; }
 .skills-panel-actions button:last-child { width: 34px; padding: 0; margin-left: auto; }
 .sidebar-section-heading a { color: var(--accent-primary); text-decoration: none; text-transform: none; }
+.skills-destinations { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.skills-destinations a { padding: 7px 8px; border: 1px solid var(--border-light); border-radius: 6px; color: var(--text-secondary); font-size: 12px; text-align: center; text-decoration: none; }
+.skills-destinations a.router-link-exact-active { border-color: var(--accent-primary); color: var(--accent-primary); }
 .skills-panel-list { display: flex; flex: 1; flex-direction: column; gap: 8px; min-height: 0; overflow-y: auto; }
 </style>

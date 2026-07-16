@@ -39,6 +39,12 @@ const router = createRouter({
       meta: { requiresAuth: true },
     },
     {
+      path: '/skills/marketplace',
+      name: 'skill-marketplace',
+      component: () => import('@/views/SkillMarketplaceView.vue'),
+      meta: { requiresAuth: true },
+    },
+    {
       path: '/skills/:skillId',
       name: 'skill-detail',
       component: () => import('@/views/SkillDetailView.vue'),
