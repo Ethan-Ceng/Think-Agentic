@@ -1,3 +1,5 @@
+import type { RunSkill } from '@/types/skill'
+
 export type ApiResponse<T = unknown> = {
   code: number
   msg: string
@@ -375,7 +377,26 @@ export type RunDetailData = {
   tool_calls: ToolCallRecord[]
   model_calls: ModelCallRecord[]
   events: TraceEventRecord[]
+  skills: RunSkill[]
 }
+
+export type {
+  PublishedSkill,
+  RunSkill,
+  SkillDetail,
+  SkillDraft,
+  SkillDraftFile,
+  SkillDraftTree,
+  SkillDraftTreeEntry,
+  SkillManifest,
+  SkillRef,
+  SkillSelectionMode,
+  SkillSource,
+  SkillSummary,
+  SkillValidationDiagnostic,
+  SkillValidationResult,
+  SkillVersion,
+} from '@/types/skill'
 
 export type RunEventsData = {
   events: TraceEventRecord[]
