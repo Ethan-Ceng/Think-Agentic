@@ -13,6 +13,7 @@ from .file import router as file_router
 from .tools import router as tools_router
 from .runs import router as runs_router
 from .search import router as search_router
+from .skills import drafts_router, skills_router
 
 # 主路由
 router = APIRouter()
@@ -26,5 +27,7 @@ router.include_router(file_router)
 router.include_router(tools_router)
 router.include_router(runs_router)
 router.include_router(search_router)
+router.include_router(drafts_router)
+router.include_router(skills_router)
 
 __all__ = ["router"]

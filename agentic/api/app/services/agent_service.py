@@ -20,10 +20,14 @@ from app.core.search.base import SearchEngine
 from app.core.task.base import Task
 from app.core.entities.event import BaseEvent, ErrorEvent, MessageEvent, Event, DoneEvent, WaitEvent
 from app.core.entities.session import Session, SessionStatus
+from app.core.entities.skill import SkillRef
+from app.extensions.skill_package_storage import SkillPackageStorage
 from app.repositories.uow import IUnitOfWork
 from app.schemas.exceptions import NotFoundError
 from app.core.agent.agent_task_runner import AgentTaskRunner
 from app.services.user_config_service import UserConfigService
+from app.services.bundled_skill_service import BundledSkillService
+from app.services.skill_workspace_service import SkillWorkspaceService
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +60,9 @@ class AgentService:
             json_parser: JSONParser,
             search_engine: SearchEngine,
             file_storage: FileStorage,
+            skill_package_storage: SkillPackageStorage | None = None,
+            bundled_skill_service: BundledSkillService | None = None,
+            skill_workspace_service: SkillWorkspaceService | None = None,
     ) -> None:
         """构造函数，完成Agent服务初始化"""
         self._uow_factory = uow_factory
@@ -67,7 +74,10 @@ class AgentService:
         self._json_parser = json_parser
         self._search_engine = search_engine
         self._file_storage = file_storage
-        logger.info(f"AgentService初始化成功")
+        self._skill_package_storage = skill_package_storage
+        self._bundled_skill_service = bundled_skill_service
+        self._skill_workspace_service = skill_workspace_service
+        logger.info("AgentService初始化成功")
 
     async def _get_task(self, session: Session) -> Optional[Task]:
         """根据传递的任务会话获取任务实例"""
@@ -121,6 +131,9 @@ class AgentService:
             browser=browser,
             search_engine=self._search_engine,
             sandbox=sandbox,
+            skill_package_storage=self._skill_package_storage,
+            bundled_skill_service=self._bundled_skill_service,
+            skill_workspace_service=self._skill_workspace_service,
         )
 
         # 6.创建任务Task并更新会话中的信息
@@ -178,6 +191,7 @@ class AgentService:
             session_id=session_id,
             user_id=user_id,
             message=self.get_recovery_message(mode),
+            visible=False,
         ):
             yield event
 
@@ -187,11 +201,14 @@ class AgentService:
             user_id: str,
             message: Optional[str] = None,
             attachments: Optional[List[str]] = None,
+            skills: Optional[List[SkillRef]] = None,
             latest_event_id: Optional[str] = None,
             timestamp: Optional[datetime] = None,
+            visible: bool = True,
     ) -> AsyncGenerator[BaseEvent, None]:
         """根据传递的信息调用Agent服务发起对话请求"""
         attachments = attachments or []
+        skills = skills or []
         try:
             # 1.检查会话是否存在
             async with self._uow:
@@ -222,12 +239,13 @@ class AgentService:
                         raise RuntimeError(f"会话[{session_id}]创建任务失败")
 
                 # 6.传递了消息则更新会话中的最后一条消息
-                async with self._uow:
-                    await self._uow.session.update_latest_message(
-                        session_id=session_id,
-                        message=message,
-                        timestamp=timestamp or datetime.now(),
-                    )
+                if visible:
+                    async with self._uow:
+                        await self._uow.session.update_latest_message(
+                            session_id=session_id,
+                            message=message,
+                            timestamp=timestamp or datetime.now(),
+                        )
 
                 # bugfix:从文件数据库中查询数据并更新attachments实际内容, 并返回人类消息事件
                 async with self._uow:
@@ -238,6 +256,8 @@ class AgentService:
                     role="user",
                     message=message,
                     attachments=[attachment for attachment in db_attachments if attachment is not None],
+                    skills=skills,
+                    visible=visible,
                     # attachments=[File(id=attachment) for attachment in attachments] if attachments else [],
                 )
 

@@ -4,16 +4,18 @@ import asyncio
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from app.core.entities.event import ErrorEvent
+from app.core.entities.event import BaseEvent, ErrorEvent, MessageEvent
 from app.core.entities.session import Session, SessionStatus
+from app.schemas.event import MessageSSEEvent
 from app.services.agent_service import AgentService
 
 
 class FakeSessionRepository:
     def __init__(self, session: Session) -> None:
         self.session = session
-        self.events: List[ErrorEvent] = []
+        self.events: List[BaseEvent] = []
         self.status_updates: List[SessionStatus] = []
+        self.latest_messages: List[str] = []
 
     async def get_by_id_for_user(self, session_id: str, user_id: str) -> Optional[Session]:
         if session_id == self.session.id and user_id == self.session.user_id:
@@ -25,9 +27,13 @@ class FakeSessionRepository:
         self.session.status = status
         self.status_updates.append(status)
 
-    async def add_event(self, session_id: str, event: ErrorEvent) -> None:
+    async def add_event(self, session_id: str, event: BaseEvent) -> None:
         assert session_id == self.session.id
         self.events.append(event)
+
+    async def update_latest_message(self, session_id: str, message: str, timestamp: datetime) -> None:
+        assert session_id == self.session.id
+        self.latest_messages.append(message)
 
     async def update_unread_message_count(self, session_id: str, count: int) -> None:
         assert session_id == self.session.id
@@ -81,6 +87,20 @@ class MissingTask:
     @classmethod
     def get(cls, task_id: str) -> None:
         return None
+
+
+class FakeInputStream:
+    async def put(self, payload: str) -> str:
+        return "event-1"
+
+
+class CompletedTask:
+    def __init__(self) -> None:
+        self.input_stream = FakeInputStream()
+        self.done = False
+
+    async def invoke(self) -> None:
+        self.done = True
 
 
 def make_service(session: Session) -> tuple[AgentService, FakeSessionRepository, FakeTraceRepository]:
@@ -168,6 +188,44 @@ def test_resume_starts_a_new_run_in_the_same_session() -> None:
     assert captured["session_id"] == session.id
     assert captured["user_id"] == session.user_id
     assert captured["message"] == AgentService.get_recovery_message("continue")
+    assert captured["visible"] is False
+
+
+def test_internal_message_stays_in_agent_input_without_updating_conversation_summary() -> None:
+    session = Session(id="session-1", user_id="user-1", status=SessionStatus.COMPLETED)
+    service, session_repo, _ = make_service(session)
+    task = CompletedTask()
+
+    async def fake_get_task(_session: Session) -> None:
+        return None
+
+    async def fake_create_task(_session: Session) -> CompletedTask:
+        return task
+
+    service._get_task = fake_get_task  # type: ignore[method-assign]
+    service._create_task = fake_create_task  # type: ignore[method-assign]
+
+    async def run() -> List[BaseEvent]:
+        events = [
+            event
+            async for event in service.chat(
+                session_id=session.id,
+                user_id=session.user_id,
+                message="internal recovery instruction",
+                visible=False,
+            )
+        ]
+        await asyncio.sleep(0)
+        return events
+
+    events = asyncio.run(run())
+
+    message_event = events[0]
+    assert isinstance(message_event, MessageEvent)
+    assert message_event.visible is False
+    assert session_repo.latest_messages == []
+    assert session_repo.events == [message_event]
+    assert MessageSSEEvent.from_event(message_event).data.visible is False
 
 
 def test_stop_finalizes_orphaned_run_instead_of_leaving_trace_running() -> None:

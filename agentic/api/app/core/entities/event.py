@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from .file import File
 from .plan import Plan, Step
 from .search import SearchResultItem
+from .skill import SkillRef
 from .tool_result import ToolResult
 
 
@@ -71,6 +72,8 @@ class MessageEvent(BaseEvent):
     role: Literal["user", "assistant"] = "assistant"  # 消息角色
     message: str = ""  # 消息本身
     attachments: List[File] = Field(default_factory=list)  # 附件列表信息
+    skills: List[SkillRef] = Field(default_factory=list)  # 本次 Run 手动选择的 Skills
+    visible: bool = True  # 是否作为用户可见的对话消息展示
 
 
 class BrowserToolContent(BaseModel):

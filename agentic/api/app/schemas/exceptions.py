@@ -54,11 +54,22 @@ class NotFoundError(AppException):
         super().__init__(status_code=404, code=404, msg=msg)
 
 
+class ConflictError(AppException):
+    """资源状态冲突。"""
+
+    def __init__(self, msg: str = "资源状态已变化，请刷新后重试", data: Any = None):
+        super().__init__(status_code=409, code=409, msg=msg, data=data)
+
+
 class ValidationError(AppException):
     """数据校验错误"""
 
-    def __init__(self, msg: str = "请求参数数据校验错误，请核实后重试"):
-        super().__init__(status_code=422, code=422, msg=msg)
+    def __init__(
+        self,
+        msg: str = "请求参数数据校验错误，请核实后重试",
+        data: Any = None,
+    ):
+        super().__init__(status_code=422, code=422, msg=msg, data=data)
 
 
 class TooManusRequestsError(AppException):

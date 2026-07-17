@@ -1,15 +1,17 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import ChatComposer, { type ComposerFileItem } from '@/components/chat/ChatComposer.vue'
 import { useToast } from '@/composables/useToast'
 import { fileApi } from '@/lib/api/file'
 import type { FileInfo } from '@/lib/api/types'
+import { useSkillsStore } from '@/stores/skills'
+import type { SendMessageInput, SkillRef, SkillSummary } from '@/types/skill'
 
 const props = withDefaults(defineProps<{
   disabled?: boolean
   sessionId?: string | null
   isRunning?: boolean
-  onSend?: (message: string, files: FileInfo[]) => Promise<void>
+  onSend?: (input: SendMessageInput, files: FileInfo[]) => Promise<void>
   onStop?: () => void
 }>(), {
   disabled: false,
@@ -24,6 +26,7 @@ const emit = defineEmits<{
 }>()
 
 const toast = useToast()
+const skillsStore = useSkillsStore()
 type UploadEntry = ComposerFileItem & {
   rawFile?: File
   fileInfo?: FileInfo
@@ -33,6 +36,7 @@ const uploadItems = ref<UploadEntry[]>([])
 const uploading = computed(() => uploadItems.value.some((file) => file.uploadStatus === 'uploading'))
 const sending = ref(false)
 const inputValue = ref('')
+const selectedSkills = ref<SkillRef[]>([])
 const fileInputRef = ref<HTMLInputElement | null>(null)
 const composerRef = ref<InstanceType<typeof ChatComposer> | null>(null)
 let uploadEntryId = 0
@@ -53,10 +57,30 @@ function getFiles() {
     .map((file) => file.fileInfo as FileInfo)
 }
 
+function skillKey(skill: SkillRef): string {
+  return `${skill.source}:${skill.skill_id ?? skill.name}`
+}
+
+function selectSkill(skill: SkillSummary) {
+  const ref: SkillRef = {
+    source: skill.scope === 'marketplace' ? 'marketplace' : 'personal',
+    skill_id: skill.id,
+    name: skill.name,
+  }
+  if (selectedSkills.value.length >= 5) return
+  if (selectedSkills.value.some((selected) => skillKey(selected) === skillKey(ref))) return
+  selectedSkills.value.push(ref)
+}
+
+function removeSkill(key: string) {
+  selectedSkills.value = selectedSkills.value.filter((skill) => skillKey(skill) !== key)
+}
+
 defineExpose({
   setInputText,
   getInputValue,
   getFiles,
+  getSelectedSkills: () => [...selectedSkills.value],
 })
 
 function handleInputChange(value: string) {
@@ -166,9 +190,18 @@ async function handleSend() {
 
   sending.value = true
   try {
-    await props.onSend(message, getFiles())
+    const files = getFiles()
+    await props.onSend(
+      {
+        message,
+        attachmentIds: files.map((file) => file.id),
+        skills: [...selectedSkills.value],
+      },
+      files,
+    )
     inputValue.value = ''
     uploadItems.value = []
+    selectedSkills.value = []
     emit('inputValueChange', '')
     composerRef.value?.focus()
   } catch (error) {
@@ -181,6 +214,12 @@ async function handleSend() {
 function handleStop() {
   props.onStop?.()
 }
+
+onMounted(() => {
+  if (skillsStore.skills.length === 0) {
+    void skillsStore.loadSkills().catch(() => undefined)
+  }
+})
 </script>
 
 <template>
@@ -192,6 +231,8 @@ function handleStop() {
     :sending="sending"
     :disabled="disabled"
     :is-running="isRunning"
+    :skills="skillsStore.activeSkills"
+    :selected-skills="selectedSkills"
     @update:model-value="handleInputChange"
     @attach="fileInputRef?.click()"
     @remove-file="removeFile"
@@ -199,6 +240,8 @@ function handleStop() {
     @paste-files="uploadFiles"
     @send="handleSend"
     @stop="handleStop"
+    @select-skill="selectSkill"
+    @remove-skill="removeSkill"
   />
 
   <input

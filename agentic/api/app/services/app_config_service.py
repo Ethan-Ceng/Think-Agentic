@@ -15,7 +15,6 @@ from app.schemas.app_config import (
     LLMConfig,
     AgentConfig,
     MCPConfig,
-    MCPServerConfig,
     A2AConfig,
     A2AServerConfig,
 )

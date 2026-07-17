@@ -1,3 +1,5 @@
+import type { RunSkill, SkillRef } from '@/types/skill'
+
 export type ApiResponse<T = unknown> = {
   code: number
   msg: string
@@ -375,7 +377,26 @@ export type RunDetailData = {
   tool_calls: ToolCallRecord[]
   model_calls: ModelCallRecord[]
   events: TraceEventRecord[]
+  skills: RunSkill[]
 }
+
+export type {
+  PublishedSkill,
+  RunSkill,
+  SkillDetail,
+  SkillDraft,
+  SkillDraftFile,
+  SkillDraftTree,
+  SkillDraftTreeEntry,
+  SkillManifest,
+  SkillRef,
+  SkillSelectionMode,
+  SkillSource,
+  SkillSummary,
+  SkillValidationDiagnostic,
+  SkillValidationResult,
+  SkillVersion,
+} from '@/types/skill'
 
 export type RunEventsData = {
   events: TraceEventRecord[]
@@ -498,18 +519,21 @@ export type CreateSessionParams = {
 export type ChatMessage = {
   role: 'user' | 'assistant' | 'system'
   message: string
+  visible?: boolean
   attachments?: Array<{
     file_id: string
     filename: string
     size?: number
     [key: string]: unknown
   }>
+  skills?: SkillRef[]
   [key: string]: unknown
 }
 
 export type ChatParams = {
   message?: string
   attachments?: string[]
+  skills?: SkillRef[]
   event_id?: string
   [key: string]: unknown
 }

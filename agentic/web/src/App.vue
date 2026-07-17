@@ -6,11 +6,13 @@ import { useSettingsModal } from '@/composables/useSettingsModal'
 import { provideSidebar } from '@/composables/useSidebar'
 import { useAuthStore } from '@/stores/auth'
 import { useSessionsStore } from '@/stores/sessions'
+import type { SidebarSection } from '@/composables/useSidebar'
 
 const SIDEBAR_STORAGE_KEY = 'agentic.sidebar.expanded'
 const MOBILE_BREAKPOINT = 900
 const storedSidebarState = window.localStorage.getItem(SIDEBAR_STORAGE_KEY)
 const sidebarOpen = ref(storedSidebarState === null ? true : storedSidebarState === 'true')
+const sidebarSection = ref<SidebarSection>('sessions')
 const isMobile = ref(window.innerWidth <= MOBILE_BREAKPOINT)
 const route = useRoute()
 const authStore = useAuthStore()
@@ -22,14 +24,21 @@ const authRoute = computed(() => route.name === 'auth')
 
 provideSidebar({
   open: sidebarOpen,
+  section: sidebarSection,
   mobile: isMobile,
-  toggle: () => {
+  toggle: (section) => {
+    if (section && (!sidebarOpen.value || sidebarSection.value !== section)) {
+      sidebarSection.value = section
+      sidebarOpen.value = true
+      return
+    }
     sidebarOpen.value = !sidebarOpen.value
   },
   close: () => {
     sidebarOpen.value = false
   },
-  openSidebar: () => {
+  openSidebar: (section) => {
+    if (section) sidebarSection.value = section
     sidebarOpen.value = true
   },
 })

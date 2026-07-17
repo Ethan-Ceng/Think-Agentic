@@ -15,6 +15,7 @@ from app.core.sandbox.base import Sandbox
 from app.core.search.base import SearchEngine
 from app.core.entities.app_config import AgentConfig
 from app.core.entities.tool_config import ToolConfig
+from app.core.entities.skill import SkillSource
 from app.core.entities.event import BaseEvent, PlanEvent, PlanEventStatus, TitleEvent, MessageEvent
 from app.core.entities.event import DoneEvent
 from app.core.entities.message import Message
@@ -25,7 +26,9 @@ from app.core.agent.react import ReActAgent
 from app.core.tools.a2a import A2ATool
 from app.core.tools.factory import ToolFactory
 from app.core.tools.mcp import MCPTool
+from app.core.tools.skill_draft import SkillDraftTool
 from app.services.trace_service import TraceService
+from app.services.skill_runtime_service import SkillRuntimeContext
 from .base import BaseFlow, FlowStatus
 from ...repositories.uow import IUnitOfWork
 
@@ -49,6 +52,7 @@ class PlannerReActFlow(BaseFlow):
             mcp_tool: MCPTool,  # mcp工具
             a2a_tool: A2ATool,  # a2a远程agent
             trace_service: TraceService | None = None,
+            skill_draft_tool: SkillDraftTool | None = None,
     ) -> None:
         """构造函数，完成规划与执行流的初始化"""
         # 1.流初始化数据配置
@@ -59,13 +63,17 @@ class PlannerReActFlow(BaseFlow):
         self.plan: Optional[Plan] = None
 
         # 2.初始化Agent预设工具列表
-        tools = ToolFactory(tool_config=tool_config).build(
+        self._tool_factory = ToolFactory(tool_config=tool_config)
+        tools = self._tool_factory.build(
             sandbox=sandbox,
             browser=browser,
             search_engine=search_engine,
             mcp_tool=mcp_tool,
             a2a_tool=a2a_tool,
         )
+        self._tools = tools
+        self._skill_draft_tool = skill_draft_tool
+        self._filtered_skill_draft_tool = None
         react_agent_config = agent_config.model_copy(
             update={"max_iterations": tool_config.runtime_policy.max_tool_iterations}
         )
@@ -93,6 +101,26 @@ class PlannerReActFlow(BaseFlow):
             trace_service=trace_service,
         )
         logger.debug(f"创建执行Agent成功, 会话id: {self._session_id}")
+
+    def set_skill_runtime_context(self, context: SkillRuntimeContext) -> None:
+        """Apply one run's transient Skill context to both model-facing agents."""
+        self._tools[:] = [tool for tool in self._tools if tool.name != "skill_draft"]
+        creator_selected = any(
+            selected.ref.source is SkillSource.BUNDLED
+            and selected.ref.name == "skill-creator"
+            for selected in context.selected
+        )
+        if creator_selected and self._skill_draft_tool is not None:
+            if self._filtered_skill_draft_tool is None:
+                self._filtered_skill_draft_tool = self._tool_factory.build_contextual(
+                    self._skill_draft_tool
+                )
+            self._tools.append(self._filtered_skill_draft_tool)
+        self.planner.set_skill_runtime_context(context)
+        self.react.set_skill_runtime_context(context)
+
+    def get_available_tool_names(self) -> set[str]:
+        return self.react.get_available_tool_names()
 
     async def invoke(self, message: Message) -> AsyncGenerator[BaseEvent, None]:
         """传递消息，运行流，在六中调用planner&react智能体组合完成任务并返回对应事件"""
@@ -141,7 +169,7 @@ class PlannerReActFlow(BaseFlow):
                 self.status = FlowStatus.PLANNING
             elif self.status == FlowStatus.PLANNING:
                 # 10.流状态为规划中，则调用规划Agent
-                logger.info(f"Planner&ReAct流开始创建计划/Plan")
+                logger.info("Planner&ReAct流开始创建计划/Plan")
                 async for event in self.planner.create_plan(message):
                     # 11.判断规划Agent是否返回规划事件
                     if isinstance(event, PlanEvent) and event.status == PlanEventStatus.CREATED:
@@ -162,7 +190,7 @@ class PlannerReActFlow(BaseFlow):
 
                 # 16.判断计划是否生成，步骤是否正常
                 if not self.plan or len(self.plan.steps) == 0:
-                    logger.info(f"Planner&ReAct流创建计划失败或无子步骤")
+                    logger.info("Planner&ReAct流创建计划失败或无子步骤")
                     self.status = FlowStatus.COMPLETED
             elif self.status == FlowStatus.EXECUTING:
                 # 17.流的状态为执行中，先将计划状态调整为运行中，同时调用执行Agent完成每个子步骤
@@ -190,7 +218,7 @@ class PlannerReActFlow(BaseFlow):
                 self.status = FlowStatus.UPDATING
             elif self.status == FlowStatus.UPDATING:
                 # 23.流状态为更新表示需要更新计划
-                logger.info(f"Planner&ReAct流开始更新计划")
+                logger.info("Planner&ReAct流开始更新计划")
                 async for event in self.planner.update_plan(self.plan, step):
                     yield event
 
@@ -199,7 +227,7 @@ class PlannerReActFlow(BaseFlow):
                 self.status = FlowStatus.EXECUTING
             elif self.status == FlowStatus.SUMMARIZING:
                 # 25.流状态为总结中，则意味着所有子步骤都执行完成
-                logger.info(f"Planner&ReAct流开始总结")
+                logger.info("Planner&ReAct流开始总结")
                 async for event in self.react.summarize():
                     yield event
 
@@ -214,7 +242,7 @@ class PlannerReActFlow(BaseFlow):
                 break
         # 28.任务已经结束则返回结束事件
         yield DoneEvent()
-        logger.info(f"Planner&ReAct流处理任务消息已完毕")
+        logger.info("Planner&ReAct流处理任务消息已完毕")
 
     @property
     def done(self) -> bool:

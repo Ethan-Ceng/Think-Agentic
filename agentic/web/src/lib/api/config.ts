@@ -9,6 +9,8 @@ import type {
   StorageConfig,
 } from './types'
 
+export const DEFAULT_LLM_MAX_TOKENS = 8192
+
 export const configApi = {
   getStorageConfig: (): Promise<StorageConfig> => get<StorageConfig>('/app-config/storage'),
 
@@ -21,7 +23,10 @@ export const configApi = {
   },
 
   updateLLMConfig: (config: LLMConfig): Promise<LLMConfig> => {
-    return post<LLMConfig>('/app-config/llm', config)
+    return post<LLMConfig>('/app-config/llm', {
+      ...config,
+      max_tokens: config.max_tokens ?? DEFAULT_LLM_MAX_TOKENS,
+    })
   },
 
   getAgentConfig: (): Promise<AgentConfig> => {

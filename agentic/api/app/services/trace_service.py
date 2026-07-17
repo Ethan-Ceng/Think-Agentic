@@ -9,7 +9,7 @@ import logging
 import uuid
 from datetime import datetime
 from time import perf_counter
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List
 from urllib.parse import urlparse
 
 from pydantic import BaseModel
@@ -28,9 +28,11 @@ from app.core.entities.event import (
     WaitEvent,
 )
 from app.core.entities.tool_config import ToolConfig
+from app.core.entities.skill import RunSkill, SelectedSkill
 from app.core.tools.registry import ToolRegistry
 from app.repositories.uow import IUnitOfWork
 from app.schemas.exceptions import NotFoundError
+from app.schemas.skill import SkillSelectionRequest, SkillSelectionResult
 
 logger = logging.getLogger(__name__)
 
@@ -242,6 +244,100 @@ class TraceService:
 
         await self._write(write)
 
+    async def record_skill_selection_started(
+        self, request: SkillSelectionRequest
+    ) -> None:
+        if not self.run_id:
+            return
+
+        async def write(uow: IUnitOfWork) -> None:
+            await uow.trace.append_event(
+                self._trace_event_data(
+                    event_type="skill.selection.started",
+                    payload={
+                        "manual_refs": request.manual_refs,
+                        "attachment_media_types": request.attachment_media_types,
+                        "available_tool_names": sorted(request.available_tool_names),
+                    },
+                )
+            )
+
+        await self._write(write)
+
+    async def record_skill_selection_completed(
+        self,
+        result: SkillSelectionResult,
+        context: Any,
+    ) -> None:
+        """Persist selection events and materialized rows in one UoW."""
+        if not self.run_id:
+            return
+
+        async def write(uow: IUnitOfWork) -> None:
+            for selected in result.selected:
+                payload = _selected_skill_payload(selected)
+                await uow.trace.append_event(
+                    self._trace_event_data(
+                        event_type="skill.selected",
+                        payload=payload,
+                    )
+                )
+                sandbox_path = context.sandbox_roots[selected.manifest.name]
+                run_skill = RunSkill(
+                    run_id=self.run_id,
+                    skill_id=selected.ref.skill_id,
+                    skill_version_id=selected.version_id,
+                    name=selected.manifest.name,
+                    source=selected.ref.source,
+                    selection_mode=selected.selection_mode,
+                    content_sha256=selected.package_sha256,
+                    confidence=selected.confidence,
+                    reason=selected.reason,
+                    sandbox_path=sandbox_path,
+                )
+                await uow.trace.save_run_skill(
+                    run_skill.model_dump(mode="python")
+                )
+                await uow.trace.append_event(
+                    self._trace_event_data(
+                        event_type="skill.materialized",
+                        payload={**payload, "sandbox_path": sandbox_path},
+                    )
+                )
+
+            for skipped in result.skipped:
+                await uow.trace.append_event(
+                    self._trace_event_data(
+                        event_type="skill.skipped",
+                        payload={
+                            "ref": skipped.ref,
+                            "requested_key": skipped.requested_key,
+                            "selection_mode": skipped.selection_mode,
+                            "code": skipped.code,
+                            "reason": skipped.reason,
+                        },
+                    )
+                )
+
+        await self._write(write)
+
+    async def record_skill_selection_failed(self, error: Exception) -> None:
+        if not self.run_id:
+            return
+
+        async def write(uow: IUnitOfWork) -> None:
+            await uow.trace.append_event(
+                self._trace_event_data(
+                    event_type="skill.selection.failed",
+                    payload={
+                        "error_type": type(error).__name__,
+                        "message": "Skill selection or materialization failed.",
+                    },
+                )
+            )
+
+        await self._write(write)
+
     async def list_runs(
         self,
         user_id: str,
@@ -265,6 +361,7 @@ class TraceService:
                 "tool_calls": await uow.trace.list_tool_calls(run_id),
                 "model_calls": await uow.trace.list_model_calls(run_id),
                 "events": await uow.trace.list_trace_events(run_id),
+                "skills": await uow.trace.list_run_skills(user_id, run_id),
             }
 
     async def list_events(self, user_id: str, run_id: str) -> List[Dict[str, Any]]:
@@ -275,6 +372,16 @@ class TraceService:
 
     async def list_model_calls(self, user_id: str, run_id: str) -> List[Dict[str, Any]]:
         return (await self.get_run_detail(user_id, run_id))["model_calls"]
+
+    async def list_run_skills(
+        self, user_id: str, run_id: str
+    ) -> List[Dict[str, Any]]:
+        uow = self._uow_factory()
+        async with uow:
+            run = await uow.trace.get_run(user_id=user_id, run_id=run_id)
+            if not run:
+                raise NotFoundError("运行记录不存在")
+            return await uow.trace.list_run_skills(user_id, run_id)
 
     async def _project_event(self, uow: IUnitOfWork, event: BaseEvent) -> None:
         event_type = _event_type(event)
@@ -575,15 +682,33 @@ def _hash_value(value: Any) -> str:
 def _summarize_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     summary = []
     for message in messages[-20:]:
+        content = message.get("content", "")
+        if (
+            isinstance(content, str)
+            and "<skill_runtime_context>" in content
+        ):
+            content = "[skill runtime context omitted]"
         summary.append(
             {
                 "role": message.get("role"),
-                "content": _preview(message.get("content", "")),
+                "content": _preview(content),
                 "has_tool_calls": bool(message.get("tool_calls")),
                 "tool_call_id": message.get("tool_call_id"),
             }
         )
     return summary
+
+
+def _selected_skill_payload(selected: SelectedSkill) -> Dict[str, Any]:
+    return {
+        "ref": selected.ref,
+        "version_id": selected.version_id,
+        "version": selected.version,
+        "selection_mode": selected.selection_mode,
+        "confidence": selected.confidence,
+        "reason": selected.reason,
+        "package_sha256": selected.package_sha256,
+    }
 
 
 def _summarize_model_response(message: Dict[str, Any]) -> Dict[str, Any]:

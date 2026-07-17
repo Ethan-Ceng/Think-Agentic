@@ -358,13 +358,13 @@ class PlaywrightBrowser(BrowserProtocol):
                 # 4.根据索引查找元素
                 element = await self._get_element_by_id(index)
                 if not element:
-                    return ToolResult(success=False, message=f"输入文本失败, 该元素不存在")
+                    return ToolResult(success=False, message="输入文本失败, 该元素不存在")
 
                 try:
                     # 5.先清空原始输入框的内容然后再填充
                     await element.fill("")
                     await element.type(text)
-                except Exception as e:
+                except Exception:
                     # 6.如果填充失败则尝试点击后输入文本，而不是直接清空
                     await element.click()
                     await element.type(text)

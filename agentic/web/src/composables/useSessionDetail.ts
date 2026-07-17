@@ -2,6 +2,7 @@ import { computed, onBeforeUnmount, ref, unref, watch, type Ref } from 'vue'
 import { sessionApi } from '@/lib/api/session'
 import { normalizeEvent, normalizeEvents } from '@/lib/session-events'
 import type { ResumeMode, SSEEventData, SessionDetail, SessionFile } from '@/lib/api/types'
+import type { SendMessageInput } from '@/types/skill'
 
 export type UseSessionDetailResult = {
   session: Ref<SessionDetail | null>
@@ -11,7 +12,7 @@ export type UseSessionDetailResult = {
   error: Ref<Error | null>
   refresh: () => Promise<void>
   refreshFiles: () => Promise<void>
-  sendMessage: (message: string, attachmentIds: string[]) => Promise<void>
+  sendMessage: (input: SendMessageInput) => Promise<void>
   resumeTask: (mode: ResumeMode) => Promise<void>
   streaming: Ref<boolean>
 }
@@ -208,7 +209,7 @@ export function useSessionDetail(
     }
   }
 
-  async function sendMessage(message: string, attachmentIds: string[]): Promise<void> {
+  async function sendMessage(input: SendMessageInput): Promise<void> {
     const currentId = id.value
     if (!currentId) return
 
@@ -239,7 +240,7 @@ export function useSessionDetail(
 
     messageStreamCleanup = sessionApi.chat(
       currentId,
-      { message, attachments: attachmentIds },
+      { message: input.message, attachments: input.attachmentIds, skills: input.skills },
       onEvent,
       (err) => {
         if (err.name === 'AbortError') {

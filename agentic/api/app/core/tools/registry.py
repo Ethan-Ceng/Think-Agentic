@@ -27,6 +27,32 @@ class ToolRegistry:
         self._groups: List[BuiltinToolGroup] = list(groups or BUILTIN_TOOL_GROUPS)
         self._tool_config = tool_config
         self._builtin_descriptors: Optional[List[ToolDescriptor]] = None
+        self._runtime_descriptors: List[ToolDescriptor] = []
+
+    def register_runtime_tool(self, runtime_tool: BaseTool) -> None:
+        """Register descriptors only in this Run's registry."""
+        provider_id = f"builtin.{runtime_tool.name}"
+        existing = {item.function_name for item in self._runtime_descriptors}
+        for schema in runtime_tool.get_tools():
+            function_name = schema["function"]["name"]
+            if function_name in existing:
+                continue
+            self._runtime_descriptors.append(
+                ToolDescriptor(
+                    tool_id=f"{provider_id}.{function_name}",
+                    function_name=function_name,
+                    provider_id=provider_id,
+                    provider_label="Skill draft",
+                    group=runtime_tool.name,
+                    executor_type="builtin",
+                    label=function_name,
+                    description=schema["function"].get("description", ""),
+                    schema=schema,
+                    category="Skills",
+                    risk_level="high" if function_name == "skill_draft_write" else "low",
+                    enabled_by_default=True,
+                )
+            )
 
     def register_group(self, group: BuiltinToolGroup) -> None:
         self._groups.append(group)
@@ -34,6 +60,9 @@ class ToolRegistry:
 
     def list_descriptors(self, tool_config: ToolConfig | None = None) -> List[ToolDescriptor]:
         descriptors = [descriptor.model_copy(deep=True) for descriptor in self._list_builtin_descriptors()]
+        descriptors.extend(
+            descriptor.model_copy(deep=True) for descriptor in self._runtime_descriptors
+        )
         descriptors.extend(self._build_api_descriptors(tool_config or self._tool_config))
         return descriptors
 

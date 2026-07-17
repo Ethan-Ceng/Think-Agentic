@@ -8,6 +8,8 @@ from typing import List, Dict, Any, Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
+from app.core.entities.skill import SkillRef
+
 
 class SessionResponse(BaseModel):
     """会话完整响应模型"""
@@ -59,6 +61,7 @@ class ChatRequest(BaseModel):
     """聊天请求"""
     message: Optional[str] = None
     attachments: Optional[List[str]] = Field(default_factory=list)
+    skills: List[SkillRef] = Field(default_factory=list)
     event_id: Optional[str] = None
     timestamp: Optional[int] = None
 

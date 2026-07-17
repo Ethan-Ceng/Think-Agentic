@@ -12,8 +12,15 @@ import type {
   ViewFileParams,
   ViewShellParams,
 } from './types'
+import type { SendMessageInput } from '@/types/skill'
+import { encodeInitialSessionMessage } from '@/lib/session-init'
 
 type SessionsStreamCallback = (sessions: Session[]) => void
+
+export type SessionLaunch = {
+  sessionId: string
+  init: string
+}
 
 export const sessionApi = {
   getSessions: (): Promise<SessionsData> => {
@@ -22,6 +29,16 @@ export const sessionApi = {
 
   createSession: (params?: CreateSessionParams): Promise<Session> => {
     return post<Session>('/sessions', params || {})
+  },
+
+  createSessionWithInitialMessage: async (
+    input: SendMessageInput,
+  ): Promise<SessionLaunch> => {
+    const session = await post<Session>('/sessions', {})
+    return {
+      sessionId: session.session_id,
+      init: encodeInitialSessionMessage(input),
+    }
   },
 
   streamSessions: (

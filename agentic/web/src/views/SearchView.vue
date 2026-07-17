@@ -151,7 +151,7 @@ function formatDate(value?: string | null) {
         <UiIconButton
           v-if="sidebar.mobile.value && !sidebar.open.value"
           label="打开侧边栏"
-          @click="sidebar.openSidebar"
+          @click="sidebar.openSidebar()"
         >
           <PanelLeftOpen :size="18" />
         </UiIconButton>

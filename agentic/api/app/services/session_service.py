@@ -33,7 +33,7 @@ class SessionService:
 
     async def create_session(self, user_id: str) -> Session:
         """创建一个空白的新任务会话"""
-        logger.info(f"创建一个空白新任务会话")
+        logger.info("创建一个空白新任务会话")
         session = Session(title="新对话", user_id=user_id)
         async with self._uow:
             await self._uow.session.save(session)

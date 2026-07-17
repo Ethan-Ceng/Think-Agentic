@@ -72,6 +72,10 @@ services:
       - ../.env
     environment:
       RUN_MIGRATIONS_ON_STARTUP: ${RUN_MIGRATIONS_ON_STARTUP:-true}
+      # REDIS_PORT in .env is the host-development mapping; containers use the
+      # Redis service's fixed internal port.
+      REDIS_PORT: 6379
+      SANDBOX_ADDRESS: manus-sandbox
     volumes:
       - ../api/config.yaml:/app/config.yaml
       - api_storage:/app/storage

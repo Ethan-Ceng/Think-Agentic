@@ -187,3 +187,20 @@ pnpm dev
 - [API 服务](./api/README.md)
 - [前端 Web](./web/README.md)
 - [沙箱服务](./sandbox/README.md)
+
+## Agent Skills
+
+系统支持标准 `SKILL.md` 包、个人隔离草稿、不可变版本、手动/自动选择、Run Sandbox 物化、Trace，以及部署方维护的 Marketplace。用户从“我的 Skills”创建、导入和发布个人 Skill；从“Skill 市场”安装固定版本、显式更新或 Fork 为个人草稿。
+
+- [Skill 编写与使用指南](./docs/skill-authoring.zh-CN.md)
+- [Skill 运维手册](./docs/skill-operations.zh-CN.md)
+
+Marketplace 管理员可在 API 环境运行：
+
+```bash
+python scripts/import_market_skill.py path/to/example-skill \
+  --display-name "Example Skill" \
+  --changelog "Initial release"
+```
+
+Marketplace 对象使用部署级存储配置，个人对象使用用户级存储配置。不要把 API key 或云存储密钥写入 `config.yaml` 或提交到仓库；通过环境变量或秘密管理器注入。

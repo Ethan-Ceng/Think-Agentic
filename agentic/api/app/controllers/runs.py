@@ -37,6 +37,16 @@ async def get_run(
     return Response.success(data=await service.get_run_detail(current_user.id, run_id))
 
 
+@router.get("/{run_id}/skills", summary="获取运行使用的 Skills")
+async def list_run_skills(
+    run_id: str,
+    current_user: User = Depends(get_current_user),
+    service: TraceService = Depends(get_trace_service),
+) -> Response[dict]:
+    skills = await service.list_run_skills(current_user.id, run_id)
+    return Response.success(data={"skills": skills})
+
+
 @router.get("/{run_id}/events", summary="获取运行事件")
 async def list_run_events(
     run_id: str,

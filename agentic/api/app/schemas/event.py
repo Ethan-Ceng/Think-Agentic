@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field, ConfigDict
 from app.core.entities.event import Event, PlanEvent, ToolEventStatus, ToolEvent, StepEvent
 from app.core.entities.file import File
 from app.core.entities.plan import ExecutionStatus
+from app.core.entities.skill import SkillRef
 
 
 class BaseEventData(BaseModel):
@@ -82,6 +83,8 @@ class MessageEventData(BaseEventData):
     role: Literal["user", "assistant"] = "assistant"
     message: str = ""
     attachments: List[File] = Field(default_factory=list)
+    skills: List[SkillRef] = Field(default_factory=list)
+    visible: bool = True
 
 
 class MessageSSEEvent(BaseSSEEvent):
@@ -97,6 +100,8 @@ class MessageSSEEvent(BaseSSEEvent):
                 role=event.role,
                 message=event.message,
                 attachments=event.attachments,
+                skills=event.skills,
+                visible=event.visible,
             )
         )
 

@@ -8,6 +8,8 @@ import SuggestedQuestions from '@/components/SuggestedQuestions.vue'
 import { useToast } from '@/composables/useToast'
 import { sessionApi } from '@/lib/api/session'
 import type { FileInfo } from '@/lib/api/types'
+import type { SendMessageInput } from '@/types/skill'
+import { encodeInitialSessionMessage } from '@/lib/session-init'
 import { useAuthStore } from '@/stores/auth'
 
 const router = useRouter()
@@ -29,15 +31,13 @@ function handleQuestionClick(question: string) {
   chatInputRef.value?.setInputText(question)
 }
 
-async function handleSend(message: string, files: FileInfo[]) {
+async function handleSend(input: SendMessageInput, _files: FileInfo[]) {
   if (sending.value) return
   sending.value = true
 
   try {
     const session = await sessionApi.createSession()
-    const attachments = files.map((file) => file.id)
-    const payload = JSON.stringify({ message, attachments })
-    const encoded = btoa(encodeURIComponent(payload))
+    const encoded = encodeInitialSessionMessage(input)
     await router.push(`/sessions/${session.session_id}?init=${encoded}`)
   } catch (error) {
     const messageText = error instanceof Error ? error.message : '创建会话失败'

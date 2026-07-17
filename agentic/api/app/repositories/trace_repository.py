@@ -28,6 +28,9 @@ class TraceRepository(Protocol):
     async def append_event(self, data: Dict[str, Any]) -> None:
         ...
 
+    async def save_run_skill(self, data: Dict[str, Any]) -> None:
+        ...
+
     async def finalize_interrupted_run(
         self,
         session_id: str,
@@ -58,4 +61,9 @@ class TraceRepository(Protocol):
         ...
 
     async def list_model_calls(self, run_id: str) -> List[Dict[str, Any]]:
+        ...
+
+    async def list_run_skills(
+        self, user_id: str, run_id: str
+    ) -> List[Dict[str, Any]]:
         ...

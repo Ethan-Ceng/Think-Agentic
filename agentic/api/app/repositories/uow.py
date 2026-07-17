@@ -14,6 +14,7 @@ from .user_repository import UserRepository
 from .config_repository import ConfigRepository
 from .trace_repository import TraceRepository
 from .search_repository import SearchRepository
+from .skill_repository import SkillRepository
 
 T = TypeVar("T", bound="IUnitOfWork")
 
@@ -26,6 +27,7 @@ class IUnitOfWork(ABC):
     config: ConfigRepository
     trace: TraceRepository
     search: SearchRepository
+    skill: SkillRepository
 
     @abstractmethod
     async def commit(self):

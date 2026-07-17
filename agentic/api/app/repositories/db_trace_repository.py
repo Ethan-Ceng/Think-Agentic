@@ -7,7 +7,14 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import AgentRunModel, ModelCallModel, RunStepModel, ToolCallModel, TraceEventModel
+from app.models import (
+    AgentRunModel,
+    ModelCallModel,
+    RunSkillModel,
+    RunStepModel,
+    ToolCallModel,
+    TraceEventModel,
+)
 from app.repositories.trace_repository import TraceRepository
 
 
@@ -77,6 +84,9 @@ class DBTraceRepository(TraceRepository):
 
     async def append_event(self, data: Dict[str, Any]) -> None:
         self.db_session.add(TraceEventModel(**data))
+
+    async def save_run_skill(self, data: Dict[str, Any]) -> None:
+        self.db_session.add(RunSkillModel(**data))
 
     async def finalize_interrupted_run(
         self,
@@ -197,6 +207,20 @@ class DBTraceRepository(TraceRepository):
             select(ModelCallModel)
             .where(ModelCallModel.run_id == run_id)
             .order_by(ModelCallModel.created_at.asc())
+        )
+        return [self._to_dict(record) for record in result.scalars().all()]
+
+    async def list_run_skills(
+        self, user_id: str, run_id: str
+    ) -> List[Dict[str, Any]]:
+        result = await self.db_session.execute(
+            select(RunSkillModel)
+            .join(AgentRunModel, AgentRunModel.id == RunSkillModel.run_id)
+            .where(
+                AgentRunModel.user_id == user_id,
+                RunSkillModel.run_id == run_id,
+            )
+            .order_by(RunSkillModel.created_at.asc(), RunSkillModel.id.asc())
         )
         return [self._to_dict(record) for record in result.scalars().all()]
 

@@ -15,6 +15,7 @@ from pydantic import TypeAdapter
 
 from app.core.browser.base import Browser
 from app.extensions.file_storage import FileStorage
+from app.extensions.skill_package_storage import SkillPackageStorage
 from app.core.json_parser.base import JSONParser
 from app.core.llm.base import LLM
 from app.core.sandbox.base import Sandbox
@@ -35,6 +36,17 @@ from app.core.flows.planner_react import PlannerReActFlow
 from app.core.tools.a2a import A2ATool
 from app.core.tools.mcp import MCPTool
 from app.services.trace_service import TraceService
+from app.schemas.skill import SkillSelectionRequest
+from app.services.skill_catalog_service import SkillCatalogService
+from app.services.skill_runtime_service import (
+    SkillRuntimeContext,
+    SkillRuntimeError,
+    SkillRuntimeService,
+)
+from app.services.skill_selection_service import SkillSelectionService
+from app.services.bundled_skill_service import BundledSkillService
+from app.services.skill_workspace_service import SkillWorkspaceService
+from app.core.tools.skill_draft import SkillDraftTool
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +70,9 @@ class AgentTaskRunner(TaskRunner):
             browser: Browser,  # 浏览器
             search_engine: SearchEngine,  # 搜索引擎
             sandbox: Sandbox,  # 沙箱
+            skill_package_storage: SkillPackageStorage | None = None,
+            bundled_skill_service: BundledSkillService | None = None,
+            skill_workspace_service: SkillWorkspaceService | None = None,
     ) -> None:
         """构造函数，完成Agent任务运行器的创建"""
         self._uow_factory = uow_factory
@@ -91,7 +106,34 @@ class AgentTaskRunner(TaskRunner):
             mcp_tool=self._mcp_tool,
             a2a_tool=self._a2a_tool,
             trace_service=self._trace_service,
+            skill_draft_tool=SkillDraftTool(
+                user_id=user_id,
+                workspace=skill_workspace_service,
+            )
+            if skill_workspace_service is not None
+            else None,
         )
+        self._skill_runtime_service: SkillRuntimeService | None = None
+        if skill_package_storage is not None:
+            async def llm_provider(_: str) -> LLM:
+                return llm
+
+            selection_service = SkillSelectionService(
+                catalog_service=SkillCatalogService(
+                    uow_factory=uow_factory,
+                    bundled_provider=bundled_skill_service,
+                ),
+                llm_provider=llm_provider,
+                trace_service=self._trace_service,
+            )
+            self._skill_runtime_service = SkillRuntimeService(
+                uow_factory=uow_factory,
+                selection_service=selection_service,
+                package_storage=skill_package_storage,
+                sandbox=sandbox,
+                bundled_provider=bundled_skill_service,
+                trace_service=self._trace_service,
+            )
 
     async def _put_and_add_event(self, task: Task, event: Event) -> None:
         """往指定任务的消息队列中添加事件"""
@@ -111,7 +153,7 @@ class AgentTaskRunner(TaskRunner):
         # 1.从任务task中读取数据
         event_id, event_str = await task.input_stream.pop()
         if event_str is None:
-            logger.warning(f"AgentTaskRunner接收到空消息")
+            logger.warning("AgentTaskRunner接收到空消息")
             return
 
         # 2.使用pydantic+type类型将字符串转换成事件
@@ -321,7 +363,7 @@ class AgentTaskRunner(TaskRunner):
         """根据消息对象运行PlannerReActFlow"""
         # 1.判断传递的消息是否为空
         if not message.message:
-            logger.warning(f"AgentTaskRunner接收了一条空消息")
+            logger.warning("AgentTaskRunner接收了一条空消息")
             yield ErrorEvent(error="空消息错误")
             return
 
@@ -336,6 +378,41 @@ class AgentTaskRunner(TaskRunner):
 
             # 5.将事件直接返回
             yield event
+
+    async def _prepare_skill_runtime(
+        self, task: Task, event: MessageEvent
+    ) -> SkillRuntimeContext:
+        """Start a fresh trace Run, then select and materialize its Skills."""
+        self._flow.set_skill_runtime_context(SkillRuntimeContext())
+        run_id = await self._trace_service.start_run(
+            user_id=self._user_id,
+            session_id=self._session_id,
+            task_id=task.id,
+            input_event=event,
+        )
+        if self._skill_runtime_service is None:
+            if event.skills:
+                raise SkillRuntimeError("Skill runtime is not configured")
+            return SkillRuntimeContext()
+
+        context = await self._skill_runtime_service.prepare_run(
+            user_id=self._user_id,
+            session_id=self._session_id,
+            run_id=run_id,
+            request=SkillSelectionRequest(
+                user_id=self._user_id,
+                message=event.message or "",
+                attachment_media_types=[
+                    attachment.mime_type
+                    for attachment in event.attachments
+                    if attachment.mime_type
+                ],
+                manual_refs=event.skills,
+                available_tool_names=self._flow.get_available_tool_names(),
+            ),
+        )
+        self._flow.set_skill_runtime_context(context)
+        return context
 
     async def _cleanup_tools(self) -> None:
         """清理MCP和A2A工具资源，确保在同一任务上下文中释放
@@ -358,7 +435,7 @@ class AgentTaskRunner(TaskRunner):
         """根据传递的任务处理agent消息队列并运行agent流"""
         try:
             # 1.确保沙箱、mcp、a2a均初始化完成
-            logger.info(f"AgentTaskRunner任务处理开始")
+            logger.info("AgentTaskRunner任务处理开始")
             await self._sandbox.ensure_sandbox()
             await self._mcp_tool.initialize(self._mcp_config)
             await self._a2a_tool.initialize(self._a2a_config)
@@ -373,12 +450,7 @@ class AgentTaskRunner(TaskRunner):
                 if isinstance(event, MessageEvent):
                     message = event.message or ""
                     await self._sync_message_attachments_to_sandbox(event)
-                    await self._trace_service.start_run(
-                        user_id=self._user_id,
-                        session_id=self._session_id,
-                        task_id=task.id,
-                        input_event=event,
-                    )
+                    await self._prepare_skill_runtime(task, event)
                     logger.info(f"AgentTaskRunner接收到新消息: {message[:50]}...")
 
                 # 5.将消息事件转换称消息对象
@@ -420,7 +492,7 @@ class AgentTaskRunner(TaskRunner):
                 await self._uow.session.update_status(self._session_id, SessionStatus.COMPLETED)
         except asyncio.CancelledError:
             # 13.异步任务被取消，推送结束事件并跟新状态
-            logger.info(f"AgentTaskRunner任务运行取消")
+            logger.info("AgentTaskRunner任务运行取消")
             await self._put_and_add_event(task, DoneEvent())
             async with self._uow:
                 await self._uow.session.update_status(self._session_id, SessionStatus.COMPLETED)
@@ -441,7 +513,7 @@ class AgentTaskRunner(TaskRunner):
     async def destroy(self) -> None:
         """销毁任务运行器并释放资源"""
         # 1.清除沙箱
-        logger.info(f"开始清除销毁AgentTaskRunner资源")
+        logger.info("开始清除销毁AgentTaskRunner资源")
         if self._sandbox:
             logger.info("销毁AgentTaskRunner中的沙箱环境")
             await self._sandbox.destroy()
@@ -451,4 +523,4 @@ class AgentTaskRunner(TaskRunner):
 
     async def on_done(self, task: Task) -> None:
         """任务结束时执行的回调函数"""
-        logger.info(f"AgentTaskRunner任务执行结束")
+        logger.info("AgentTaskRunner任务执行结束")

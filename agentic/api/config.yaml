@@ -1,6 +1,6 @@
 llm_config:
   base_url: https://api.deepseek.com
-  api_key: sk-81eda5e663584109a44d859ceb4d2732
+  api_key: ""
   model_name: deepseek-v4-pro
   temperature: 0.7
   max_tokens: 8192

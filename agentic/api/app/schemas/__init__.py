@@ -4,5 +4,6 @@
 Schemas package
 """
 from .base import Response
+from .skill import SelectedSkill, SkillManifest, SkillRef
 
-__all__ = ["Response"]
+__all__ = ["Response", "SelectedSkill", "SkillManifest", "SkillRef"]

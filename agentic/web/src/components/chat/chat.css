@@ -882,6 +882,7 @@
 }
 
 .chat-composer {
+  position: relative;
   display: flex;
   flex-direction: column;
   width: 100%;
@@ -893,6 +894,21 @@
   transition:
     border-color 0.15s ease,
     box-shadow 0.15s ease;
+}
+
+.composer-skill-chips,
+.message-skill-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.composer-skill-chips {
+  padding: 12px 16px 0;
+}
+
+.message-skill-chips {
+  justify-content: flex-end;
 }
 
 .chat-composer:focus-within {

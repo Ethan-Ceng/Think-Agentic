@@ -71,10 +71,10 @@ class A2AClientManager:
             logger.info(f"加载{len(self._a2a_config.a2a_servers)}个A2A服务")
             await self._get_a2a_agent_cards()
             self._initialized = True
-            logger.info(f"A2A客户端加载成功")
-        except Exception as e:
-            logger.error(f"A2A客户端管理器加载失败")
-            raise ServerRequestsError(f"A2A客户端管理器加载失败")
+            logger.info("A2A客户端加载成功")
+        except Exception:
+            logger.error("A2A客户端管理器加载失败")
+            raise ServerRequestsError("A2A客户端管理器加载失败")
 
     async def _get_a2a_agent_cards(self) -> None:
         """根据配置连接所有a2a服务器获取AgentCard信息"""
@@ -145,7 +145,7 @@ class A2AClientManager:
             await self._exit_stack.aclose()
             self._agent_cards.clear()
             self._initialized = False
-            logger.info(f"清除A2A客户端管理器成功")
+            logger.info("清除A2A客户端管理器成功")
         except Exception as e:
             logger.error(f"清理A2A客户端管理器失败: {str(e)}")
 

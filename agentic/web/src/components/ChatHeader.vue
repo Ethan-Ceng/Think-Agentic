@@ -14,7 +14,7 @@ const sidebar = useSidebar()
         class="icon-button"
         type="button"
         title="打开侧边栏"
-        @click="sidebar.openSidebar"
+        @click="sidebar.openSidebar()"
       >
         <PanelLeftOpen :size="18" />
       </button>
