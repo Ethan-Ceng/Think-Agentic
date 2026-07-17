@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { Loader2, RotateCcw, ShieldCheck } from 'lucide-vue-next'
 import { useToast } from '@/composables/useToast'
-import { configApi } from '@/lib/api/config'
+import { configApi, DEFAULT_LLM_MAX_TOKENS } from '@/lib/api/config'
 import type { LLMConfig } from '@/lib/api/types'
 import type { SettingsPanelEmits } from './types'
 
@@ -68,7 +68,7 @@ defineExpose({ isDirty, save })
     <ElFormItem label="模型名称"><ElInput v-model="config.model_name" placeholder="请输入模型名称" clearable /></ElFormItem>
     <div class="settings-field-grid">
       <ElFormItem label="温度 temperature"><ElInputNumber v-model="config.temperature" :min="0" :max="2" :step="0.1" controls-position="right" /></ElFormItem>
-      <ElFormItem label="最大输出 Token 数"><ElInputNumber v-model="config.max_tokens" :min="1" :max="128000" :step="1024" controls-position="right" /></ElFormItem>
+      <ElFormItem label="最大输出 Token 数"><ElInputNumber v-model="config.max_tokens" :min="1" :max="128000" :step="1024" :value-on-clear="DEFAULT_LLM_MAX_TOKENS" controls-position="right" /></ElFormItem>
     </div>
   </ElForm>
 </template>

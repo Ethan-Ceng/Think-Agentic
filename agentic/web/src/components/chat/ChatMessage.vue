@@ -41,6 +41,8 @@ const statusIconMap: Record<UserMessageStatus, Component> = {
   stopped: CircleStop,
 }
 
+const friendlyReplyError = '模型服务暂时不可用。请检查模型配置、账户余额或网络连接后重试。'
+
 function getUserStatus(item: TimelineItem): UserMessageStatus {
   return item.kind === 'user' && item.status ? item.status : 'sent'
 }
@@ -172,9 +174,9 @@ function handleToolClick(tool: ToolEvent) {
       <div class="assistant-status-card assistant-error-card">
         <div class="assistant-status-card-title">
           <AlertCircle :size="16" />
-          <strong>{{ showRecoveryActions ? '任务执行中断' : '回复异常' }}</strong>
+          <strong>本次回复未完成</strong>
         </div>
-        <MarkdownContent :content="item.error || '发生未知错误'" />
+        <MarkdownContent :content="friendlyReplyError" />
         <div v-if="showRecoveryActions" class="task-recovery-actions">
           <button
             class="task-recovery-button is-primary"
@@ -182,7 +184,7 @@ function handleToolClick(tool: ToolEvent) {
             :disabled="recoveryBusy"
             @click="emit('recoverTask', 'continue')"
           >
-            从未完成处继续
+            重新生成回复
           </button>
           <button
             class="task-recovery-button"
@@ -190,11 +192,10 @@ function handleToolClick(tool: ToolEvent) {
             :disabled="recoveryBusy"
             @click="emit('recoverTask', 'restart')"
           >
-            从头重新执行
+            重新执行任务
           </button>
         </div>
       </div>
-      <MessageActions :content="item.error" />
     </div>
   </article>
 </template>

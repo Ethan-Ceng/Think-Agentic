@@ -191,6 +191,7 @@ class AgentService:
             session_id=session_id,
             user_id=user_id,
             message=self.get_recovery_message(mode),
+            visible=False,
         ):
             yield event
 
@@ -203,6 +204,7 @@ class AgentService:
             skills: Optional[List[SkillRef]] = None,
             latest_event_id: Optional[str] = None,
             timestamp: Optional[datetime] = None,
+            visible: bool = True,
     ) -> AsyncGenerator[BaseEvent, None]:
         """根据传递的信息调用Agent服务发起对话请求"""
         attachments = attachments or []
@@ -237,12 +239,13 @@ class AgentService:
                         raise RuntimeError(f"会话[{session_id}]创建任务失败")
 
                 # 6.传递了消息则更新会话中的最后一条消息
-                async with self._uow:
-                    await self._uow.session.update_latest_message(
-                        session_id=session_id,
-                        message=message,
-                        timestamp=timestamp or datetime.now(),
-                    )
+                if visible:
+                    async with self._uow:
+                        await self._uow.session.update_latest_message(
+                            session_id=session_id,
+                            message=message,
+                            timestamp=timestamp or datetime.now(),
+                        )
 
                 # bugfix:从文件数据库中查询数据并更新attachments实际内容, 并返回人类消息事件
                 async with self._uow:
@@ -254,6 +257,7 @@ class AgentService:
                     message=message,
                     attachments=[attachment for attachment in db_attachments if attachment is not None],
                     skills=skills,
+                    visible=visible,
                     # attachments=[File(id=attachment) for attachment in attachments] if attachments else [],
                 )
 

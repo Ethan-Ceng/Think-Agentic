@@ -84,6 +84,7 @@ class MessageEventData(BaseEventData):
     message: str = ""
     attachments: List[File] = Field(default_factory=list)
     skills: List[SkillRef] = Field(default_factory=list)
+    visible: bool = True
 
 
 class MessageSSEEvent(BaseSSEEvent):
@@ -100,6 +101,7 @@ class MessageSSEEvent(BaseSSEEvent):
                 message=event.message,
                 attachments=event.attachments,
                 skills=event.skills,
+                visible=event.visible,
             )
         )
 

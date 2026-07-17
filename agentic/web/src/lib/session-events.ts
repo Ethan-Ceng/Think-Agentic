@@ -168,6 +168,7 @@ export function eventsToTimeline(events: SSEEventData[]): TimelineItem[] {
     switch (ev.type) {
       case 'message': {
         const msg = ev.data as ChatMessage
+        if (msg.visible === false) break
         const sourceEventId = (msg as { event_id?: string }).event_id
         const createdAt = normalizeTimestamp(getEventCreatedAt(msg))
         if (msg.role === 'user') {

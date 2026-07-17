@@ -519,6 +519,7 @@ export type CreateSessionParams = {
 export type ChatMessage = {
   role: 'user' | 'assistant' | 'system'
   message: string
+  visible?: boolean
   attachments?: Array<{
     file_id: string
     filename: string

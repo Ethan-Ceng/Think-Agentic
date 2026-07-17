@@ -73,6 +73,7 @@ class MessageEvent(BaseEvent):
     message: str = ""  # 消息本身
     attachments: List[File] = Field(default_factory=list)  # 附件列表信息
     skills: List[SkillRef] = Field(default_factory=list)  # 本次 Run 手动选择的 Skills
+    visible: bool = True  # 是否作为用户可见的对话消息展示
 
 
 class BrowserToolContent(BaseModel):
