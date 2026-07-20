@@ -130,12 +130,16 @@ class PlannerReActFlow(BaseFlow):
         if not session:
             raise ValueError(f"会话[{self._session_id}]不存在, 请核实后尝试")
 
+        resume_pending = message.interaction_response is not None
+        if resume_pending and session.status != SessionStatus.WAITING:
+            raise ValueError(f"会话[{self._session_id}]当前没有等待处理的交互")
+
         # 2.判断会话的状态是不是空闲
         #   如果不是则有可能有两种状态
         #    - 任务未结束，还在运行，但是用户又传递一条消息
         #    - Agent在等待人类输入，这时候人类输入了
         #   这时候均需要处理历史消息列表，避免AI(工具调用消息)后直接接上人类消息
-        if session.status != SessionStatus.PENDING:
+        if session.status != SessionStatus.PENDING and not resume_pending:
             logger.debug(f"会话[{self._session_id}]未处于空闲状态，回滚数据确保消息列表格式正确")
             await self.planner.roll_back(message)
             await self.react.roll_back(message)
@@ -207,7 +211,16 @@ class PlannerReActFlow(BaseFlow):
 
                 # 20.调用执行Agent执行对应的步骤
                 logger.info(f"Planner&ReAct流开始执行步骤 {step.id}: {step.description[:50]}...")
-                async for event in self.react.execute_step(self.plan, step, message):
+                if resume_pending:
+                    event_stream = self.react.resume_step(
+                        self.plan,
+                        step,
+                        message.interaction_response,
+                    )
+                    resume_pending = False
+                else:
+                    event_stream = self.react.execute_step(self.plan, step, message)
+                async for event in event_stream:
                     yield event
 
                 # 21.压缩执行Agent记忆，避免上下文腐化+消耗大量token

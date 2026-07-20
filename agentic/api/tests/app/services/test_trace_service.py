@@ -4,7 +4,17 @@ import asyncio
 from typing import Any, Dict, List, Optional
 
 from app.core.entities.app_config import AgentConfig, LLMConfig
-from app.core.entities.event import MessageEvent, StepEvent, StepEventStatus, ToolEvent, ToolEventStatus
+from app.core.entities.event import (
+    InteractionDecision,
+    InteractionEvent,
+    InteractionResolution,
+    InteractionType,
+    MessageEvent,
+    StepEvent,
+    StepEventStatus,
+    ToolEvent,
+    ToolEventStatus,
+)
 from app.core.entities.plan import Step
 from app.core.entities.tool_config import ToolConfig
 from app.core.entities.tool_result import ToolResult
@@ -201,5 +211,53 @@ def test_trace_service_projects_run_step_tool_and_model_call() -> None:
         event_types = {event["event_type"] for event in repo.events}
         expected = {"run.started", "step.started", "tool.calling", "tool.called", "model.started", "model.succeeded"}
         assert expected <= event_types
+
+    asyncio.run(run())
+
+
+def test_trace_service_projects_interaction_without_sensitive_arguments() -> None:
+    repo = FakeTraceRepository()
+    service = TraceService(uow_factory=lambda: FakeUow(repo))
+
+    async def run() -> None:
+        await service.start_run(
+            user_id="user-1",
+            session_id="session-1",
+            task_id="task-1",
+            input_event=MessageEvent(role="user", message="deploy"),
+        )
+        pending = InteractionEvent(
+            action_id="action-1",
+            interaction_type=InteractionType.TOOL_APPROVAL,
+            tool_call_id="call-1",
+            tool_name="shell",
+            function_name="shell_execute",
+            function_args={"command": "deploy", "api_key": "must-not-appear"},
+            prompt="Approve",
+            risk_level="high",
+        )
+        await service.project_event(pending)
+        await service.project_interaction_resolution(InteractionResolution(
+            action_id=pending.action_id,
+            interaction_type=pending.interaction_type,
+            decision=InteractionDecision.APPROVE,
+            tool_call_id=pending.tool_call_id,
+            tool_name=pending.tool_name,
+            function_name=pending.function_name,
+            function_args=pending.function_args,
+            risk_level=pending.risk_level,
+        ))
+
+        interaction_events = [
+            event for event in repo.events if event["event_type"].startswith("interaction.")
+        ]
+        assert [event["event_type"] for event in interaction_events] == [
+            "interaction.pending",
+            "interaction.resolved",
+        ]
+        assert interaction_events[0]["payload"]["risk_level"] == "high"
+        assert interaction_events[1]["payload"]["decision"] == "approve"
+        assert all("function_args" not in event["payload"] for event in interaction_events)
+        assert "must-not-appear" not in str(interaction_events)
 
     asyncio.run(run())

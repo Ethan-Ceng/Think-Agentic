@@ -5,11 +5,14 @@ import asyncio
 import httpx
 
 from app.core.tools.api import APITool
+from app.core.tools.file import FileTool
 from app.core.tools.filter import FilteredTool
 from app.core.tools.message import MessageTool
+from app.core.tools.base import BaseTool, tool
 from app.core.tools.registry import ToolRegistry
 from app.schemas.tool_config import (
     ToolBinding,
+    ToolBindingsUpdate,
     ToolConfig,
     ToolRegistration,
     ToolRegistrationTestRequest,
@@ -52,6 +55,19 @@ WEATHER_OPENAPI = {
 USER_ID = "user-1"
 
 
+class RuntimeRiskTool(BaseTool):
+    name = "skill_draft"
+
+    @tool(
+        name="skill_draft_write",
+        description="Write a Skill draft",
+        parameters={"content": {"type": "string"}},
+        required=["content"],
+    )
+    async def skill_draft_write(self, content: str):
+        raise AssertionError("policy tests must not execute the tool")
+
+
 def test_tool_registry_lists_builtin_metadata() -> None:
     registry = ToolRegistry()
 
@@ -65,6 +81,168 @@ def test_tool_registry_lists_builtin_metadata() -> None:
     assert shell_execute.group == "shell"
     assert shell_execute.executor_type == "builtin"
     assert shell_execute.risk_level == "high"
+
+
+def test_sandbox_file_writes_are_auto_allowed_by_default() -> None:
+    config = ToolConfig()
+    registry = ToolRegistry(tool_config=config)
+    filtered = FilteredTool(FileTool(sandbox=object()), config, registry)
+
+    assert filtered.get_risk_level("read_file") == "low"
+    assert filtered.get_risk_level("write_file") == "medium"
+    assert filtered.get_risk_level("replace_in_file") == "medium"
+    assert filtered.get_approval_policy("read_file") == "allow"
+    assert filtered.get_approval_policy("write_file") == "allow"
+    assert filtered.get_approval_policy("replace_in_file") == "allow"
+
+    ask_config = ToolConfig(
+        bindings={
+            "builtin.file.write_file": ToolBinding(
+                risk_level="medium",
+                approval="ask",
+            ),
+        },
+    )
+    ask_filtered = FilteredTool(
+        FileTool(sandbox=object()),
+        ask_config,
+        ToolRegistry(tool_config=ask_config),
+    )
+    assert ask_filtered.get_approval_policy("write_file") == "ask"
+
+
+def test_tool_list_exposes_only_safe_builtin_approval_settings() -> None:
+    class FakeAppConfigService:
+        def __init__(self) -> None:
+            self.config = ToolConfig(
+                bindings={
+                    "builtin.shell.shell_execute": ToolBinding(
+                        risk_level="high",
+                        approval="allow",
+                        params={"secret": "must-not-leak"},
+                    ),
+                    "builtin.browser.browser_console_exec": ToolBinding(
+                        risk_level="high",
+                        approval="ask",
+                    ),
+                    "api.weather.api_weather_get_weather": ToolBinding(
+                        risk_level="low",
+                        approval="ask",
+                        params={"unit": "c"},
+                    ),
+                },
+            )
+
+        async def get_tool_config(self, user_id: str) -> ToolConfig:
+            assert user_id == USER_ID
+            return self.config
+
+        async def update_tool_config(self, user_id: str, new_config: ToolConfig) -> ToolConfig:
+            assert user_id == USER_ID
+            self.config = new_config
+            return self.config
+
+    async def run() -> None:
+        app_config = FakeAppConfigService()
+        service = ToolConfigService(app_config)
+
+        listed = await service.list_tools(USER_ID)
+        settings = {item.tool_id: item for item in listed.approval_tools}
+
+        assert set(settings) == {
+            "builtin.shell.shell_execute",
+            "builtin.shell.shell_write_input",
+            "builtin.shell.shell_kill_process",
+            "builtin.browser.browser_console_exec",
+        }
+        assert settings["builtin.shell.shell_execute"].approval == "allow"
+        assert settings["builtin.shell.shell_write_input"].approval == "auto"
+        assert "params" not in settings["builtin.shell.shell_execute"].model_dump()
+
+        await service.update_bindings(
+            USER_ID,
+            ToolBindingsUpdate(
+                bindings={
+                    "builtin.shell.shell_execute": ToolBinding(
+                        risk_level="high",
+                        approval="deny",
+                    ),
+                },
+                runtime_policy=app_config.config.runtime_policy,
+            ),
+        )
+        assert app_config.config.bindings["builtin.shell.shell_execute"].approval == "deny"
+        assert app_config.config.bindings["builtin.shell.shell_execute"].params == {
+            "secret": "must-not-leak",
+        }
+        assert (
+            app_config.config.bindings["builtin.browser.browser_console_exec"].approval
+            == "ask"
+        )
+        assert (
+            app_config.config.bindings["api.weather.api_weather_get_weather"].approval
+            == "ask"
+        )
+        assert app_config.config.bindings["api.weather.api_weather_get_weather"].params == {
+            "unit": "c",
+        }
+
+    asyncio.run(run())
+
+
+def test_tool_config_defaults_are_backward_compatible_and_ask_for_high_risk() -> None:
+    binding = ToolBinding.model_validate({"enabled": True, "risk_level": "high"})
+    policy = RuntimeToolPolicy.model_validate({})
+
+    assert binding.approval == "auto"
+    assert policy.require_approval_for_high_risk is True
+
+
+def test_filtered_tool_resolves_effective_approval_policy() -> None:
+    runtime_tool = RuntimeRiskTool()
+    config = ToolConfig()
+    registry = ToolRegistry(tool_config=config)
+    registry.register_runtime_tool(runtime_tool)
+    filtered = FilteredTool(runtime_tool, config, registry)
+
+    assert filtered.get_risk_level("skill_draft_write") == "high"
+    assert filtered.get_approval_policy("skill_draft_write") == "ask"
+
+    allow_config = ToolConfig(
+        runtime_policy=RuntimeToolPolicy(require_approval_for_high_risk=False),
+    )
+    allow_registry = ToolRegistry(tool_config=allow_config)
+    allow_registry.register_runtime_tool(runtime_tool)
+    allow_filtered = FilteredTool(runtime_tool, allow_config, allow_registry)
+    assert allow_filtered.get_approval_policy("skill_draft_write") == "allow"
+
+    for configured, expected in (("allow", "allow"), ("ask", "ask"), ("deny", "deny")):
+        override = ToolConfig(
+            bindings={
+                "builtin.skill_draft.skill_draft_write": ToolBinding(
+                    risk_level="high",
+                    approval=configured,
+                ),
+            },
+        )
+        override_registry = ToolRegistry(tool_config=override)
+        override_registry.register_runtime_tool(runtime_tool)
+        override_filtered = FilteredTool(runtime_tool, override, override_registry)
+        assert override_filtered.get_approval_policy("skill_draft_write") == expected
+
+
+def test_message_interaction_tools_bypass_generic_approval_policy() -> None:
+    config = ToolConfig(
+        bindings={
+            "builtin.message.message_ask_user": ToolBinding(
+                risk_level="high",
+                approval="deny",
+            ),
+        },
+    )
+    filtered = FilteredTool(MessageTool(), config, ToolRegistry(tool_config=config))
+
+    assert filtered.get_approval_policy("message_ask_user") == "allow"
 
 
 def test_tool_registry_lists_builtin_registrations() -> None:

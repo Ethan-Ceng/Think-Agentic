@@ -4,7 +4,14 @@ import asyncio
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from app.core.entities.event import BaseEvent, ErrorEvent, MessageEvent
+from app.core.entities.event import (
+    BaseEvent,
+    ErrorEvent,
+    InteractionDecision,
+    InteractionResolution,
+    InteractionType,
+    MessageEvent,
+)
 from app.core.entities.session import Session, SessionStatus
 from app.schemas.event import MessageSSEEvent
 from app.services.agent_service import AgentService
@@ -90,7 +97,11 @@ class MissingTask:
 
 
 class FakeInputStream:
+    def __init__(self) -> None:
+        self.payloads: List[str] = []
+
     async def put(self, payload: str) -> str:
+        self.payloads.append(payload)
         return "event-1"
 
 
@@ -242,3 +253,46 @@ def test_stop_finalizes_orphaned_run_instead_of_leaving_trace_running() -> None:
     assert session_repo.status_updates == [SessionStatus.COMPLETED]
     assert len(trace_repo.interruptions) == 1
     assert trace_repo.interruptions[0]["session_id"] == session.id
+
+
+def test_interaction_resolution_stays_in_task_input_but_not_session_history() -> None:
+    session = Session(id="session-1", user_id="user-1", status=SessionStatus.WAITING)
+    service, session_repo, _ = make_service(session)
+    task = CompletedTask()
+
+    async def fake_get_task(_session: Session) -> None:
+        return None
+
+    async def fake_create_task(_session: Session) -> CompletedTask:
+        return task
+
+    service._get_task = fake_get_task  # type: ignore[method-assign]
+    service._create_task = fake_create_task  # type: ignore[method-assign]
+    resolution = InteractionResolution(
+        action_id="action-1",
+        interaction_type=InteractionType.TOOL_APPROVAL,
+        decision=InteractionDecision.APPROVE,
+        tool_call_id="call-1",
+        function_name="dangerous_write",
+        function_args={"api_key": "must-not-persist"},
+    )
+
+    async def run() -> List[BaseEvent]:
+        return [
+            event
+            async for event in service.chat(
+                session_id=session.id,
+                user_id=session.user_id,
+                message="internal interaction resolution",
+                visible=False,
+                interaction_response=resolution,
+            )
+        ]
+
+    events = asyncio.run(run())
+    queued = MessageEvent.model_validate_json(task.input_stream.payloads[0])
+
+    assert queued.interaction_response == resolution
+    assert events[0].interaction_response is None
+    assert session_repo.events[0].interaction_response is None
+    assert "must-not-persist" not in session_repo.events[0].model_dump_json()

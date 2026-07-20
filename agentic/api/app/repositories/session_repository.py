@@ -8,7 +8,7 @@
 from datetime import datetime
 from typing import Protocol, List, Optional
 
-from app.core.entities.event import BaseEvent
+from app.core.entities.event import BaseEvent, InteractionDecision, InteractionEvent
 from app.core.entities.file import File
 from app.core.entities.memory import Memory
 from app.core.entities.session import Session, SessionStatus
@@ -71,6 +71,18 @@ class SessionRepository(Protocol):
 
     async def add_event(self, session_id: str, event: BaseEvent) -> None:
         """往会话中新增事件"""
+        ...
+
+    async def resolve_interaction(
+            self,
+            session_id: str,
+            user_id: str,
+            action_id: str,
+            decision: InteractionDecision,
+            answer: Optional[str] = None,
+            selected_values: Optional[List[str]] = None,
+    ) -> InteractionEvent:
+        """Atomically resolve the current pending interaction for a session owner."""
         ...
 
     async def add_file(self, session_id: str, file: File) -> None:

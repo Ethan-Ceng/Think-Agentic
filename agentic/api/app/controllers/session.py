@@ -24,6 +24,7 @@ from app.schemas.session import (
     GetSessionResponse,
     ChatRequest,
     ResumeSessionRequest,
+    ResolveInteractionRequest,
     FileReadRequest,
     FileReadResponse,
     ShellReadRequest,
@@ -226,6 +227,49 @@ async def resume_session(
             session_id=session_id,
             user_id=current_user.id,
             mode=request.mode,
+        ):
+            sse_event = EventMapper.event_to_sse_event(event)
+            if sse_event:
+                yield ServerSentEvent(
+                    event=sse_event.event,
+                    data=sse_event.data.model_dump_json(),
+                )
+
+    return EventSourceResponse(event_generator())
+
+
+@router.post(
+    "/{session_id}/interactions/{action_id}/resolve",
+    summary="解决待处理交互（SSE 流式）",
+)
+async def resolve_interaction(
+    session_id: str,
+    action_id: str,
+    request: ResolveInteractionRequest,
+    current_user: User = Depends(get_current_user),
+    agent_service: AgentService = Depends(get_agent_service),
+) -> EventSourceResponse:
+    """Answer a structured question or approve/reject one Tool Call."""
+    resolved, resolution = await agent_service.resolve_interaction(
+        session_id=session_id,
+        user_id=current_user.id,
+        action_id=action_id,
+        decision=request.decision,
+        answer=request.answer,
+        selected_values=request.selected_values,
+    )
+
+    async def event_generator() -> AsyncGenerator[ServerSentEvent, None]:
+        resolved_sse = EventMapper.event_to_sse_event(resolved)
+        if resolved_sse:
+            yield ServerSentEvent(
+                event=resolved_sse.event,
+                data=resolved_sse.data.model_dump_json(),
+            )
+        async for event in agent_service.continue_interaction(
+            session_id=session_id,
+            user_id=current_user.id,
+            resolution=resolution,
         ):
             sse_event = EventMapper.event_to_sse_event(event)
             if sse_event:

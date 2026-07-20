@@ -12,10 +12,10 @@ from sqlalchemy import select, delete, update, func, cast
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.entities.event import BaseEvent
+from app.core.entities.event import BaseEvent, InteractionDecision, InteractionEvent
 from app.core.entities.file import File
 from app.core.entities.memory import Memory
-from app.core.entities.session import Session, SessionStatus
+from app.core.entities.session import InteractionNotFoundError, Session, SessionStatus
 from app.repositories.session_repository import SessionRepository
 from app.models import SessionModel
 
@@ -149,6 +149,35 @@ class DBSessionRepository(SessionRepository):
         # 3.检查是否新增成功
         if result.rowcount == 0:
             raise ValueError(f"会话[{session_id}]不存在，请核实后重试")
+
+    async def resolve_interaction(
+            self,
+            session_id: str,
+            user_id: str,
+            action_id: str,
+            decision: InteractionDecision,
+            answer: Optional[str] = None,
+            selected_values: Optional[List[str]] = None,
+    ) -> InteractionEvent:
+        """Lock the owned session and append exactly one resolved interaction event."""
+        stmt = select(SessionModel).where(
+            SessionModel.id == session_id,
+            SessionModel.user_id == user_id,
+        ).with_for_update()
+        result = await self.db_session.execute(stmt)
+        record = result.scalar_one_or_none()
+        if record is None:
+            raise InteractionNotFoundError("会话或交互动作不存在")
+
+        session = record.to_domain()
+        resolved = session.resolve_interaction(
+            action_id=action_id,
+            decision=decision,
+            answer=answer,
+            selected_values=selected_values,
+        )
+        record.events = [event.model_dump(mode="json") for event in session.events]
+        return resolved
 
     async def add_file(self, session_id: str, file: File) -> None:
         """往会话中新增文件"""

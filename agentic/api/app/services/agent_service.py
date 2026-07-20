@@ -18,12 +18,28 @@ from app.core.llm.base import LLM
 from app.core.sandbox.base import Sandbox
 from app.core.search.base import SearchEngine
 from app.core.task.base import Task
-from app.core.entities.event import BaseEvent, ErrorEvent, MessageEvent, Event, DoneEvent, WaitEvent
-from app.core.entities.session import Session, SessionStatus
+from app.core.entities.event import (
+    BaseEvent,
+    DoneEvent,
+    ErrorEvent,
+    Event,
+    InteractionDecision,
+    InteractionEvent,
+    InteractionResolution,
+    MessageEvent,
+    WaitEvent,
+)
+from app.core.entities.session import (
+    InteractionConflictError,
+    InteractionNotFoundError,
+    InteractionValidationError,
+    Session,
+    SessionStatus,
+)
 from app.core.entities.skill import SkillRef
 from app.extensions.skill_package_storage import SkillPackageStorage
 from app.repositories.uow import IUnitOfWork
-from app.schemas.exceptions import NotFoundError
+from app.schemas.exceptions import BadRequestError, ConflictError, NotFoundError
 from app.core.agent.agent_task_runner import AgentTaskRunner
 from app.services.user_config_service import UserConfigService
 from app.services.bundled_skill_service import BundledSkillService
@@ -195,6 +211,63 @@ class AgentService:
         ):
             yield event
 
+    async def resolve_interaction(
+            self,
+            session_id: str,
+            user_id: str,
+            action_id: str,
+            decision: InteractionDecision,
+            answer: Optional[str] = None,
+            selected_values: Optional[List[str]] = None,
+    ) -> tuple[InteractionEvent, InteractionResolution]:
+        """Atomically resolve an owned pending interaction before opening SSE."""
+        try:
+            async with self._uow:
+                resolved = await self._uow.session.resolve_interaction(
+                    session_id=session_id,
+                    user_id=user_id,
+                    action_id=action_id,
+                    decision=decision,
+                    answer=answer,
+                    selected_values=selected_values,
+                )
+        except InteractionNotFoundError as exc:
+            raise NotFoundError(str(exc)) from exc
+        except InteractionConflictError as exc:
+            raise ConflictError(str(exc)) from exc
+        except InteractionValidationError as exc:
+            raise BadRequestError(str(exc)) from exc
+
+        resolution = InteractionResolution(
+            action_id=resolved.action_id,
+            interaction_type=resolved.interaction_type,
+            decision=resolved.decision,
+            tool_call_id=resolved.tool_call_id,
+            function_name=resolved.function_name,
+            function_args=resolved.function_args,
+            tool_name=resolved.tool_name,
+            risk_level=resolved.risk_level,
+            answer=resolved.answer,
+            selected_values=resolved.selected_values,
+        )
+        return resolved, resolution
+
+    async def continue_interaction(
+            self,
+            session_id: str,
+            user_id: str,
+            resolution: InteractionResolution,
+    ) -> AsyncGenerator[BaseEvent, None]:
+        """Start a new task that resumes the exact persisted Tool Call."""
+        async for event in self.chat(
+            session_id=session_id,
+            user_id=user_id,
+            message=f"Resolve interaction {resolution.action_id}",
+            visible=False,
+            interaction_response=resolution,
+        ):
+            yield event
+
     async def chat(
             self,
             session_id: str,
@@ -205,6 +278,7 @@ class AgentService:
             latest_event_id: Optional[str] = None,
             timestamp: Optional[datetime] = None,
             visible: bool = True,
+            interaction_response: Optional[InteractionResolution] = None,
     ) -> AsyncGenerator[BaseEvent, None]:
         """根据传递的信息调用Agent服务发起对话请求"""
         attachments = attachments or []
@@ -258,15 +332,18 @@ class AgentService:
                     attachments=[attachment for attachment in db_attachments if attachment is not None],
                     skills=skills,
                     visible=visible,
+                    interaction_response=interaction_response,
                     # attachments=[File(id=attachment) for attachment in attachments] if attachments else [],
                 )
 
                 # 8.将事件添加到任务的输入流中，好让Agent获取到数据
                 event_id = await task.input_stream.put(message_event.model_dump_json())
-                message_event.id = event_id
-                yield message_event
+                persisted_message_event = message_event.model_copy(
+                    update={"id": event_id, "interaction_response": None}
+                )
+                yield persisted_message_event
                 async with self._uow:
-                    await self._uow.session.add_event(session_id, message_event)
+                    await self._uow.session.add_event(session_id, persisted_message_event)
 
                 # 9.执行任务
                 await task.invoke()

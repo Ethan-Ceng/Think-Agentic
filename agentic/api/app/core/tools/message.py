@@ -5,7 +5,7 @@
 @Author  : thezehui@gmail.com
 @File    : message.py
 """
-from typing import Optional, Union, List
+from typing import Any, Dict, Optional, Union, List
 
 from app.core.entities.tool_result import ToolResult
 from .base import BaseTool, tool
@@ -42,6 +42,35 @@ class MessageTool(BaseTool):
                 "type": "string",
                 "description": "要展示给用户的问题文本",
             },
+            "description": {
+                "type": "string",
+                "description": "（可选）帮助用户理解问题背景的补充说明",
+            },
+            "options": {
+                "type": "array",
+                "description": "（可选）结构化选项，value 必须稳定且唯一",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "value": {"type": "string"},
+                        "label": {"type": "string"},
+                        "description": {"type": "string"},
+                    },
+                    "required": ["value", "label"],
+                },
+            },
+            "allow_multiple": {
+                "type": "boolean",
+                "description": "是否允许多选，默认 false",
+            },
+            "allow_text": {
+                "type": "boolean",
+                "description": "是否允许自由文本回答，默认 true",
+            },
+            "placeholder": {
+                "type": "string",
+                "description": "（可选）自由文本输入框占位提示",
+            },
             "attachments": {
                 "anyOf": [
                     {"type": "string"},
@@ -60,6 +89,11 @@ class MessageTool(BaseTool):
     async def message_ask_user(
             self,
             text: str,
+            description: Optional[str] = None,
+            options: Optional[List[Dict[str, Any]]] = None,
+            allow_multiple: bool = False,
+            allow_text: bool = True,
+            placeholder: Optional[str] = None,
             attachments: Optional[Union[str, List[str]]] = None,
             suggest_user_takeover: Optional[str] = None,
     ) -> ToolResult:

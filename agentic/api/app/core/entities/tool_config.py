@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -10,6 +10,7 @@ class ToolBinding(BaseModel):
 
     enabled: bool = True
     risk_level: str = "low"  # low | medium | high
+    approval: Literal["auto", "allow", "ask", "deny"] = "auto"
     params: Dict[str, Any] = Field(default_factory=dict)
 
     model_config = ConfigDict(extra="ignore")
@@ -22,6 +23,7 @@ class RuntimeToolPolicy(BaseModel):
         default_factory=lambda: ["builtin", "mcp", "a2a", "api"]
     )
     max_tool_iterations: int = Field(default=100, ge=1, le=1000)
+    require_approval_for_high_risk: bool = True
 
     model_config = ConfigDict(extra="ignore")
 

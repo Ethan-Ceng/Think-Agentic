@@ -18,7 +18,7 @@ const emit = defineEmits<SettingsPanelEmits>()
 const toast = useToast()
 const tools = ref<ToolDescriptor[]>([])
 const registrations = ref<ToolRegistration[]>([])
-const runtimePolicy = ref<RuntimeToolPolicy>({ allowed_executor_types: ['builtin', 'mcp', 'a2a', 'api'], max_tool_iterations: 100 })
+const runtimePolicy = ref<RuntimeToolPolicy>({ allowed_executor_types: ['builtin', 'mcp', 'a2a', 'api'], max_tool_iterations: 100, require_approval_for_high_risk: true })
 const initialSnapshot = ref('')
 const loading = ref(true)
 const loadError = ref('')
@@ -76,7 +76,7 @@ const testingTools = computed(() => testingRegistration.value ? apiTools.value.f
 function applyData(data: ToolListData | null | undefined) {
   tools.value = data?.tools ?? []
   registrations.value = data?.registrations ?? []
-  runtimePolicy.value = data?.runtime_policy ?? runtimePolicy.value
+  runtimePolicy.value = { ...runtimePolicy.value, ...(data?.runtime_policy ?? {}) }
 }
 
 async function load() {

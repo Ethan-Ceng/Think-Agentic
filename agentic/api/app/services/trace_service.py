@@ -19,6 +19,8 @@ from app.core.entities.event import (
     BaseEvent,
     DoneEvent,
     ErrorEvent,
+    InteractionEvent,
+    InteractionResolution,
     MessageEvent,
     PlanEvent,
     StepEvent,
@@ -133,6 +135,28 @@ class TraceService:
 
         async def write(uow: IUnitOfWork) -> None:
             await self._project_event(uow, event)
+
+        await self._write(write)
+
+    async def project_interaction_resolution(self, resolution: InteractionResolution) -> None:
+        """Record a resolved decision without persisting sensitive tool arguments."""
+        async def write(uow: IUnitOfWork) -> None:
+            await uow.trace.append_event(
+                self._trace_event_data(
+                    event_type="interaction.resolved",
+                    event_id=resolution.action_id,
+                    payload={
+                        "action_id": resolution.action_id,
+                        "interaction_type": resolution.interaction_type.value,
+                        "status": "resolved",
+                        "decision": resolution.decision.value,
+                        "tool_call_id": resolution.tool_call_id,
+                        "tool_name": resolution.tool_name,
+                        "function_name": resolution.function_name,
+                        "risk_level": resolution.risk_level,
+                    },
+                )
+            )
 
         await self._write(write)
 
@@ -401,6 +425,9 @@ class TraceService:
         elif isinstance(event, MessageEvent):
             if event.role == "assistant" and event.message:
                 await uow.trace.update_run(self.run_id, {"final_summary": _preview(event.message)})
+        elif isinstance(event, InteractionEvent):
+            if event.status.value == "pending":
+                await uow.trace.update_run(self.run_id, {"status": "waiting"})
         elif isinstance(event, WaitEvent):
             await uow.trace.update_run(self.run_id, {"status": "waiting"})
         elif isinstance(event, ErrorEvent):
@@ -592,6 +619,8 @@ def _event_type(event: BaseEvent) -> str:
         return f"step.{event.status.value}"
     if isinstance(event, ToolEvent):
         return f"tool.{event.status.value}"
+    if isinstance(event, InteractionEvent):
+        return f"interaction.{event.status.value}"
     if isinstance(event, MessageEvent):
         return "message.created"
     if isinstance(event, WaitEvent):
@@ -612,6 +641,17 @@ def _event_payload(event: BaseEvent) -> Dict[str, Any]:
             "function_args": _snapshot(event.function_args),
             "function_result": _snapshot(event.function_result),
             "status": event.status.value,
+        }
+    if isinstance(event, InteractionEvent):
+        return {
+            "action_id": event.action_id,
+            "interaction_type": event.interaction_type.value,
+            "status": event.status.value,
+            "decision": event.decision.value if event.decision else None,
+            "tool_call_id": event.tool_call_id,
+            "tool_name": event.tool_name,
+            "function_name": event.function_name,
+            "risk_level": event.risk_level,
         }
     return event.model_dump(mode="json")
 

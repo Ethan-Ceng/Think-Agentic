@@ -1,5 +1,13 @@
 # Agentic Web 借鉴 LibreChat 的 Vue 3 UI 改造方案
 
+## 2026-07-20：Human-in-the-loop 首期已落地
+
+- `message_ask_user` 已从普通文本提示升级为结构化问题卡，支持单选、多选和自由文本。
+- 高风险工具默认在执行前展示审批卡；用户可批准或拒绝，拒绝路径不执行工具。
+- pending/resolved 交互按 `action_id` 合并展示，刷新后仍可恢复；等待期间普通 Composer 禁用。
+- 恢复时以后端持久化的 React Memory Tool Call 为准，前端不能改写函数名或参数。
+- 本期未包含消息编辑、重新生成和更完整的 Markdown artifact 展示，这些仍作为后续增量。
+
 整理日期：2026-07-15
 
 状态：持续演进；Skills、Creator 与 Marketplace 闭环已于 2026-07-16 落地

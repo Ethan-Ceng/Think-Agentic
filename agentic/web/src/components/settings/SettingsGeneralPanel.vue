@@ -7,6 +7,8 @@ import { toolsApi } from '@/lib/api/tools'
 import type {
   AgentConfig,
   RuntimeToolPolicy,
+  ToolApprovalPolicy,
+  ToolApprovalSetting,
   ToolDescriptor,
   ToolExecutorType,
   ToolListData,
@@ -19,9 +21,12 @@ const toast = useToast()
 
 const agentConfig = ref<AgentConfig>({})
 const tools = ref<ToolDescriptor[]>([])
+const approvalTools = ref<ToolApprovalSetting[]>([])
+const initialApprovals = ref<Record<string, ToolApprovalPolicy>>({})
 const runtimePolicy = ref<RuntimeToolPolicy>({
   allowed_executor_types: ['builtin', 'mcp', 'a2a', 'api'],
   max_tool_iterations: 100,
+  require_approval_for_high_risk: true,
 })
 const initialSnapshot = ref('')
 const loading = ref(true)
@@ -37,7 +42,11 @@ const executorOptions: Array<{ value: ToolExecutorType; label: string }> = [
 ]
 
 function snapshot() {
-  return JSON.stringify({ agent: agentConfig.value, policy: runtimePolicy.value })
+  return JSON.stringify({
+    agent: agentConfig.value,
+    policy: runtimePolicy.value,
+    approvals: approvalTools.value.map(({ tool_id, approval }) => ({ tool_id, approval })),
+  })
 }
 
 const dirty = computed(() => Boolean(initialSnapshot.value) && snapshot() !== initialSnapshot.value)
@@ -51,9 +60,14 @@ const visiblePreflightChecks = computed(() =>
 
 function applyToolListData(data: ToolListData | null | undefined) {
   tools.value = data?.tools ?? []
+  approvalTools.value = (data?.approval_tools ?? []).map((item) => ({ ...item }))
+  initialApprovals.value = Object.fromEntries(
+    approvalTools.value.map(({ tool_id, approval }) => [tool_id, approval]),
+  )
   const nextPolicy = data?.runtime_policy ?? runtimePolicy.value
   runtimePolicy.value = {
     ...nextPolicy,
+    require_approval_for_high_risk: nextPolicy.require_approval_for_high_risk ?? true,
     allowed_executor_types: Array.from(
       new Set<ToolExecutorType>(['builtin', ...nextPolicy.allowed_executor_types]),
     ),
@@ -81,14 +95,24 @@ async function load() {
 onMounted(load)
 
 function buildToolBindings() {
-  return Object.fromEntries(
-    tools.value
+  return Object.fromEntries([
+    ...tools.value
       .filter((tool) => tool.executor_type === 'api')
       .map((tool) => [
         tool.tool_id,
         { enabled: tool.enabled, risk_level: tool.risk_level, params: {} },
       ]),
-  )
+    ...approvalTools.value
+      .filter((tool) => tool.approval !== initialApprovals.value[tool.tool_id])
+      .map((tool) => [
+        tool.tool_id,
+        {
+          enabled: true,
+          risk_level: tool.risk_level,
+          approval: tool.approval,
+        },
+      ]),
+  ])
 }
 
 async function save() {
@@ -149,6 +173,22 @@ function preflightStatusLabel(status: ToolPreflightResponse['status']) {
   return '通过'
 }
 
+const approvalOptions: Array<{ value: ToolApprovalPolicy; label: string }> = [
+  { value: 'auto', label: '按风险策略' },
+  { value: 'allow', label: '始终允许' },
+  { value: 'ask', label: '每次确认' },
+  { value: 'deny', label: '禁止执行' },
+]
+
+function approvalHint(approval: ToolApprovalPolicy) {
+  if (approval === 'allow') return '始终允许会跳过后续确认，请只用于可信的沙箱能力。'
+  if (approval === 'ask') return '每次调用都需要在会话中确认。'
+  if (approval === 'deny') return 'Agent 无法执行该工具。'
+  return runtimePolicy.value.require_approval_for_high_risk
+    ? '按风险策略：高风险调用需要确认。'
+    : '按风险策略：全局确认已关闭，将直接执行。'
+}
+
 defineExpose({ isDirty, save })
 </script>
 
@@ -197,6 +237,45 @@ defineExpose({ isDirty, save })
           <span>最大工具迭代</span>
           <ElInputNumber v-model="runtimePolicy.max_tool_iterations" :min="1" :max="1000" :step="1" controls-position="right" />
         </label>
+        <label class="tool-policy-switch">
+          <span>高风险工具执行前确认</span>
+          <ElSwitch
+            v-model="runtimePolicy.require_approval_for_high_risk"
+            inline-prompt
+            active-text="开"
+            inactive-text="关"
+          />
+        </label>
+      </div>
+      <div v-if="approvalTools.length" class="tool-approval-settings">
+        <div class="tool-approval-heading">
+          <strong>系统工具审批</strong>
+          <span>配置会持久保存，只影响后续调用；当前待确认操作仍需处理。</span>
+        </div>
+        <div
+          v-for="tool in approvalTools"
+          :key="tool.tool_id"
+          class="tool-approval-row"
+          :data-tool-id="tool.tool_id"
+        >
+          <div class="tool-approval-copy">
+            <strong>{{ tool.label }}</strong>
+            <code>{{ tool.function_name }}</code>
+            <p>{{ approvalHint(tool.approval) }}</p>
+          </div>
+          <ElSelect
+            v-model="tool.approval"
+            :aria-label="`${tool.label}审批策略`"
+            class="tool-approval-select"
+          >
+            <ElOption
+              v-for="option in approvalOptions"
+              :key="option.value"
+              :label="option.label"
+              :value="option.value"
+            />
+          </ElSelect>
+        </div>
       </div>
     </section>
 

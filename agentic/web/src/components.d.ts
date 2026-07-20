@@ -36,6 +36,7 @@ declare module 'vue' {
     ElTag: typeof import('element-plus/es')['ElTag']
     ElTooltip: typeof import('element-plus/es')['ElTooltip']
     FilePreviewPanel: typeof import('./components/FilePreviewPanel.vue')['default']
+    InteractionCard: typeof import('./components/chat/InteractionCard.vue')['default']
     LeftPanel: typeof import('./components/LeftPanel.vue')['default']
     MarkdownContent: typeof import('./components/MarkdownContent.vue')['default']
     MarketplaceSkillCard: typeof import('./components/skills/MarketplaceSkillCard.vue')['default']

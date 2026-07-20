@@ -5,6 +5,7 @@ import AssistantAvatar from '@/components/chat/AssistantAvatar.vue'
 import MessageActions from '@/components/chat/MessageActions.vue'
 import ThinkingBlock from '@/components/chat/ThinkingBlock.vue'
 import ToolCallCard from '@/components/chat/ToolCallCard.vue'
+import InteractionCard from '@/components/chat/InteractionCard.vue'
 import SkillChip from '@/components/skills/SkillChip.vue'
 import {
   AlertCircle,
@@ -15,7 +16,7 @@ import {
   RefreshCw,
 } from 'lucide-vue-next'
 import type { Component } from 'vue'
-import type { ResumeMode, ToolEvent } from '@/lib/api/types'
+import type { ResolveInteractionParams, ResumeMode, ToolEvent } from '@/lib/api/types'
 import type { AttachmentFile, TimelineItem, UserMessageStatus } from '@/lib/session-events'
 import { getFriendlyToolLabel, getToolKind } from '@/lib/tool-utils'
 
@@ -24,6 +25,8 @@ defineProps<{
   domId?: string
   showRecoveryActions?: boolean
   recoveryBusy?: boolean
+  interactionBusy?: boolean
+  interactionError?: string
 }>()
 
 const emit = defineEmits<{
@@ -32,6 +35,7 @@ const emit = defineEmits<{
   toolClick: [tool: ToolEvent]
   retryMessage: [itemId: string]
   recoverTask: [mode: ResumeMode]
+  resolveInteraction: [actionId: string, params: ResolveInteractionParams]
 }>()
 
 const statusIconMap: Record<UserMessageStatus, Component> = {
@@ -78,6 +82,10 @@ function isAssistantEmpty(item: TimelineItem): boolean {
 function handleToolClick(tool: ToolEvent) {
   if (getToolKind(tool) === 'message') return
   emit('toolClick', tool)
+}
+
+function handleResolveInteraction(actionId: string, params: ResolveInteractionParams) {
+  emit('resolveInteraction', actionId, params)
 }
 </script>
 
@@ -153,6 +161,14 @@ function handleToolClick(tool: ToolEvent) {
     :step="item.data"
     :tools="item.tools"
     @tool-click="handleToolClick"
+  />
+
+  <InteractionCard
+    v-else-if="item.kind === 'interaction'"
+    :interaction="item.data"
+    :busy="interactionBusy"
+    :error="interactionError"
+    @resolve="handleResolveInteraction"
   />
 
   <AttachmentsMessage

@@ -39,6 +39,51 @@ class ToolEventStatus(str, Enum):
     CALLED = "called"  # 调用完毕
 
 
+class InteractionType(str, Enum):
+    """需要人类输入才能继续的交互类型。"""
+
+    ASK_USER = "ask_user"
+    TOOL_APPROVAL = "tool_approval"
+
+
+class InteractionStatus(str, Enum):
+    """交互动作的追加式状态。"""
+
+    PENDING = "pending"
+    RESOLVED = "resolved"
+
+
+class InteractionDecision(str, Enum):
+    """用户对交互动作作出的决定。"""
+
+    ANSWER = "answer"
+    APPROVE = "approve"
+    REJECT = "reject"
+
+
+class InteractionOption(BaseModel):
+    """结构化询问中的稳定选项值和用户可见标签。"""
+
+    value: str
+    label: str
+    description: Optional[str] = None
+
+
+class InteractionResolution(BaseModel):
+    """服务端校验后传入 Agent 恢复路径的交互决定。"""
+
+    action_id: str
+    interaction_type: InteractionType
+    decision: InteractionDecision
+    tool_call_id: str
+    function_name: str
+    function_args: Dict[str, Any] = Field(default_factory=dict)
+    tool_name: Optional[str] = None
+    risk_level: Optional[Literal["low", "medium", "high"]] = None
+    answer: Optional[str] = None
+    selected_values: List[str] = Field(default_factory=list)
+
+
 class BaseEvent(BaseModel):
     """基础事件类型"""
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))  # 事件id
@@ -74,6 +119,7 @@ class MessageEvent(BaseEvent):
     attachments: List[File] = Field(default_factory=list)  # 附件列表信息
     skills: List[SkillRef] = Field(default_factory=list)  # 本次 Run 手动选择的 Skills
     visible: bool = True  # 是否作为用户可见的对话消息展示
+    interaction_response: Optional[InteractionResolution] = None
 
 
 class BrowserToolContent(BaseModel):
@@ -128,6 +174,29 @@ class ToolEvent(BaseEvent):
     status: ToolEventStatus = ToolEventStatus.CALLING  # 工具事件状态
 
 
+class InteractionEvent(BaseEvent):
+    """持久化的人机交互请求或解决记录。"""
+
+    type: Literal["interaction"] = "interaction"
+    action_id: str
+    interaction_type: InteractionType
+    status: InteractionStatus = InteractionStatus.PENDING
+    tool_call_id: str
+    tool_name: str
+    function_name: str
+    function_args: Dict[str, Any] = Field(default_factory=dict)
+    prompt: str
+    description: Optional[str] = None
+    options: List[InteractionOption] = Field(default_factory=list)
+    allow_multiple: bool = False
+    allow_text: bool = True
+    placeholder: Optional[str] = None
+    risk_level: Optional[Literal["low", "medium", "high"]] = None
+    decision: Optional[InteractionDecision] = None
+    answer: Optional[str] = None
+    selected_values: List[str] = Field(default_factory=list)
+
+
 class WaitEvent(BaseEvent):
     """等待事件，等待用户输入确认"""
     type: Literal["wait"] = "wait"
@@ -152,6 +221,7 @@ Event = Annotated[
         StepEvent,
         MessageEvent,
         ToolEvent,
+        InteractionEvent,
         WaitEvent,
         ErrorEvent,
         DoneEvent,

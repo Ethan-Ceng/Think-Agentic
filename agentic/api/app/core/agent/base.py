@@ -14,7 +14,19 @@ from typing import Optional, List, AsyncGenerator, Dict, Any, Callable
 from app.core.json_parser.base import JSONParser
 from app.core.llm.base import LLM
 from app.core.entities.app_config import AgentConfig
-from app.core.entities.event import ToolEvent, ToolEventStatus, ErrorEvent, MessageEvent, BaseEvent
+from app.core.entities.event import (
+    BaseEvent,
+    ErrorEvent,
+    InteractionDecision,
+    InteractionEvent,
+    InteractionOption,
+    InteractionResolution,
+    InteractionStatus,
+    InteractionType,
+    MessageEvent,
+    ToolEvent,
+    ToolEventStatus,
+)
 from app.core.entities.memory import Memory
 from app.core.entities.message import Message
 from app.core.entities.tool_result import ToolResult
@@ -266,6 +278,195 @@ class BaseAgent(ABC):
         async with self._uow:
             await self._uow.session.save_memory(self._session_id, self.name, self._memory)
 
+    @staticmethod
+    def _interaction_options(arguments: Dict[str, Any]) -> List[InteractionOption]:
+        options: List[InteractionOption] = []
+        seen: set[str] = set()
+        for raw_option in arguments.get("options") or []:
+            try:
+                option = InteractionOption.model_validate(raw_option)
+            except Exception:
+                continue
+            if not option.value or not option.label or option.value in seen:
+                continue
+            seen.add(option.value)
+            options.append(option)
+        return options
+
+    def _build_interaction_event(
+            self,
+            tool: BaseTool,
+            tool_call_id: str,
+            function_name: str,
+            function_args: Dict[str, Any],
+    ) -> InteractionEvent:
+        if function_name == "message_ask_user":
+            return InteractionEvent(
+                action_id=str(uuid.uuid4()),
+                interaction_type=InteractionType.ASK_USER,
+                status=InteractionStatus.PENDING,
+                tool_call_id=tool_call_id,
+                tool_name=tool.name,
+                function_name=function_name,
+                function_args=function_args,
+                prompt=str(function_args.get("text") or "请提供更多信息"),
+                description=function_args.get("description"),
+                options=self._interaction_options(function_args),
+                allow_multiple=bool(function_args.get("allow_multiple", False)),
+                allow_text=bool(function_args.get("allow_text", True)),
+                placeholder=function_args.get("placeholder"),
+            )
+
+        return InteractionEvent(
+            action_id=str(uuid.uuid4()),
+            interaction_type=InteractionType.TOOL_APPROVAL,
+            status=InteractionStatus.PENDING,
+            tool_call_id=tool_call_id,
+            tool_name=tool.name,
+            function_name=function_name,
+            function_args=function_args,
+            prompt=f"确认执行高风险工具：{function_name}",
+            description="该工具可能修改数据、文件或运行环境，请确认后继续。",
+            allow_text=False,
+            risk_level=tool.get_risk_level(function_name),
+        )
+
+    async def _continue_tool_loop(
+            self,
+            message: Dict[str, Any],
+    ) -> AsyncGenerator[BaseEvent, None]:
+        """从一个 Assistant 消息开始执行 Tool Loop，并在需要人类输入时安全暂停。"""
+        for _ in range(self._agent_config.max_iterations):
+            if not message or not message.get("tool_calls"):
+                break
+
+            tool_messages = []
+            for tool_call in message["tool_calls"]:
+                if not tool_call.get("function"):
+                    continue
+
+                tool_call_id = tool_call.get("id") or str(uuid.uuid4())
+                function_name = tool_call["function"]["name"]
+                function_args = await self._json_parser.invoke(
+                    tool_call["function"]["arguments"]
+                )
+                tool = self._get_tool(function_name)
+
+                yield ToolEvent(
+                    tool_call_id=tool_call_id,
+                    tool_name=tool.name,
+                    function_name=function_name,
+                    function_args=function_args,
+                    status=ToolEventStatus.CALLING,
+                )
+
+                approval_policy = tool.get_approval_policy(function_name)
+                if function_name == "message_ask_user" or approval_policy == "ask":
+                    yield self._build_interaction_event(
+                        tool,
+                        tool_call_id,
+                        function_name,
+                        function_args,
+                    )
+                    return
+
+                if approval_policy == "deny":
+                    result = ToolResult(
+                        success=False,
+                        message="工具策略已禁止执行该调用。",
+                    )
+                else:
+                    result = await self._invoke_tool(tool, function_name, function_args)
+
+                yield ToolEvent(
+                    tool_call_id=tool_call_id,
+                    tool_name=tool.name,
+                    function_name=function_name,
+                    function_args=function_args,
+                    function_result=result,
+                    status=ToolEventStatus.CALLED,
+                )
+                tool_messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "function_name": function_name,
+                    "content": result.model_dump_json(),
+                })
+
+            message = await self._invoke_llm(tool_messages)
+        else:
+            yield ErrorEvent(
+                error=f"Agent迭代超过最大迭代次数: {self._agent_config.max_iterations}, 任务处理失败"
+            )
+            return
+
+        if message and message.get("content") is not None:
+            yield MessageEvent(message=message["content"])
+        else:
+            yield ErrorEvent(error="Agent未能生成有效回复内容")
+
+    async def resume_interaction(
+            self,
+            resolution: InteractionResolution,
+    ) -> AsyncGenerator[BaseEvent, None]:
+        """从持久化 Memory 尾部精确恢复一个待处理 Tool Call。"""
+        await self._ensure_memory()
+        last_message = self._memory.get_last_message()
+        tool_calls = (last_message or {}).get("tool_calls") or []
+        if len(tool_calls) != 1:
+            raise RuntimeError("无法恢复交互：Memory 中没有唯一的待处理工具调用")
+
+        tool_call = tool_calls[0]
+        function = tool_call.get("function") or {}
+        tool_call_id = tool_call.get("id")
+        function_name = function.get("name")
+        function_args = await self._json_parser.invoke(function.get("arguments") or "{}")
+
+        if tool_call_id != resolution.tool_call_id:
+            raise RuntimeError("无法恢复交互：Tool Call ID 不匹配")
+        if function_name != resolution.function_name:
+            raise RuntimeError("无法恢复交互：工具函数不匹配")
+        if function_args != resolution.function_args:
+            raise RuntimeError("无法恢复交互：工具参数不匹配")
+
+        tool = self._get_tool(function_name)
+        if resolution.interaction_type == InteractionType.ASK_USER:
+            if function_name != "message_ask_user" or resolution.decision != InteractionDecision.ANSWER:
+                raise RuntimeError("无法恢复交互：询问决定与工具不匹配")
+            result = ToolResult(
+                success=True,
+                data={
+                    "answer": resolution.answer or "",
+                    "selected_values": resolution.selected_values,
+                },
+            )
+        elif resolution.interaction_type == InteractionType.TOOL_APPROVAL:
+            if resolution.decision == InteractionDecision.APPROVE:
+                result = await self._invoke_tool(tool, function_name, function_args)
+            elif resolution.decision == InteractionDecision.REJECT:
+                result = ToolResult(success=False, message="用户拒绝执行该工具调用。")
+            else:
+                raise RuntimeError("无法恢复交互：审批决定无效")
+        else:
+            raise RuntimeError("无法恢复交互：未知交互类型")
+
+        yield ToolEvent(
+            tool_call_id=tool_call_id,
+            tool_name=tool.name,
+            function_name=function_name,
+            function_args=function_args,
+            function_result=result,
+            status=ToolEventStatus.CALLED,
+        )
+        next_message = await self._invoke_llm([{
+            "role": "tool",
+            "tool_call_id": tool_call_id,
+            "function_name": function_name,
+            "content": result.model_dump_json(),
+        }])
+        async for event in self._continue_tool_loop(next_message):
+            yield event
+
     async def invoke(self, query: str, format: Optional[str] = None) -> AsyncGenerator[BaseEvent, None]:
         """传递消息+响应格式调用程序生成异步迭代内容"""
         # 1.需要判断下是否传递了format
@@ -277,64 +478,6 @@ class BaseAgent(ABC):
             format,
         )
 
-        # 3.循环遍历直到最大迭代次数
-        for _ in range(self._agent_config.max_iterations):
-            # 4.如果LLM响应为空或无工具调用则表示LLM生成了文本回答，这时候就是最终答案
-            if not message or not message.get("tool_calls"):
-                break
-
-            # 5.循环遍历工具参数并执行
-            tool_messages = []
-            for tool_call in message["tool_calls"]:
-                if not tool_call.get("function"):
-                    continue
-
-                # 6.取出调用工具id、名字、参数信息
-                tool_call_id = tool_call["id"] or str(uuid.uuid4())
-                function_name = tool_call["function"]["name"]
-                function_args = await self._json_parser.invoke(tool_call["function"]["arguments"])
-
-                # 7.取出Agent中对应的工具
-                tool = self._get_tool(function_name)
-
-                # 8.返回工具即将调用事件，其中tool_content比较特殊，需要在具体业务中进行实现，这里留空即可
-                yield ToolEvent(
-                    tool_call_id=tool_call_id,
-                    tool_name=tool.name,
-                    function_name=function_name,
-                    function_args=function_args,
-                    status=ToolEventStatus.CALLING,
-                )
-
-                # 9.调用工具并获取结果
-                result = await self._invoke_tool(tool, function_name, function_args)
-
-                # 10.返回工具调用结果，其中tool_content比较特殊，需要在业务中进行实现
-                yield ToolEvent(
-                    tool_call_id=tool_call_id,
-                    tool_name=tool.name,
-                    function_name=function_name,
-                    function_args=function_args,
-                    function_result=result,
-                    status=ToolEventStatus.CALLED,
-                )
-
-                # 11.组装工具响应
-                tool_messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call_id,
-                    "function_name": function_name,
-                    "content": result.model_dump_json(),
-                })
-
-            # 12.所有工具都执行完成后，调用LLM获取汇总消息二次提供
-            message = await self._invoke_llm(tool_messages)
-        else:
-            # 13.超过最大迭代次数后，则抛出错误
-            yield ErrorEvent(error=f"Agent迭代超过最大迭代次数: {self._agent_config.max_iterations}, 任务处理失败")
-
-        # 14.在指定步骤内完成了迭代则返回消息事件
-        if message and message.get("content") is not None:
-            yield MessageEvent(message=message["content"])
-        else:
-            yield ErrorEvent(error="Agent未能生成有效回复内容")
+        # 3.继续执行工具循环；需要人类输入时该生成器会在实际调用前安全结束。
+        async for event in self._continue_tool_loop(message):
+            yield event

@@ -1,5 +1,13 @@
 # Agentic 当前状态
 
+## 2026-07-20 增量：结构化询问与高风险工具审批
+
+当前 Chat 执行链路已支持持久化 Human-in-the-loop：Agent 可发出结构化问题或工具审批动作，会话进入 `waiting`；用户处理后创建新 Task，并从 React Memory 中的原 Tool Call 精确继续。Interaction 采用 Session JSONB 追加事件，不新增数据库迁移；所有权、最新 pending、重复提交和并发提交由事务行锁保护。前端提供问题卡、审批卡、历史 resolved 状态和 SSE 恢复，普通输入不能绕过待处理动作。
+
+审批采用分层默认值：Sandbox 内文件读取为低风险，普通写入和替换为中风险，均在 `approval=auto` 时直接执行；Shell 执行、浏览器脚本及其他真正高风险副作用仍进入确认流程。文件工具仍受 Sandbox 路径边界保护，显式 `approval=ask|deny` 可覆盖默认行为。
+
+通用设置现可逐项配置系统高风险工具：`auto` 按全局风险策略、`allow` 始终允许、`ask` 每次确认、`deny` 禁止执行。例如可单独允许 `shell_execute`，同时保留 `browser_console_exec` 的确认。设置使用现有用户 ToolConfig 持久化，不新增数据库迁移，也不追溯改变已创建的 pending interaction。
+
 整理日期：2026-07-13
 
 本文是 `agentic` 当前实现基线，用于替代旧的数据库与部署基线文档。结论以当前代码为准，不再沿用旧文档中“用户、工具配置未入库”的说法。

@@ -1,5 +1,6 @@
 import type {
   ChatMessage,
+  InteractionEvent,
   PlanEvent,
   PlanStep,
   SSEEventData,
@@ -31,6 +32,7 @@ export type TimelineItem = (
   | { kind: 'assistant'; id: string; data: ChatMessage; timeLabel?: string; createdAt?: number }
   | { kind: 'tool'; id: string; data: ToolEvent; timeLabel?: string }
   | { kind: 'step'; id: string; data: StepEvent; tools: ToolEvent[] }
+  | { kind: 'interaction'; id: string; data: InteractionEvent; timeLabel?: string }
   | { kind: 'error'; id: string; error: string; timestamp?: number; timeLabel?: string }
 ) & TimelineSource
 
@@ -163,6 +165,7 @@ export function eventsToTimeline(events: SSEEventData[]): TimelineItem[] {
   let toolIndex = 0
   let stepIndex = 0
   let errorIndex = 0
+  let interactionIndex = 0
 
   for (const ev of events) {
     switch (ev.type) {
@@ -317,6 +320,34 @@ export function eventsToTimeline(events: SSEEventData[]): TimelineItem[] {
             timestamp: errorData.created_at,
             timeLabel: formatMessageTimeLabel(errorData.created_at),
             sourceEventId: (errorData as { event_id?: string }).event_id,
+          })
+        }
+        break
+      }
+      case 'interaction': {
+        const interaction = ev.data as InteractionEvent
+        const existingIndex = list.findIndex(
+          (item) =>
+            item.kind === 'interaction' &&
+            item.data.action_id === interaction.action_id,
+        )
+        if (existingIndex >= 0) {
+          const existing = list[existingIndex]
+          if (existing.kind === 'interaction') {
+            list[existingIndex] = {
+              ...existing,
+              data: interaction,
+              sourceEventId:
+                (interaction as { event_id?: string }).event_id || existing.sourceEventId,
+            }
+          }
+        } else {
+          list.push({
+            kind: 'interaction',
+            id: stableId('interaction', interactionIndex++, interaction.action_id),
+            data: interaction,
+            timeLabel: formatMessageTimeLabel(getEventCreatedAt(interaction)),
+            sourceEventId: (interaction as { event_id?: string }).event_id,
           })
         }
         break

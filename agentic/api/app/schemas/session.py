@@ -9,6 +9,7 @@ from typing import List, Dict, Any, Literal, Optional
 from pydantic import BaseModel, Field, model_validator
 
 from app.core.entities.skill import SkillRef
+from app.core.entities.event import InteractionDecision
 
 
 class SessionResponse(BaseModel):
@@ -69,6 +70,22 @@ class ChatRequest(BaseModel):
 class ResumeSessionRequest(BaseModel):
     """User-triggered recovery of a failed run in the same conversation."""
     mode: Literal["continue", "restart"]
+
+
+class ResolveInteractionRequest(BaseModel):
+    """Resolve a structured question or tool approval action."""
+
+    decision: InteractionDecision
+    answer: Optional[str] = Field(default=None, max_length=10000)
+    selected_values: List[str] = Field(default_factory=list, max_length=50)
+
+    @model_validator(mode="after")
+    def validate_resolution_shape(self) -> "ResolveInteractionRequest":
+        if any(not value or len(value) > 500 for value in self.selected_values):
+            raise ValueError("selected_values contains an invalid value")
+        if len(set(self.selected_values)) != len(self.selected_values):
+            raise ValueError("selected_values must be unique")
+        return self
 
 
 class FileReadRequest(BaseModel):

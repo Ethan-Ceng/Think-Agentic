@@ -1,7 +1,13 @@
 import { computed, onBeforeUnmount, ref, unref, watch, type Ref } from 'vue'
 import { sessionApi } from '@/lib/api/session'
 import { normalizeEvent, normalizeEvents } from '@/lib/session-events'
-import type { ResumeMode, SSEEventData, SessionDetail, SessionFile } from '@/lib/api/types'
+import type {
+  ResolveInteractionParams,
+  ResumeMode,
+  SSEEventData,
+  SessionDetail,
+  SessionFile,
+} from '@/lib/api/types'
 import type { SendMessageInput } from '@/types/skill'
 
 export type UseSessionDetailResult = {
@@ -14,6 +20,7 @@ export type UseSessionDetailResult = {
   refreshFiles: () => Promise<void>
   sendMessage: (input: SendMessageInput) => Promise<void>
   resumeTask: (mode: ResumeMode) => Promise<void>
+  resolveInteraction: (actionId: string, params: ResolveInteractionParams) => Promise<void>
   streaming: Ref<boolean>
 }
 
@@ -50,6 +57,14 @@ export function useSessionDetail(
   let isSendMessage = false
   let lastEventId: string | null = null
   let seenEventIds = new Set<string>()
+
+  function finishRunStream(): void {
+    streaming.value = false
+    isSendMessage = false
+    if (session.value && session.value.status !== 'waiting') {
+      session.value = { ...session.value, status: 'completed' }
+    }
+  }
 
   function appendEvent(ev: SSEEventData): void {
     emptyReconnectAttempt = 0
@@ -106,6 +121,14 @@ export function useSessionDetail(
       }
     }
 
+    if (evToAppend.type === 'interaction') {
+      const interaction = evToAppend.data as { status?: string }
+      session.value = session.value
+        ? { ...session.value, status: interaction.status === 'pending' ? 'waiting' : 'running' }
+        : null
+      if (interaction.status === 'pending') streaming.value = false
+    }
+
     if (evToAppend.type === 'wait') {
       session.value = session.value ? { ...session.value, status: 'waiting' } : null
       streaming.value = false
@@ -142,7 +165,7 @@ export function useSessionDetail(
         if (err.name === 'AbortError') return
         if (err.message === 'SSE_STREAM_END') {
           emptyStreamCleanup = null
-          scheduleEmptyStreamReconnect()
+          void refresh().finally(() => scheduleEmptyStreamReconnect())
           return
         }
         console.warn('Session detail empty stream error:', err)
@@ -249,8 +272,7 @@ export function useSessionDetail(
           return
         }
         if (err.message === 'SSE_STREAM_END') {
-          streaming.value = false
-          isSendMessage = false
+          finishRunStream()
           if (messageStreamCleanup) {
             messageStreamCleanup()
             messageStreamCleanup = null
@@ -293,22 +315,69 @@ export function useSessionDetail(
       (ev) => {
         appendEvent(ev)
         if (ev.type === 'done') {
-          streaming.value = false
-          isSendMessage = false
+          finishRunStream()
           messageStreamCleanup?.()
           messageStreamCleanup = null
         }
       },
       (err) => {
         if (err.name === 'AbortError') return
-        streaming.value = false
-        isSendMessage = false
         messageStreamCleanup = null
-        if (err.message === 'SSE_STREAM_END') return
+        if (err.message === 'SSE_STREAM_END') {
+          finishRunStream()
+          return
+        }
+        finishRunStream()
         error.value = err
-        session.value = session.value ? { ...session.value, status: 'completed' } : null
       },
     )
+  }
+
+  async function resolveInteraction(
+    actionId: string,
+    params: ResolveInteractionParams,
+  ): Promise<void> {
+    const currentId = id.value
+    if (!currentId) return
+
+    stopEmptyStream()
+    messageStreamCleanup?.()
+    messageStreamCleanup = null
+    isSendMessage = true
+    streaming.value = true
+    error.value = null
+
+    await new Promise<void>((resolve, reject) => {
+      let settled = false
+      const finish = (streamError?: Error) => {
+        if (settled) return
+        settled = true
+        finishRunStream()
+        messageStreamCleanup?.()
+        messageStreamCleanup = null
+        if (streamError) reject(streamError)
+        else resolve()
+      }
+
+      messageStreamCleanup = sessionApi.resolveInteraction(
+        currentId,
+        actionId,
+        params,
+        (ev) => {
+          appendEvent(ev)
+          if (ev.type === 'done') finish()
+        },
+        (streamError) => {
+          if (streamError.name === 'AbortError') return
+          if (streamError.message === 'SSE_STREAM_END') {
+            finish()
+            return
+          }
+          error.value = streamError
+          finish(streamError)
+        },
+      )
+    })
   }
 
   watch(
@@ -372,6 +441,7 @@ export function useSessionDetail(
     refreshFiles,
     sendMessage,
     resumeTask,
+    resolveInteraction,
     streaming,
   }
 }

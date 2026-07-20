@@ -9,6 +9,11 @@ export default mergeConfig(
       environment: 'happy-dom',
       setupFiles: ['./src/test/setup.ts'],
       clearMocks: true,
+      server: {
+        deps: {
+          inline: ['element-plus'],
+        },
+      },
     },
   }),
 )

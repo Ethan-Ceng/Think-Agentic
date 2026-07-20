@@ -1,5 +1,21 @@
 # Agentic 工具管理现状
 
+## 2026-07-20：执行审批策略
+
+- `ToolBinding.approval` 支持 `auto | allow | ask | deny`，旧配置缺省为 `auto`。
+- `RuntimeToolPolicy.require_approval_for_high_risk` 默认开启，可在“设置 → 通用 → 高级运行策略”关闭。
+- `auto` 在高风险工具上且全局开关开启时等价于 `ask`；`allow` 明确放行，`deny` 直接产生失败 Tool Result。
+- “设置 → 通用 → 系统工具审批”支持为 Shell、浏览器脚本等系统高风险工具逐项选择“按风险策略 / 始终允许 / 每次确认 / 禁止执行”。逐项配置持久保存，只影响后续调用；已经 pending 的审批仍需处理。
+- `read_file`、`write_file`、`replace_in_file` 均受 Sandbox 路径边界约束；读取为低风险，普通写入/替换为中风险，`auto` 默认直接执行。需要更严格治理时仍可显式设置 `approval=ask|deny`。
+- `message_notify_user` 与 `message_ask_user` 是系统交互工具，不套用通用审批；其中 ask_user 自身会触发结构化等待。
+- 审批恢复严格校验持久化 Tool Call ID、函数名和参数。Trace 只记录 action、decision、tool_call、function 和 risk，不记录原始审批参数。
+
+解决接口：
+
+```text
+POST /api/sessions/{session_id}/interactions/{action_id}/resolve
+```
+
 整理日期：2026-07-13
 
 本文替代旧的工具管理落地计划。旧文档中的 Phase 1/2 已经部分落地，当前应按“实现现状 + 未完成项 + 下一步”维护。
@@ -234,5 +250,5 @@ blocked
 ## 11. 风险
 
 - UI 工具开关不是完整安全边界，真正安全还需要认证、授权、审计、确认和沙箱共同工作。
-- Shell、文件写入、浏览器控制台、自定义 API、A2A 调用都应视为高风险。
+- Shell 执行、浏览器控制台和具有外部副作用的 API/A2A 调用应视为高风险；受 Sandbox 限制的普通文件读写默认自动执行，删除、越界或不可逆文件操作需单独升级审批。
 - 默认兼容旧行为是合理的，但发布到外部入口前必须收紧高风险工具策略。

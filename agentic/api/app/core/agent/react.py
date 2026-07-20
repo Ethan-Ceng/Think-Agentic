@@ -9,12 +9,13 @@ import logging
 from typing import AsyncGenerator
 
 from app.core.entities.event import (
+    InteractionEvent,
+    InteractionResolution,
     StepEventStatus,
     StepEvent,
     ToolEvent,
     MessageEvent,
     ErrorEvent,
-    ToolEventStatus,
     WaitEvent,
     BaseEvent
 )
@@ -51,20 +52,12 @@ class ReActAgent(BaseAgent):
         # 3.调用invoke获取agent返回的事件内容
         async for event in self.invoke(query):
             # 4.判断事件类型执行不同操作
+            if isinstance(event, InteractionEvent):
+                yield event
+                yield WaitEvent()
+                return
             if isinstance(event, ToolEvent):
-                # 5.工具事件需要判断工具的名称是否为message_ask_user
-                if event.function_name == "message_ask_user":
-                    # 6.工具如果在调用中，我们需要返回一条消息告知用户需要让用户处理什么
-                    if event.status == ToolEventStatus.CALLING:
-                        yield MessageEvent(
-                            role="assistant",
-                            message=event.function_args.get("text", "")
-                        )
-                    elif event.status == ToolEventStatus.CALLED:
-                        # 7.如果工具事件为已调用，则需要返回等待事件并中断程序
-                        yield WaitEvent()
-                        return
-                    continue
+                pass
             elif isinstance(event, MessageEvent):
                 # 8.返回消息事件，意味着content有内容，content有内容则代表执行Agent已运行完毕
                 step.status = ExecutionStatus.COMPLETED
@@ -98,6 +91,36 @@ class ReActAgent(BaseAgent):
 
         # 16.循环迭代完成后代表子步骤已实现，需要更新状态
         step.status = ExecutionStatus.COMPLETED
+
+    async def resume_step(
+            self,
+            plan: Plan,
+            step: Step,
+            resolution: InteractionResolution,
+    ) -> AsyncGenerator[BaseEvent, None]:
+        """恢复被结构化询问或工具审批暂停的当前步骤。"""
+        step.status = ExecutionStatus.RUNNING
+        async for event in self.resume_interaction(resolution):
+            if isinstance(event, InteractionEvent):
+                yield event
+                yield WaitEvent()
+                return
+            if isinstance(event, MessageEvent):
+                parsed_obj = await self._json_parser.invoke(event.message)
+                new_step = Step.model_validate(parsed_obj)
+                step.status = ExecutionStatus.COMPLETED
+                step.success = new_step.success
+                step.result = new_step.result
+                step.attachments = new_step.attachments
+                yield StepEvent(step=step, status=StepEventStatus.COMPLETED)
+                if step.result:
+                    yield MessageEvent(role="assistant", message=step.result)
+                continue
+            if isinstance(event, ErrorEvent):
+                step.status = ExecutionStatus.FAILED
+                step.error = event.error
+                yield StepEvent(step=step, status=StepEventStatus.FAILED)
+            yield event
 
     async def summarize(self) -> AsyncGenerator[BaseEvent, None]:
         """调用Agent汇总历史的消息并生成最终回复+附件"""

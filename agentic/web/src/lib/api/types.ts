@@ -39,6 +39,7 @@ export type ExecutionStatus = 'pending' | 'running' | 'completed' | 'failed'
 export type ToolEventStatus = 'calling' | 'called'
 export type MCPTransport = 'stdio' | 'sse' | 'streamable_http'
 export type ToolRiskLevel = 'low' | 'medium' | 'high'
+export type ToolApprovalPolicy = 'auto' | 'allow' | 'ask' | 'deny'
 export type ToolExecutorType = 'builtin' | 'mcp' | 'a2a' | 'api'
 export type ToolSourceType = 'builtin' | 'mcp' | 'a2a' | 'api'
 
@@ -115,12 +116,14 @@ export type CreateA2AServerParams = {
 export type ToolBinding = {
   enabled: boolean
   risk_level: ToolRiskLevel
+  approval?: ToolApprovalPolicy
   params?: Record<string, unknown>
 }
 
 export type RuntimeToolPolicy = {
   allowed_executor_types: ToolExecutorType[]
   max_tool_iterations: number
+  require_approval_for_high_risk: boolean
 }
 
 export type ToolDescriptor = {
@@ -140,6 +143,14 @@ export type ToolDescriptor = {
   requires_credentials: boolean
   enabled_by_default: boolean
   enabled: boolean
+}
+
+export type ToolApprovalSetting = {
+  tool_id: string
+  function_name: string
+  label: string
+  risk_level: ToolRiskLevel
+  approval: ToolApprovalPolicy
 }
 
 export type ToolRegistration = {
@@ -163,6 +174,7 @@ export type ToolRegistration = {
 export type ToolListData = {
   tools: ToolDescriptor[]
   registrations: ToolRegistration[]
+  approval_tools: ToolApprovalSetting[]
   runtime_policy: RuntimeToolPolicy
 }
 
@@ -544,6 +556,12 @@ export type ResumeSessionParams = {
   mode: ResumeMode
 }
 
+export type ResolveInteractionParams = {
+  decision: InteractionDecision
+  answer?: string
+  selected_values?: string[]
+}
+
 export type SessionDetail = Session & {
   events?: SSEEventData[]
 }
@@ -579,12 +597,44 @@ export type ToolEvent = {
   [key: string]: unknown
 }
 
+export type InteractionType = 'ask_user' | 'tool_approval'
+export type InteractionStatus = 'pending' | 'resolved'
+export type InteractionDecision = 'answer' | 'approve' | 'reject'
+
+export type InteractionOption = {
+  value: string
+  label: string
+  description?: string | null
+}
+
+export type InteractionEvent = {
+  action_id: string
+  interaction_type: InteractionType
+  status: InteractionStatus
+  tool_call_id: string
+  tool_name: string
+  function_name: string
+  function_args: Record<string, unknown>
+  prompt: string
+  description?: string | null
+  options: InteractionOption[]
+  allow_multiple: boolean
+  allow_text: boolean
+  placeholder?: string | null
+  risk_level?: ToolRiskLevel | null
+  decision?: InteractionDecision | null
+  answer?: string | null
+  selected_values: string[]
+  [key: string]: unknown
+}
+
 export type SSEEventType =
   | 'message'
   | 'title'
   | 'plan'
   | 'step'
   | 'tool'
+  | 'interaction'
   | 'wait'
   | 'done'
   | 'error'
@@ -595,6 +645,7 @@ export type SSEEventData =
   | { type: 'plan'; data: PlanEvent }
   | { type: 'step'; data: StepEvent }
   | { type: 'tool'; data: ToolEvent }
+  | { type: 'interaction'; data: InteractionEvent }
   | { type: 'wait'; data: Record<string, unknown> }
   | { type: 'done'; data: Record<string, unknown> }
   | { type: 'error'; data: { error: string; [key: string]: unknown } }

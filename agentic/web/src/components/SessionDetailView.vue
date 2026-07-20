@@ -13,7 +13,7 @@ import UiState from '@/components/ui/UiState.vue'
 import { useSessionDetail } from '@/composables/useSessionDetail'
 import { useToast } from '@/composables/useToast'
 import { sessionApi } from '@/lib/api/session'
-import type { FileInfo, ResumeMode, ToolEvent } from '@/lib/api/types'
+import type { FileInfo, ResolveInteractionParams, ResumeMode, ToolEvent } from '@/lib/api/types'
 import type { AttachmentFile, TimelineItem, UserMessageStatus } from '@/lib/session-events'
 import type { SendMessageInput, SkillRef } from '@/types/skill'
 import { eventsToTimeline, formatMessageTimeLabel, getLatestPlanFromEvents } from '@/lib/session-events'
@@ -60,6 +60,8 @@ const scrollContainerRef = ref<HTMLDivElement | null>(null)
 const prevToolCount = ref(0)
 const isNearBottom = ref(true)
 const pendingUserMessage = ref<PendingUserMessage | null>(null)
+const resolvingActionId = ref<string | null>(null)
+const interactionErrors = ref<Record<string, string>>({})
 const stoppedAt = ref<number | null>(null)
 const lastFocusedEvent = ref('')
 let focusTimer = 0
@@ -104,6 +106,13 @@ const timeline = computed<TimelineItem[]>(() => {
   return items
 })
 const planSteps = computed(() => getLatestPlanFromEvents(detail.events.value))
+const pendingInteraction = computed(() => {
+  for (let i = timeline.value.length - 1; i >= 0; i--) {
+    const item = timeline.value[i]
+    if (item.kind === 'interaction' && item.data.status === 'pending') return item.data
+  }
+  return null
+})
 const latestRecoverableErrorId = computed(() => {
   if (detail.session.value?.status !== 'completed') return null
   for (let i = timeline.value.length - 1; i >= 0; i--) {
@@ -379,6 +388,8 @@ watch(
   () => props.sessionId,
   () => {
     pendingUserMessage.value = null
+    resolvingActionId.value = null
+    interactionErrors.value = {}
     stoppedAt.value = null
     isNearBottom.value = true
     lastFocusedEvent.value = ''
@@ -473,6 +484,24 @@ async function handleRecoverTask(mode: ResumeMode) {
     scrollToConversationBottom('smooth')
   } catch (error) {
     toast.error(error instanceof Error ? error.message : '恢复任务失败，请稍后再试')
+  }
+}
+
+async function handleResolveInteraction(actionId: string, params: ResolveInteractionParams) {
+  if (resolvingActionId.value) return
+  resolvingActionId.value = actionId
+  interactionErrors.value = { ...interactionErrors.value, [actionId]: '' }
+  try {
+    await detail.resolveInteraction(actionId, params)
+    isNearBottom.value = true
+    scrollToConversationBottom('smooth')
+  } catch (resolveError) {
+    interactionErrors.value = {
+      ...interactionErrors.value,
+      [actionId]: resolveError instanceof Error ? resolveError.message : '处理失败，请重试',
+    }
+  } finally {
+    resolvingActionId.value = null
   }
 }
 
@@ -596,11 +625,14 @@ async function handleStop() {
                 :dom-id="item.sourceEventId ? `event-${item.sourceEventId}` : undefined"
                 :show-recovery-actions="item.kind === 'error' && item.id === latestRecoverableErrorId"
                 :recovery-busy="detail.streaming.value"
+                :interaction-busy="item.kind === 'interaction' && resolvingActionId === item.data.action_id"
+                :interaction-error="item.kind === 'interaction' ? interactionErrors[item.data.action_id] : ''"
                 @view-all-files="handleViewAllFiles"
                 @file-click="handleFileClick"
                 @tool-click="handleToolClick"
                 @retry-message="handleRetryMessage"
                 @recover-task="handleRecoverTask"
+                @resolve-interaction="handleResolveInteraction"
               />
 
               <div
@@ -638,6 +670,7 @@ async function handleStop() {
               :on-send="handleSend"
               :session-id="sessionId"
               :is-running="detail.session.value.status === 'running'"
+              :disabled="Boolean(pendingInteraction)"
               :on-stop="handleStop"
             />
           </div>

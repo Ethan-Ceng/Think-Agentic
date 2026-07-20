@@ -12,10 +12,29 @@ from typing import Optional, List, Dict
 
 from pydantic import BaseModel, Field
 
-from .event import Event, PlanEvent
+from .event import (
+    Event,
+    InteractionDecision,
+    InteractionEvent,
+    InteractionStatus,
+    InteractionType,
+    PlanEvent,
+)
 from .file import File
 from .memory import Memory
 from .plan import Plan
+
+
+class InteractionNotFoundError(LookupError):
+    pass
+
+
+class InteractionConflictError(RuntimeError):
+    pass
+
+
+class InteractionValidationError(ValueError):
+    pass
 
 
 class SessionStatus(str, Enum):
@@ -52,3 +71,65 @@ class Session(BaseModel):
                 return event.plan
 
         return None
+
+    def resolve_interaction(
+            self,
+            action_id: str,
+            decision: InteractionDecision,
+            answer: Optional[str] = None,
+            selected_values: Optional[List[str]] = None,
+    ) -> InteractionEvent:
+        """Resolve the latest pending interaction using append-only event history."""
+        selected_values = selected_values or []
+        answer = answer.strip() if answer and answer.strip() else None
+        latest_by_action: Dict[str, InteractionEvent] = {}
+        for event in self.events:
+            if isinstance(event, InteractionEvent):
+                latest_by_action[event.action_id] = event
+
+        target = latest_by_action.get(action_id)
+        if target is None:
+            raise InteractionNotFoundError("交互动作不存在")
+        if target.status != InteractionStatus.PENDING:
+            raise InteractionConflictError("交互动作已经解决")
+
+        pending = [
+            event
+            for event in latest_by_action.values()
+            if event.status == InteractionStatus.PENDING
+        ]
+        if not pending or pending[-1].action_id != action_id:
+            raise InteractionConflictError("交互动作已不是当前待处理动作")
+        if self.status != SessionStatus.WAITING:
+            raise InteractionConflictError("会话当前不在等待交互状态")
+
+        if target.interaction_type == InteractionType.ASK_USER:
+            if decision != InteractionDecision.ANSWER:
+                raise InteractionValidationError("询问交互只能提交回答")
+            option_values = {option.value for option in target.options}
+            if any(value not in option_values for value in selected_values):
+                raise InteractionValidationError("回答包含未知选项")
+            if not target.allow_multiple and len(selected_values) > 1:
+                raise InteractionValidationError("该问题不允许多选")
+            if not target.allow_text and answer:
+                raise InteractionValidationError("该问题不允许自由文本回答")
+            if not answer and not selected_values:
+                raise InteractionValidationError("回答不能为空")
+        elif target.interaction_type == InteractionType.TOOL_APPROVAL:
+            if decision not in {InteractionDecision.APPROVE, InteractionDecision.REJECT}:
+                raise InteractionValidationError("工具审批决定无效")
+            if answer or selected_values:
+                raise InteractionValidationError("工具审批不能携带回答内容")
+
+        event_data = target.model_dump(
+            exclude={"id", "created_at", "status", "decision", "answer", "selected_values"}
+        )
+        resolved = InteractionEvent(
+            **event_data,
+            status=InteractionStatus.RESOLVED,
+            decision=decision,
+            answer=answer,
+            selected_values=selected_values,
+        )
+        self.events.append(resolved)
+        return resolved

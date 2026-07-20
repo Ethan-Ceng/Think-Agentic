@@ -3,6 +3,7 @@ import type {
   ChatParams,
   CreateSessionParams,
   ResumeSessionParams,
+  ResolveInteractionParams,
   SSEEventData,
   SSEEventHandler,
   Session,
@@ -206,6 +207,54 @@ export const sessionApi = {
       }
     }
 
+    void startStream()
+    return () => controller.abort()
+  },
+
+  resolveInteraction: (
+    sessionId: string,
+    actionId: string,
+    params: ResolveInteractionParams,
+    onEvent: SSEEventHandler,
+    onError?: (error: Error) => void,
+  ): (() => void) => {
+    const controller = new AbortController()
+    const startStream = async () => {
+      try {
+        const stream = await createSSEStream(
+          `/sessions/${sessionId}/interactions/${actionId}/resolve`,
+          params,
+          { signal: controller.signal, timeout: 5 * 60 * 1000 },
+        )
+        await parseSSEStream(
+          stream,
+          (messageEvent) => {
+            if (controller.signal.aborted) return
+            const data =
+              typeof messageEvent.data === 'string'
+                ? JSON.parse(messageEvent.data)
+                : messageEvent.data
+            onEvent({
+              type: messageEvent.type as SSEEventData['type'],
+              data,
+            } as SSEEventData)
+          },
+          (streamError) => {
+            if (!controller.signal.aborted) onError?.(streamError)
+          },
+        )
+        if (!controller.signal.aborted) onError?.(new Error('SSE_STREAM_END'))
+      } catch (streamError) {
+        if (streamError instanceof Error && streamError.name === 'AbortError') return
+        if (!controller.signal.aborted) {
+          onError?.(
+            streamError instanceof Error
+              ? streamError
+              : new Error('解决交互失败'),
+          )
+        }
+      }
+    }
     void startStream()
     return () => controller.abort()
   },

@@ -6,7 +6,7 @@
 @File    : base.py
 """
 import inspect
-from typing import Dict, Any, List, Callable
+from typing import Dict, Any, List, Callable, Literal
 
 from app.core.entities.tool_result import ToolResult
 
@@ -99,6 +99,14 @@ class BaseTool:
             if hasattr(method, "_tool_name") and getattr(method, "_tool_name") == tool_name:
                 return True
         return False
+
+    def get_risk_level(self, tool_name: str) -> Literal["low", "medium", "high"]:
+        """返回当前函数的有效风险等级；未受治理包装的工具默认低风险。"""
+        return "low"
+
+    def get_approval_policy(self, tool_name: str) -> Literal["allow", "ask", "deny"]:
+        """返回当前函数的有效执行策略；普通工具默认允许。"""
+        return "allow"
 
     async def invoke(self, tool_name: str, **kwargs) -> ToolResult:
         """根据传递的工具名+kwargs调用指定工具并获取结果"""

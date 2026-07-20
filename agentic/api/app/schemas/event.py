@@ -11,7 +11,18 @@ from typing import Optional, Dict, Any, Self, Type, Literal, List, Union, get_ar
 
 from pydantic import BaseModel, Field, ConfigDict
 
-from app.core.entities.event import Event, PlanEvent, ToolEventStatus, ToolEvent, StepEvent
+from app.core.entities.event import (
+    Event,
+    InteractionDecision,
+    InteractionEvent,
+    InteractionOption,
+    InteractionStatus,
+    InteractionType,
+    PlanEvent,
+    ToolEventStatus,
+    ToolEvent,
+    StepEvent,
+)
 from app.core.entities.file import File
 from app.core.entities.plan import ExecutionStatus
 from app.core.entities.skill import SkillRef
@@ -204,6 +215,60 @@ class ToolSSEEvent(BaseSSEEvent):
         )
 
 
+class InteractionEventData(BaseEventData):
+    """需要用户回答或审批的持久化动作。"""
+
+    action_id: str
+    interaction_type: InteractionType
+    status: InteractionStatus
+    tool_call_id: str
+    tool_name: str
+    function_name: str
+    function_args: Dict[str, Any] = Field(default_factory=dict)
+    prompt: str
+    description: Optional[str] = None
+    options: List[InteractionOption] = Field(default_factory=list)
+    allow_multiple: bool = False
+    allow_text: bool = True
+    placeholder: Optional[str] = None
+    risk_level: Optional[Literal["low", "medium", "high"]] = None
+    decision: Optional[InteractionDecision] = None
+    answer: Optional[str] = None
+    selected_values: List[str] = Field(default_factory=list)
+
+    @classmethod
+    def from_event(cls, event: InteractionEvent) -> Self:
+        def redact(value: Any, key: str = "") -> Any:
+            normalized = key.lower().replace("-", "_")
+            if normalized in {
+                "api_key",
+                "apikey",
+                "authorization",
+                "access_token",
+                "refresh_token",
+                "token",
+                "password",
+                "secret",
+            }:
+                return "******"
+            if isinstance(value, dict):
+                return {item_key: redact(item, item_key) for item_key, item in value.items()}
+            if isinstance(value, list):
+                return [redact(item) for item in value]
+            return value
+
+        data = event.model_dump(mode="json", exclude={"id", "type", "created_at"})
+        data["function_args"] = redact(data.get("function_args", {}))
+        return cls(**cls.base_event_data(event), **data)
+
+
+class InteractionSSEEvent(BaseSSEEvent):
+    """Human-in-the-loop 交互事件。"""
+
+    event: Literal["interaction"] = "interaction"
+    data: InteractionEventData
+
+
 class DoneSSEEvent(BaseSSEEvent):
     """停止流式事件"""
     event: Literal["done"] = "done"
@@ -233,6 +298,7 @@ AgentSSEEvent = Union[
     StepSSEEvent,
     PlanSSEEvent,
     ToolSSEEvent,
+    InteractionSSEEvent,
     DoneSSEEvent,
     ErrorSSEEvent,
     WaitSSEEvent,

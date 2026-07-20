@@ -451,12 +451,21 @@ class AgentTaskRunner(TaskRunner):
                     message = event.message or ""
                     await self._sync_message_attachments_to_sandbox(event)
                     await self._prepare_skill_runtime(task, event)
+                    if event.interaction_response is not None:
+                        await self._trace_service.project_interaction_resolution(
+                            event.interaction_response
+                        )
                     logger.info(f"AgentTaskRunner接收到新消息: {message[:50]}...")
 
                 # 5.将消息事件转换称消息对象
                 message_obj = Message(
                     message=message,
-                    attachments=[attachment.filepath for attachment in event.attachments]
+                    attachments=[attachment.filepath for attachment in event.attachments],
+                    interaction_response=(
+                        event.interaction_response
+                        if isinstance(event, MessageEvent)
+                        else None
+                    ),
                 )
 
                 # 6.传递消息对象并运行PlannerReActFlow

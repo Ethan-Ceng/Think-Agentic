@@ -97,8 +97,6 @@ BUILTIN_TOOL_GROUPS: tuple[BuiltinToolGroup, ...] = (
 
 
 HIGH_RISK_TOOL_NAMES = {
-    "write_file",
-    "replace_in_file",
     "shell_execute",
     "shell_write_input",
     "shell_kill_process",
@@ -106,6 +104,8 @@ HIGH_RISK_TOOL_NAMES = {
 }
 
 MEDIUM_RISK_TOOL_NAMES = {
+    "write_file",
+    "replace_in_file",
     "browser_navigate",
     "browser_restart",
     "browser_click",
