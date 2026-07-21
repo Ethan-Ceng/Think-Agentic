@@ -23,6 +23,7 @@ from .event import (
 from .file import File
 from .memory import Memory
 from .plan import Plan
+from .skill import SkillRef
 
 
 class InteractionNotFoundError(LookupError):
@@ -35,6 +36,32 @@ class InteractionConflictError(RuntimeError):
 
 class InteractionValidationError(ValueError):
     pass
+
+
+class NextMessageNotFoundError(LookupError):
+    pass
+
+
+class NextMessageConflictError(RuntimeError):
+    pass
+
+
+class NextMessageState(str, Enum):
+    QUEUED = "queued"
+    PROCESSING = "processing"
+
+
+class NextMessage(BaseModel):
+    """One durable follow-up message waiting behind the active Agent turn."""
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    message: str = Field(min_length=1, max_length=10000)
+    attachment_ids: List[str] = Field(default_factory=list, max_length=20)
+    skills: List[SkillRef] = Field(default_factory=list, max_length=5)
+    state: NextMessageState = NextMessageState.QUEUED
+    task_id: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.now)
+    claimed_at: Optional[datetime] = None
 
 
 class SessionStatus(str, Enum):
@@ -58,6 +85,7 @@ class Session(BaseModel):
     events: List[Event] = Field(default_factory=list)  # 事件列表
     files: List[File] = Field(default_factory=list)  # 文件列表
     memories: Dict[str, Memory] = Field(default_factory=dict)  # 记忆
+    next_message: Optional[NextMessage] = None
     status: SessionStatus = SessionStatus.PENDING  # 状态
     updated_at: datetime = Field(default_factory=datetime.now)  # 更新时间
     created_at: datetime = Field(default_factory=datetime.now)  # 创建时间

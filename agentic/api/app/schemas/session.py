@@ -6,7 +6,7 @@ Session Schemas - 请求和响应模型
 from datetime import datetime
 from typing import List, Dict, Any, Literal, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.core.entities.skill import SkillRef
 from app.core.entities.event import InteractionDecision
@@ -49,6 +49,15 @@ class ListSessionResponse(BaseModel):
     sessions: List[ListSessionItem]
 
 
+class NextMessageResponse(BaseModel):
+    id: str
+    message: str
+    attachment_ids: List[str] = Field(default_factory=list)
+    skills: List[SkillRef] = Field(default_factory=list)
+    state: Literal["queued", "processing"]
+    created_at: datetime
+
+
 class GetSessionResponse(BaseModel):
     """获取会话详情响应"""
     session_id: str
@@ -56,6 +65,7 @@ class GetSessionResponse(BaseModel):
     events: List[Any] = Field(default_factory=list)  # AgentSSEEvent 列表
     status: str
     unread_message_count: int = 0
+    next_message: Optional[NextMessageResponse] = None
 
 
 class ChatRequest(BaseModel):
@@ -65,6 +75,20 @@ class ChatRequest(BaseModel):
     skills: List[SkillRef] = Field(default_factory=list)
     event_id: Optional[str] = None
     timestamp: Optional[int] = None
+
+
+class QueueNextMessageRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=10000)
+    attachments: List[str] = Field(default_factory=list, max_length=20)
+    skills: List[SkillRef] = Field(default_factory=list, max_length=5)
+
+    @field_validator("message")
+    @classmethod
+    def trim_message(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("message cannot be blank")
+        return value
 
 
 class ResumeSessionRequest(BaseModel):

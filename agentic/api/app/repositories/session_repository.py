@@ -11,7 +11,7 @@ from typing import Protocol, List, Optional
 from app.core.entities.event import BaseEvent, InteractionDecision, InteractionEvent
 from app.core.entities.file import File
 from app.core.entities.memory import Memory
-from app.core.entities.session import Session, SessionStatus
+from app.core.entities.session import NextMessage, Session, SessionStatus
 
 
 class SessionRepository(Protocol):
@@ -71,6 +71,40 @@ class SessionRepository(Protocol):
 
     async def add_event(self, session_id: str, event: BaseEvent) -> None:
         """往会话中新增事件"""
+        ...
+
+    async def put_next_message(
+            self, session_id: str, user_id: str, next_message: NextMessage
+    ) -> NextMessage:
+        """Create or replace the queued next message for an owned running session."""
+        ...
+
+    async def cancel_next_message(self, session_id: str, user_id: str) -> None:
+        """Cancel an owned queued message; cancellation is idempotent."""
+        ...
+
+    async def finish_or_claim_next_message(
+            self, session_id: str, task_id: str
+    ) -> Optional[NextMessage]:
+        """Atomically claim queued work or mark the session completed."""
+        ...
+
+    async def start_next_message_run(self, session_id: str, user_id: str) -> Session:
+        """Atomically reopen a completed owned session that still has queued work."""
+        ...
+
+    async def consume_next_message(
+            self,
+            session_id: str,
+            message_id: str,
+            task_id: str,
+            event: BaseEvent,
+    ) -> None:
+        """Persist the accepted user event and clear its processing slot."""
+        ...
+
+    async def reset_processing_next_message(self, session_id: str) -> Optional[NextMessage]:
+        """Return an orphaned processing slot to queued state."""
         ...
 
     async def resolve_interaction(

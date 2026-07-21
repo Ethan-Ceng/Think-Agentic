@@ -556,6 +556,21 @@ export type ResumeSessionParams = {
   mode: ResumeMode
 }
 
+export type NextMessage = {
+  id: string
+  message: string
+  attachment_ids: string[]
+  skills: SkillRef[]
+  state: 'queued' | 'processing'
+  created_at: string
+}
+
+export type QueueNextMessageParams = {
+  message: string
+  attachments?: string[]
+  skills?: SkillRef[]
+}
+
 export type ResolveInteractionParams = {
   decision: InteractionDecision
   answer?: string
@@ -564,6 +579,7 @@ export type ResolveInteractionParams = {
 
 export type SessionDetail = Session & {
   events?: SSEEventData[]
+  next_message?: NextMessage | null
 }
 
 export type PlanStep = {

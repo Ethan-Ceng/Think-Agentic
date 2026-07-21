@@ -29,7 +29,7 @@ from app.core.entities.event import ErrorEvent, Event, MessageEvent, BaseEvent, 
 from app.core.entities.file import File
 from app.core.entities.message import Message
 from app.core.entities.search import SearchResults
-from app.core.entities.session import SessionStatus
+from app.core.entities.session import NextMessage, SessionStatus
 from app.core.entities.tool_result import ToolResult
 from app.repositories.uow import IUnitOfWork
 from app.core.flows.planner_react import PlannerReActFlow
@@ -431,22 +431,75 @@ class AgentTaskRunner(TaskRunner):
         except Exception as e:
             logger.warning(f"清理A2A工具资源时出错: {e}")
 
+    async def _accept_next_message(
+            self, task: Task, next_message: NextMessage
+    ) -> MessageEvent:
+        async with self._uow:
+            attachments = [
+                await self._uow.file.get_by_id_for_user(file_id, self._user_id)
+                for file_id in next_message.attachment_ids
+            ]
+
+        event = MessageEvent(
+            role="user",
+            message=next_message.message,
+            attachments=[attachment for attachment in attachments if attachment is not None],
+            skills=next_message.skills,
+            visible=True,
+        )
+        event_id = await task.output_stream.put(event.model_dump_json())
+        event.id = event_id
+        async with self._uow:
+            await self._uow.session.consume_next_message(
+                self._session_id,
+                next_message.id,
+                task.id,
+                event,
+            )
+            await self._uow.session.update_latest_message(
+                self._session_id,
+                event.message,
+                event.created_at,
+            )
+        await self._trace_service.project_event(event)
+        return event
+
     async def invoke(self, task: Task) -> None:
         """根据传递的任务处理agent消息队列并运行agent流"""
         try:
-            # 1.确保沙箱、mcp、a2a均初始化完成
             logger.info("AgentTaskRunner任务处理开始")
             await self._sandbox.ensure_sandbox()
             await self._mcp_tool.initialize(self._mcp_config)
             await self._a2a_tool.initialize(self._a2a_config)
 
-            # 2.循环读取任务中的输入消息队列
-            while not await task.input_stream.is_empty():
-                # 3.从输入流中获取数据
-                event = await self._pop_event(task)
+            current_event: Event | None = None
+            final_done_event: DoneEvent | None = None
+            while True:
+                if current_event is None:
+                    if not await task.input_stream.is_empty():
+                        current_event = await self._pop_event(task)
+                    else:
+                        async with self._uow:
+                            next_message = await self._uow.session.finish_or_claim_next_message(
+                                self._session_id,
+                                task.id,
+                            )
+                        if next_message is None:
+                            await self._put_and_add_event(
+                                task,
+                                final_done_event or DoneEvent(),
+                            )
+                            return
+                        current_event = await self._accept_next_message(task, next_message)
+
+                if current_event is None:
+                    continue
+
+                event = current_event
+                current_event = None
+                pending_done_event: DoneEvent | None = None
                 message = ""
 
-                # 4.判断事件类型是否为消息事件，如果是则处理消息并将附件同步到沙箱中
                 if isinstance(event, MessageEvent):
                     message = event.message or ""
                     await self._sync_message_attachments_to_sandbox(event)
@@ -454,10 +507,9 @@ class AgentTaskRunner(TaskRunner):
                     if event.interaction_response is not None:
                         await self._trace_service.project_interaction_resolution(
                             event.interaction_response
-                        )
+                    )
                     logger.info(f"AgentTaskRunner接收到新消息: {message[:50]}...")
 
-                # 5.将消息事件转换称消息对象
                 message_obj = Message(
                     message=message,
                     attachments=[attachment.filepath for attachment in event.attachments],
@@ -468,55 +520,50 @@ class AgentTaskRunner(TaskRunner):
                     ),
                 )
 
-                # 6.传递消息对象并运行PlannerReActFlow
-                async for event in self._run_flow(message_obj):
-                    # 7.将得到的事件添加到消息队列中
-                    await self._put_and_add_event(task, event)
+                async for flow_event in self._run_flow(message_obj):
+                    if isinstance(flow_event, DoneEvent):
+                        pending_done_event = flow_event
+                        continue
 
-                    # 8.如果事件类型为标题事件则更新会话标题
-                    if isinstance(event, TitleEvent):
+                    await self._put_and_add_event(task, flow_event)
+
+                    if isinstance(flow_event, TitleEvent):
                         async with self._uow:
-                            await self._uow.session.update_title(self._session_id, event.title)
-                    elif isinstance(event, MessageEvent):
-                        # 9.如果事件为消息事件，则更新最新消息并新增未读消息数
+                            await self._uow.session.update_title(self._session_id, flow_event.title)
+                    elif isinstance(flow_event, MessageEvent):
                         async with self._uow:
                             await self._uow.session.update_latest_message(
                                 self._session_id,
-                                event.message,
-                                event.created_at,
+                                flow_event.message,
+                                flow_event.created_at,
                             )
                             await self._uow.session.increment_unread_message_count(self._session_id)
-                    elif isinstance(event, WaitEvent):
-                        # 10.如果事件为等待，则更新会话状态并终止程序
+                    elif isinstance(flow_event, WaitEvent):
                         async with self._uow:
                             await self._uow.session.update_status(self._session_id, SessionStatus.WAITING)
                         return
+                    elif isinstance(flow_event, ErrorEvent):
+                        async with self._uow:
+                            await self._uow.session.update_status(
+                                self._session_id, SessionStatus.COMPLETED
+                            )
+                        return
 
-                    # 11.判断如果输入消息队列为空则跳出循环
-                    if not await task.input_stream.is_empty():
-                        break
-
-            # 12.更新会话状态为已完成
-            async with self._uow:
-                await self._uow.session.update_status(self._session_id, SessionStatus.COMPLETED)
+                final_done_event = pending_done_event or DoneEvent()
         except asyncio.CancelledError:
-            # 13.异步任务被取消，推送结束事件并跟新状态
             logger.info("AgentTaskRunner任务运行取消")
-            await self._put_and_add_event(task, DoneEvent())
             async with self._uow:
+                await self._uow.session.reset_processing_next_message(self._session_id)
                 await self._uow.session.update_status(self._session_id, SessionStatus.COMPLETED)
+            await self._put_and_add_event(task, DoneEvent())
             raise
         except Exception as e:
-            # 14.记录日志并往任务队列/消息队列中写入异常事件并更新会话状态
             logger.exception(f"AgentTaskRunner运行出错: {str(e)}")
-            await self._put_and_add_event(task, ErrorEvent(error=f"AgentTaskRunner出错: {str(e)}"))
             async with self._uow:
+                await self._uow.session.reset_processing_next_message(self._session_id)
                 await self._uow.session.update_status(self._session_id, SessionStatus.COMPLETED)
+            await self._put_and_add_event(task, ErrorEvent(error=f"AgentTaskRunner出错: {str(e)}"))
         finally:
-            # 15.在同一个asyncio Task上下文中清理MCP/A2A工具资源
-            # 这是关键：streamablehttp_client内部使用anyio.create_task_group()，
-            # 要求在同一个Task中进入和退出cancel scope，
-            # 所以必须在invoke()的finally块（即初始化MCP的同一个Task）中清理
             await self._cleanup_tools()
 
     async def destroy(self) -> None:

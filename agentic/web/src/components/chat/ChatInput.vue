@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import ChatComposer, { type ComposerFileItem } from '@/components/chat/ChatComposer.vue'
 import { useToast } from '@/composables/useToast'
 import { fileApi } from '@/lib/api/file'
@@ -25,6 +25,31 @@ const emit = defineEmits<{
   inputValueChange: [value: string]
 }>()
 
+const DRAFT_STORAGE_PREFIX = 'agentic:chat-draft:'
+
+function draftStorageKey(sessionId: string): string {
+  return `${DRAFT_STORAGE_PREFIX}${sessionId}`
+}
+
+function readSessionDraft(sessionId?: string | null): string {
+  if (!sessionId || typeof window === 'undefined') return ''
+  try {
+    return window.localStorage.getItem(draftStorageKey(sessionId)) ?? ''
+  } catch {
+    return ''
+  }
+}
+
+function writeSessionDraft(sessionId: string | null | undefined, value: string): void {
+  if (!sessionId || typeof window === 'undefined') return
+  try {
+    if (value.length > 0) window.localStorage.setItem(draftStorageKey(sessionId), value)
+    else window.localStorage.removeItem(draftStorageKey(sessionId))
+  } catch {
+    // Storage may be disabled or full. Keep the in-memory draft usable.
+  }
+}
+
 const toast = useToast()
 const skillsStore = useSkillsStore()
 type UploadEntry = ComposerFileItem & {
@@ -35,7 +60,7 @@ type UploadEntry = ComposerFileItem & {
 const uploadItems = ref<UploadEntry[]>([])
 const uploading = computed(() => uploadItems.value.some((file) => file.uploadStatus === 'uploading'))
 const sending = ref(false)
-const inputValue = ref('')
+const inputValue = ref(readSessionDraft(props.sessionId))
 const selectedSkills = ref<SkillRef[]>([])
 const fileInputRef = ref<HTMLInputElement | null>(null)
 const composerRef = ref<InstanceType<typeof ChatComposer> | null>(null)
@@ -43,6 +68,7 @@ let uploadEntryId = 0
 
 function setInputText(text: string) {
   inputValue.value = text
+  writeSessionDraft(props.sessionId, text)
   emit('inputValueChange', text)
   composerRef.value?.focus()
 }
@@ -85,6 +111,7 @@ defineExpose({
 
 function handleInputChange(value: string) {
   inputValue.value = value
+  writeSessionDraft(props.sessionId, value)
   emit('inputValueChange', value)
 }
 
@@ -171,6 +198,7 @@ function retryFile(fileId: string) {
 
 async function handleSend() {
   const message = inputValue.value.trim()
+  const sendingSessionId = props.sessionId
 
   if (!message) {
     toast.error('请输入消息内容')
@@ -199,11 +227,14 @@ async function handleSend() {
       },
       files,
     )
-    inputValue.value = ''
-    uploadItems.value = []
-    selectedSkills.value = []
-    emit('inputValueChange', '')
-    composerRef.value?.focus()
+    writeSessionDraft(sendingSessionId, '')
+    if (props.sessionId === sendingSessionId) {
+      inputValue.value = ''
+      uploadItems.value = []
+      selectedSkills.value = []
+      emit('inputValueChange', '')
+      composerRef.value?.focus()
+    }
   } catch (error) {
     console.error('发送消息失败', error)
   } finally {
@@ -214,6 +245,17 @@ async function handleSend() {
 function handleStop() {
   props.onStop?.()
 }
+
+watch(
+  () => props.sessionId,
+  (nextSessionId, previousSessionId) => {
+    writeSessionDraft(previousSessionId, inputValue.value)
+    inputValue.value = readSessionDraft(nextSessionId)
+    uploadItems.value = []
+    selectedSkills.value = []
+    emit('inputValueChange', inputValue.value)
+  },
+)
 
 onMounted(() => {
   if (skillsStore.skills.length === 0) {

@@ -8,10 +8,16 @@
 import logging
 from typing import List, Callable, Type
 
-from app.schemas.exceptions import NotFoundError, ServerRequestsError
+from app.schemas.exceptions import ConflictError, NotFoundError, ServerRequestsError
 from app.core.sandbox.base import Sandbox
 from app.core.entities.file import File
-from app.core.entities.session import Session
+from app.core.entities.session import (
+    NextMessage,
+    NextMessageConflictError,
+    NextMessageNotFoundError,
+    Session,
+)
+from app.core.entities.skill import SkillRef
 from app.repositories.uow import IUnitOfWork
 from app.schemas.session import FileReadResponse, ShellReadResponse
 
@@ -73,6 +79,38 @@ class SessionService:
         """获取指定会话详情信息"""
         async with self._uow:
             return await self._uow.session.get_by_id_for_user(session_id, user_id)
+
+    async def queue_next_message(
+            self,
+            session_id: str,
+            user_id: str,
+            message: str,
+            attachments: List[str],
+            skills: List[SkillRef],
+    ) -> NextMessage:
+        queued = NextMessage(
+            message=message,
+            attachment_ids=attachments,
+            skills=skills,
+        )
+        try:
+            async with self._uow:
+                return await self._uow.session.put_next_message(
+                    session_id, user_id, queued
+                )
+        except NextMessageNotFoundError as exc:
+            raise NotFoundError(str(exc) or "会话不存在") from exc
+        except NextMessageConflictError as exc:
+            raise ConflictError(str(exc)) from exc
+
+    async def cancel_next_message(self, session_id: str, user_id: str) -> None:
+        try:
+            async with self._uow:
+                await self._uow.session.cancel_next_message(session_id, user_id)
+        except NextMessageNotFoundError as exc:
+            raise NotFoundError(str(exc) or "会话不存在") from exc
+        except NextMessageConflictError as exc:
+            raise ConflictError(str(exc)) from exc
 
     async def get_session_files(self, session_id: str, user_id: str) -> List[File]:
         """根据传递的会话id获取指定会话的文件列表信息"""

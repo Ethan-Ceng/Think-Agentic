@@ -23,6 +23,8 @@ from app.schemas.session import (
     ListSessionResponse,
     GetSessionResponse,
     ChatRequest,
+    NextMessageResponse,
+    QueueNextMessageRequest,
     ResumeSessionRequest,
     ResolveInteractionRequest,
     FileReadRequest,
@@ -136,6 +138,13 @@ async def get_session(
                 title=session.title,
                 status=session.status,
                 events=EventMapper.events_to_sse_events(session.events) if session.events else [],
+                next_message=(
+                    NextMessageResponse.model_validate(
+                        session.next_message.model_dump(mode="python")
+                    )
+                    if session.next_message
+                    else None
+                ),
             ),
         )
     except NotFoundError:
@@ -181,6 +190,57 @@ async def stop_session(
 
 
 # ==================== 聊天 ====================
+
+@router.put("/{session_id}/next-message", summary="保存或替换下一条消息")
+async def queue_next_message(
+    session_id: str,
+    request: QueueNextMessageRequest,
+    current_user: User = Depends(get_current_user),
+    session_service: SessionService = Depends(get_session_service),
+) -> Response[NextMessageResponse]:
+    queued = await session_service.queue_next_message(
+        session_id=session_id,
+        user_id=current_user.id,
+        message=request.message,
+        attachments=request.attachments,
+        skills=request.skills,
+    )
+    return Response.success(
+        msg="下一条消息已保存",
+        data=NextMessageResponse.model_validate(queued.model_dump(mode="python")),
+    )
+
+
+@router.delete("/{session_id}/next-message", summary="取消下一条消息")
+async def cancel_next_message(
+    session_id: str,
+    current_user: User = Depends(get_current_user),
+    session_service: SessionService = Depends(get_session_service),
+) -> Response[Optional[Dict]]:
+    await session_service.cancel_next_message(session_id, current_user.id)
+    return Response.success(msg="下一条消息已取消")
+
+
+@router.post("/{session_id}/next-message/run", summary="恢复执行下一条消息（SSE）")
+async def run_next_message(
+    session_id: str,
+    current_user: User = Depends(get_current_user),
+    agent_service: AgentService = Depends(get_agent_service),
+) -> EventSourceResponse:
+    async def event_generator() -> AsyncGenerator[ServerSentEvent, None]:
+        async for event in agent_service.run_next_message(
+            session_id=session_id,
+            user_id=current_user.id,
+        ):
+            sse_event = EventMapper.event_to_sse_event(event)
+            if sse_event:
+                yield ServerSentEvent(
+                    event=sse_event.event,
+                    data=sse_event.data.model_dump_json(),
+                )
+
+    return EventSourceResponse(event_generator())
+
 
 @router.post("/{session_id}/chat", summary="聊天（SSE流式）")
 async def chat(

@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 
 from app.core.entities.event import (
     BaseEvent,
+    DoneEvent,
     ErrorEvent,
     InteractionDecision,
     InteractionResolution,
@@ -37,6 +38,10 @@ class FakeSessionRepository:
     async def add_event(self, session_id: str, event: BaseEvent) -> None:
         assert session_id == self.session.id
         self.events.append(event)
+
+    async def reset_processing_next_message(self, session_id: str):
+        assert session_id == self.session.id
+        return self.session.next_message
 
     async def update_latest_message(self, session_id: str, message: str, timestamp: datetime) -> None:
         assert session_id == self.session.id
@@ -105,13 +110,57 @@ class FakeInputStream:
         return "event-1"
 
 
+class TailOutputStreamWithoutEvent:
+    async def get(self, start_id=None, block_ms=None):
+        return None, None
+
+
 class CompletedTask:
     def __init__(self) -> None:
         self.input_stream = FakeInputStream()
+        self.output_stream = TailOutputStreamWithoutEvent()
         self.done = False
 
     async def invoke(self) -> None:
         self.done = True
+
+
+class TailOutputStream:
+    def __init__(self, event: BaseEvent) -> None:
+        self.event = event
+        self.reads = 0
+
+    async def get(self, start_id=None, block_ms=None):
+        self.reads += 1
+        if self.reads == 1:
+            return "output-1", self.event.model_dump_json()
+        return None, None
+
+
+class FinishedTaskWithTail:
+    done = True
+
+    def __init__(self, event: BaseEvent) -> None:
+        self.output_stream = TailOutputStream(event)
+
+
+class TimeoutThenTailOutputStream:
+    def __init__(self, event: BaseEvent) -> None:
+        self.event = event
+        self.start_ids: List[Optional[str]] = []
+
+    async def get(self, start_id=None, block_ms=None):
+        self.start_ids.append(start_id)
+        if len(self.start_ids) == 1:
+            return None, None
+        return "output-2", self.event.model_dump_json()
+
+
+class RunningTaskWithTemporaryTimeout:
+    done = False
+
+    def __init__(self, event: BaseEvent) -> None:
+        self.output_stream = TimeoutThenTailOutputStream(event)
 
 
 def make_service(session: Session) -> tuple[AgentService, FakeSessionRepository, FakeTraceRepository]:
@@ -253,6 +302,73 @@ def test_stop_finalizes_orphaned_run_instead_of_leaving_trace_running() -> None:
     assert session_repo.status_updates == [SessionStatus.COMPLETED]
     assert len(trace_repo.interruptions) == 1
     assert trace_repo.interruptions[0]["session_id"] == session.id
+
+
+def test_chat_drains_terminal_event_after_task_has_already_finished() -> None:
+    session = Session(
+        id="session-1",
+        user_id="user-1",
+        task_id="finished-task",
+        status=SessionStatus.RUNNING,
+    )
+    service, _, _ = make_service(session)
+    task = FinishedTaskWithTail(DoneEvent())
+
+    async def fake_get_task(_session: Session) -> FinishedTaskWithTail:
+        return task
+
+    service._get_task = fake_get_task  # type: ignore[method-assign]
+
+    async def run() -> List[BaseEvent]:
+        events = [
+            event
+            async for event in service.chat(
+                session_id=session.id,
+                user_id=session.user_id,
+            )
+        ]
+        await asyncio.sleep(0)
+        return events
+
+    events = asyncio.run(run())
+
+    assert len(events) == 1
+    assert isinstance(events[0], DoneEvent)
+    assert task.output_stream.reads == 1
+
+
+def test_chat_keeps_output_cursor_after_a_temporary_read_timeout() -> None:
+    session = Session(
+        id="session-1",
+        user_id="user-1",
+        task_id="running-task",
+        status=SessionStatus.RUNNING,
+    )
+    service, _, _ = make_service(session)
+    task = RunningTaskWithTemporaryTimeout(DoneEvent())
+
+    async def fake_get_task(_session: Session) -> RunningTaskWithTemporaryTimeout:
+        return task
+
+    service._get_task = fake_get_task  # type: ignore[method-assign]
+
+    async def run() -> List[BaseEvent]:
+        events = [
+            event
+            async for event in service.chat(
+                session_id=session.id,
+                user_id=session.user_id,
+                latest_event_id="output-1",
+            )
+        ]
+        await asyncio.sleep(0)
+        return events
+
+    events = asyncio.run(run())
+
+    assert len(events) == 1
+    assert isinstance(events[0], DoneEvent)
+    assert task.output_stream.start_ids == ["output-1", "output-1"]
 
 
 def test_interaction_resolution_stays_in_task_input_but_not_session_history() -> None:

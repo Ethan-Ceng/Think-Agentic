@@ -88,9 +88,7 @@ function handleKeydown(event: Event | KeyboardEvent) {
 
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
     event.preventDefault()
-    if (props.isRunning) {
-      emit('stop')
-    } else if (canSend.value) {
+    if (canSend.value) {
       emit('send')
     }
   }
@@ -224,10 +222,11 @@ defineExpose({ focus })
       </div>
 
       <div class="composer-actions-right">
-        <span class="composer-hint">Enter 发送 · Shift + Enter 换行</span>
-        <ElTooltip :content="isRunning ? '停止任务' : '发送消息'" placement="top">
+        <span class="composer-hint">
+          {{ isRunning ? 'Enter 加入下一条 · Shift + Enter 换行' : 'Enter 发送 · Shift + Enter 换行' }}
+        </span>
+        <ElTooltip v-if="isRunning" content="停止任务" placement="top">
           <button
-            v-if="isRunning"
             class="icon-button round composer-stop-button"
             type="button"
             :disabled="disabled"
@@ -236,12 +235,13 @@ defineExpose({ focus })
           >
             <Pause :size="16" />
           </button>
+        </ElTooltip>
+        <ElTooltip :content="isRunning ? '加入下一条' : '发送消息'" placement="top">
           <button
-            v-else
             class="icon-button round composer-send-button"
             type="button"
             :disabled="!canSend"
-            aria-label="发送消息"
+            :aria-label="isRunning ? '加入下一条' : '发送消息'"
             @click="emit('send')"
           >
             <Loader2 v-if="sending" :size="16" class="spin" />

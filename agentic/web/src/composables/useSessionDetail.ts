@@ -19,6 +19,9 @@ export type UseSessionDetailResult = {
   refresh: () => Promise<void>
   refreshFiles: () => Promise<void>
   sendMessage: (input: SendMessageInput) => Promise<void>
+  queueNextMessage: (input: SendMessageInput) => Promise<void>
+  cancelNextMessage: () => Promise<void>
+  runNextMessage: () => Promise<void>
   resumeTask: (mode: ResumeMode) => Promise<void>
   resolveInteraction: (actionId: string, params: ResolveInteractionParams) => Promise<void>
   streaming: Ref<boolean>
@@ -57,13 +60,12 @@ export function useSessionDetail(
   let isSendMessage = false
   let lastEventId: string | null = null
   let seenEventIds = new Set<string>()
+  let runStreamEpoch = 0
 
-  function finishRunStream(): void {
+  function clearRunStream(epoch: number): void {
+    if (epoch !== runStreamEpoch) return
     streaming.value = false
     isSendMessage = false
-    if (session.value && session.value.status !== 'waiting') {
-      session.value = { ...session.value, status: 'completed' }
-    }
   }
 
   function appendEvent(ev: SSEEventData): void {
@@ -91,6 +93,16 @@ export function useSessionDetail(
     }
 
     events.value.push(evToAppend)
+
+    if (evToAppend.type === 'message' && session.value?.next_message) {
+      const message = evToAppend.data as { role?: string; message?: string }
+      if (
+        message.role === 'user' &&
+        message.message === session.value.next_message.message
+      ) {
+        session.value = { ...session.value, next_message: null }
+      }
+    }
 
     if (
       evToAppend.type === 'title' &&
@@ -156,16 +168,23 @@ export function useSessionDetail(
     const currentId = id.value
     if (!currentId || session.value?.status === 'completed') return
 
+    const epoch = runStreamEpoch
     stopEmptyStream()
     emptyStreamCleanup = sessionApi.chat(
       currentId,
       { event_id: lastEventId || undefined },
-      (ev) => appendEvent(ev),
+      (ev) => {
+        if (epoch !== runStreamEpoch) return
+        appendEvent(ev)
+      },
       (err) => {
+        if (epoch !== runStreamEpoch) return
         if (err.name === 'AbortError') return
         if (err.message === 'SSE_STREAM_END') {
           emptyStreamCleanup = null
-          void refresh().finally(() => scheduleEmptyStreamReconnect())
+          void loadSnapshot(epoch).finally(() => {
+            if (epoch === runStreamEpoch) scheduleEmptyStreamReconnect()
+          })
           return
         }
         console.warn('Session detail empty stream error:', err)
@@ -191,16 +210,18 @@ export function useSessionDetail(
     }, delay)
   }
 
-  async function refresh(): Promise<void> {
+  async function loadSnapshot(expectedEpoch: number | null, clearError = true): Promise<void> {
     const currentId = id.value
     if (!currentId) return
 
-    error.value = null
+    const canApply = () => expectedEpoch === null || expectedEpoch === runStreamEpoch
+    if (canApply() && clearError) error.value = null
     try {
       const [detail, fileListRaw] = await Promise.all([
         sessionApi.getSessionDetail(currentId),
         sessionApi.getSessionFiles(currentId),
       ])
+      if (!canApply() || currentId !== id.value) return
       session.value = detail
       files.value = normalizeFileList(fileListRaw)
 
@@ -215,9 +236,27 @@ export function useSessionDetail(
       const lastEvId = (normalized[normalized.length - 1]?.data as { event_id?: string })?.event_id
       if (lastEvId) lastEventId = lastEvId
     } catch (e) {
-      error.value = e instanceof Error ? e : new Error('加载失败')
+      if (canApply()) error.value = e instanceof Error ? e : new Error('加载失败')
     } finally {
-      loading.value = false
+      if (canApply()) loading.value = false
+    }
+  }
+
+  async function refresh(): Promise<void> {
+    await loadSnapshot(null)
+  }
+
+  async function reconcileRunStreamEnd(epoch: number, streamError?: Error): Promise<void> {
+    if (epoch !== runStreamEpoch) return
+    clearRunStream(epoch)
+    if (streamError) error.value = streamError
+    await loadSnapshot(epoch, !streamError)
+    if (
+      epoch === runStreamEpoch &&
+      session.value?.status === 'running' &&
+      !emptyStreamCleanup
+    ) {
+      startEmptyStream()
     }
   }
 
@@ -236,6 +275,7 @@ export function useSessionDetail(
     const currentId = id.value
     if (!currentId) return
 
+    const epoch = ++runStreamEpoch
     stopEmptyStream()
     if (messageStreamCleanup) {
       messageStreamCleanup()
@@ -249,10 +289,10 @@ export function useSessionDetail(
     session.value = session.value ? { ...session.value, status: 'running' } : null
 
     const onEvent = (ev: SSEEventData) => {
+      if (epoch !== runStreamEpoch) return
       appendEvent(ev)
       if (ev.type === 'done') {
-        streaming.value = false
-        isSendMessage = false
+        clearRunStream(epoch)
         if (messageStreamCleanup) {
           messageStreamCleanup()
           messageStreamCleanup = null
@@ -266,37 +306,119 @@ export function useSessionDetail(
       { message: input.message, attachments: input.attachmentIds, skills: input.skills },
       onEvent,
       (err) => {
+        if (epoch !== runStreamEpoch) return
         if (err.name === 'AbortError') {
-          streaming.value = false
-          isSendMessage = false
+          clearRunStream(epoch)
           return
         }
         if (err.message === 'SSE_STREAM_END') {
-          finishRunStream()
           if (messageStreamCleanup) {
             messageStreamCleanup()
             messageStreamCleanup = null
           }
-          startEmptyStream()
+          void reconcileRunStreamEnd(epoch)
           return
         }
-        error.value = err instanceof Error ? err : new Error('流式响应异常')
-        streaming.value = false
-        isSendMessage = false
-        session.value = session.value ? { ...session.value, status: 'completed' } : null
         if (messageStreamCleanup) {
           messageStreamCleanup()
           messageStreamCleanup = null
         }
-        startEmptyStream()
+        void reconcileRunStreamEnd(
+          epoch,
+          err instanceof Error ? err : new Error('流式响应异常'),
+        )
       },
     )
+  }
+
+  async function queueNextMessage(input: SendMessageInput): Promise<void> {
+    const currentId = id.value
+    if (!currentId) return
+    error.value = null
+    try {
+      const queued = await sessionApi.queueNextMessage(currentId, {
+        message: input.message,
+        attachments: input.attachmentIds,
+        skills: input.skills,
+      })
+      if (currentId !== id.value || !session.value) return
+      session.value = { ...session.value, next_message: queued }
+    } catch (queueError) {
+      error.value = queueError instanceof Error ? queueError : new Error('保存下一条消息失败')
+      throw queueError
+    }
+  }
+
+  async function cancelNextMessage(): Promise<void> {
+    const currentId = id.value
+    if (!currentId) return
+    try {
+      await sessionApi.cancelNextMessage(currentId)
+      if (currentId !== id.value || !session.value) return
+      session.value = { ...session.value, next_message: null }
+    } catch (cancelError) {
+      error.value = cancelError instanceof Error ? cancelError : new Error('取消下一条消息失败')
+      throw cancelError
+    }
+  }
+
+  async function runNextMessage(): Promise<void> {
+    const currentId = id.value
+    if (!currentId) return
+
+    const epoch = ++runStreamEpoch
+    stopEmptyStream()
+    messageStreamCleanup?.()
+    messageStreamCleanup = null
+    isSendMessage = true
+    streaming.value = true
+    error.value = null
+    session.value = session.value ? { ...session.value, status: 'running' } : null
+
+    await new Promise<void>((resolve, reject) => {
+      let settled = false
+      const finish = (streamError?: Error, reconcile = false) => {
+        if (settled) return
+        settled = true
+        messageStreamCleanup?.()
+        messageStreamCleanup = null
+        void (async () => {
+          if (reconcile) await reconcileRunStreamEnd(epoch, streamError)
+          else clearRunStream(epoch)
+          if (streamError) reject(streamError)
+          else resolve()
+        })()
+      }
+
+      messageStreamCleanup = sessionApi.runNextMessage(
+        currentId,
+        (ev) => {
+          if (epoch !== runStreamEpoch) return
+          appendEvent(ev)
+          if (ev.type === 'done') {
+            if (session.value) {
+              session.value = { ...session.value, next_message: null }
+            }
+            finish()
+          }
+        },
+        (streamError) => {
+          if (epoch !== runStreamEpoch || streamError.name === 'AbortError') return
+          if (streamError.message === 'SSE_STREAM_END') {
+            finish(undefined, true)
+            return
+          }
+          finish(streamError, true)
+        },
+      )
+    })
   }
 
   async function resumeTask(mode: ResumeMode): Promise<void> {
     const currentId = id.value
     if (!currentId) return
 
+    const epoch = ++runStreamEpoch
     stopEmptyStream()
     if (messageStreamCleanup) {
       messageStreamCleanup()
@@ -313,22 +435,23 @@ export function useSessionDetail(
       currentId,
       { mode },
       (ev) => {
+        if (epoch !== runStreamEpoch) return
         appendEvent(ev)
         if (ev.type === 'done') {
-          finishRunStream()
+          clearRunStream(epoch)
           messageStreamCleanup?.()
           messageStreamCleanup = null
         }
       },
       (err) => {
+        if (epoch !== runStreamEpoch) return
         if (err.name === 'AbortError') return
         messageStreamCleanup = null
         if (err.message === 'SSE_STREAM_END') {
-          finishRunStream()
+          void reconcileRunStreamEnd(epoch)
           return
         }
-        finishRunStream()
-        error.value = err
+        void reconcileRunStreamEnd(epoch, err)
       },
     )
   }
@@ -340,6 +463,7 @@ export function useSessionDetail(
     const currentId = id.value
     if (!currentId) return
 
+    const epoch = ++runStreamEpoch
     stopEmptyStream()
     messageStreamCleanup?.()
     messageStreamCleanup = null
@@ -349,14 +473,17 @@ export function useSessionDetail(
 
     await new Promise<void>((resolve, reject) => {
       let settled = false
-      const finish = (streamError?: Error) => {
+      const finish = (streamError?: Error, reconcile = false) => {
         if (settled) return
         settled = true
-        finishRunStream()
         messageStreamCleanup?.()
         messageStreamCleanup = null
-        if (streamError) reject(streamError)
-        else resolve()
+        void (async () => {
+          if (reconcile) await reconcileRunStreamEnd(epoch, streamError)
+          else clearRunStream(epoch)
+          if (streamError) reject(streamError)
+          else resolve()
+        })()
       }
 
       messageStreamCleanup = sessionApi.resolveInteraction(
@@ -364,17 +491,18 @@ export function useSessionDetail(
         actionId,
         params,
         (ev) => {
+          if (epoch !== runStreamEpoch) return
           appendEvent(ev)
           if (ev.type === 'done') finish()
         },
         (streamError) => {
+          if (epoch !== runStreamEpoch) return
           if (streamError.name === 'AbortError') return
           if (streamError.message === 'SSE_STREAM_END') {
-            finish()
+            finish(undefined, true)
             return
           }
-          error.value = streamError
-          finish(streamError)
+          finish(streamError, true)
         },
       )
     })
@@ -397,6 +525,7 @@ export function useSessionDetail(
       emptyReconnectAttempt = 0
       isSendMessage = false
       streaming.value = false
+      runStreamEpoch += 1
       skipEmptyStream.value = Boolean(unref(initialSkipEmptyStream))
 
       if (!id.value) {
@@ -440,6 +569,9 @@ export function useSessionDetail(
     refresh,
     refreshFiles,
     sendMessage,
+    queueNextMessage,
+    cancelNextMessage,
+    runNextMessage,
     resumeTask,
     resolveInteraction,
     streaming,

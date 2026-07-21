@@ -1,7 +1,9 @@
-import { createSSEStream, get, parseSSEStream, post } from './fetch'
+import { createSSEStream, del, get, parseSSEStream, post, put } from './fetch'
 import type {
   ChatParams,
   CreateSessionParams,
+  NextMessage,
+  QueueNextMessageParams,
   ResumeSessionParams,
   ResolveInteractionParams,
   SSEEventData,
@@ -207,6 +209,63 @@ export const sessionApi = {
       }
     }
 
+    void startStream()
+    return () => controller.abort()
+  },
+
+  queueNextMessage: (
+    sessionId: string,
+    params: QueueNextMessageParams,
+  ): Promise<NextMessage> => {
+    return put<NextMessage>(`/sessions/${sessionId}/next-message`, params)
+  },
+
+  cancelNextMessage: (sessionId: string): Promise<void> => {
+    return del<void>(`/sessions/${sessionId}/next-message`)
+  },
+
+  runNextMessage: (
+    sessionId: string,
+    onEvent: SSEEventHandler,
+    onError?: (error: Error) => void,
+  ): (() => void) => {
+    const controller = new AbortController()
+    const startStream = async () => {
+      try {
+        const stream = await createSSEStream(
+          `/sessions/${sessionId}/next-message/run`,
+          {},
+          { signal: controller.signal, timeout: 5 * 60 * 1000 },
+        )
+        await parseSSEStream(
+          stream,
+          (messageEvent) => {
+            if (controller.signal.aborted) return
+            const data =
+              typeof messageEvent.data === 'string'
+                ? JSON.parse(messageEvent.data)
+                : messageEvent.data
+            onEvent({
+              type: messageEvent.type as SSEEventData['type'],
+              data,
+            } as SSEEventData)
+          },
+          (streamError) => {
+            if (!controller.signal.aborted) onError?.(streamError)
+          },
+        )
+        if (!controller.signal.aborted) onError?.(new Error('SSE_STREAM_END'))
+      } catch (streamError) {
+        if (streamError instanceof Error && streamError.name === 'AbortError') return
+        if (!controller.signal.aborted) {
+          onError?.(
+            streamError instanceof Error
+              ? streamError
+              : new Error('恢复下一条消息失败'),
+          )
+        }
+      }
+    }
     void startStream()
     return () => controller.abort()
   },

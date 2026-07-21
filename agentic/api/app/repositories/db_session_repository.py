@@ -15,7 +15,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.entities.event import BaseEvent, InteractionDecision, InteractionEvent
 from app.core.entities.file import File
 from app.core.entities.memory import Memory
-from app.core.entities.session import InteractionNotFoundError, Session, SessionStatus
+from app.core.entities.session import (
+    InteractionNotFoundError,
+    NextMessage,
+    NextMessageConflictError,
+    NextMessageNotFoundError,
+    NextMessageState,
+    Session,
+    SessionStatus,
+)
 from app.repositories.session_repository import SessionRepository
 from app.models import SessionModel
 
@@ -26,6 +34,20 @@ class DBSessionRepository(SessionRepository):
     def __init__(self, db_session: AsyncSession) -> None:
         """构造函数，完成数据仓库的初始化"""
         self.db_session = db_session
+
+    async def _get_session_record_for_update(
+            self, session_id: str, user_id: Optional[str] = None
+    ) -> SessionModel:
+        conditions = [SessionModel.id == session_id]
+        if user_id is not None:
+            conditions.append(SessionModel.user_id == user_id)
+        result = await self.db_session.execute(
+            select(SessionModel).where(*conditions).with_for_update()
+        )
+        record = result.scalar_one_or_none()
+        if record is None:
+            raise NextMessageNotFoundError("会话不存在或无权访问")
+        return record
 
     async def save(self, session: Session) -> None:
         """根据传递的领域模型更新或者新增会话"""
@@ -149,6 +171,120 @@ class DBSessionRepository(SessionRepository):
         # 3.检查是否新增成功
         if result.rowcount == 0:
             raise ValueError(f"会话[{session_id}]不存在，请核实后重试")
+
+    async def put_next_message(
+            self, session_id: str, user_id: str, next_message: NextMessage
+    ) -> NextMessage:
+        record = await self._get_session_record_for_update(session_id, user_id)
+        if record.status != SessionStatus.RUNNING.value:
+            raise NextMessageConflictError("会话已不在运行中，请直接发送消息")
+
+        current = (
+            NextMessage.model_validate(record.next_message)
+            if record.next_message is not None
+            else None
+        )
+        if current is not None and current.state == NextMessageState.PROCESSING:
+            raise NextMessageConflictError("排队消息已经开始发送，不能替换")
+
+        queued = next_message.model_copy(
+            update={
+                "state": NextMessageState.QUEUED,
+                "task_id": None,
+                "claimed_at": None,
+            }
+        )
+        record.next_message = queued.model_dump(mode="json")
+        return queued
+
+    async def cancel_next_message(self, session_id: str, user_id: str) -> None:
+        record = await self._get_session_record_for_update(session_id, user_id)
+        if record.next_message is None:
+            return
+
+        current = NextMessage.model_validate(record.next_message)
+        if current.state == NextMessageState.PROCESSING:
+            raise NextMessageConflictError("排队消息已经开始发送，不能取消")
+        record.next_message = None
+
+    async def finish_or_claim_next_message(
+            self, session_id: str, task_id: str
+    ) -> Optional[NextMessage]:
+        record = await self._get_session_record_for_update(session_id)
+        if record.status != SessionStatus.RUNNING.value or record.task_id != task_id:
+            raise NextMessageConflictError("当前任务已不是会话的活动任务")
+        if record.next_message is None:
+            record.status = SessionStatus.COMPLETED.value
+            return None
+
+        current = NextMessage.model_validate(record.next_message)
+        if current.state == NextMessageState.PROCESSING:
+            if current.task_id == task_id:
+                return current
+            raise NextMessageConflictError("排队消息已被另一个任务认领")
+
+        claimed = current.model_copy(
+            update={
+                "state": NextMessageState.PROCESSING,
+                "task_id": task_id,
+                "claimed_at": datetime.now(),
+            }
+        )
+        record.status = SessionStatus.RUNNING.value
+        record.next_message = claimed.model_dump(mode="json")
+        return claimed
+
+    async def consume_next_message(
+            self,
+            session_id: str,
+            message_id: str,
+            task_id: str,
+            event: BaseEvent,
+    ) -> None:
+        record = await self._get_session_record_for_update(session_id)
+        if record.next_message is None:
+            raise NextMessageConflictError("排队消息已经被消费或取消")
+
+        current = NextMessage.model_validate(record.next_message)
+        if (
+            current.id != message_id
+            or current.state != NextMessageState.PROCESSING
+            or current.task_id != task_id
+        ):
+            raise NextMessageConflictError("排队消息认领状态已经变化")
+
+        record.events = [*(record.events or []), event.model_dump(mode="json")]
+        record.next_message = None
+
+    async def start_next_message_run(self, session_id: str, user_id: str) -> Session:
+        record = await self._get_session_record_for_update(session_id, user_id)
+        if record.status != SessionStatus.COMPLETED.value or record.next_message is None:
+            raise NextMessageConflictError("排队消息当前不可恢复执行")
+
+        current = NextMessage.model_validate(record.next_message)
+        if current.state != NextMessageState.QUEUED:
+            raise NextMessageConflictError("排队消息已经开始发送")
+        record.status = SessionStatus.RUNNING.value
+        return record.to_domain()
+
+    async def reset_processing_next_message(self, session_id: str) -> Optional[NextMessage]:
+        record = await self._get_session_record_for_update(session_id)
+        if record.next_message is None:
+            return None
+
+        current = NextMessage.model_validate(record.next_message)
+        if current.state != NextMessageState.PROCESSING:
+            return current
+
+        reset = current.model_copy(
+            update={
+                "state": NextMessageState.QUEUED,
+                "task_id": None,
+                "claimed_at": None,
+            }
+        )
+        record.next_message = reset.model_dump(mode="json")
+        return reset
 
     async def resolve_interaction(
             self,

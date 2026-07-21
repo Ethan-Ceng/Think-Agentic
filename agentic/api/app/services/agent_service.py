@@ -33,6 +33,8 @@ from app.core.entities.session import (
     InteractionConflictError,
     InteractionNotFoundError,
     InteractionValidationError,
+    NextMessageConflictError,
+    NextMessageNotFoundError,
     Session,
     SessionStatus,
 )
@@ -185,6 +187,7 @@ class AgentService:
         event = ErrorEvent(error=self.ORPHANED_RUN_ERROR)
         finished_at = datetime.now()
         async with self._uow:
+            await self._uow.session.reset_processing_next_message(session.id)
             await self._uow.session.update_status(session.id, SessionStatus.COMPLETED)
             await self._uow.session.add_event(session.id, event)
             await self._uow.trace.finalize_interrupted_run(
@@ -195,6 +198,31 @@ class AgentService:
         session.status = SessionStatus.COMPLETED
         logger.warning("会话[%s]运行态任务句柄丢失，已终止孤儿运行", session.id)
         return event
+
+    async def run_next_message(
+            self,
+            session_id: str,
+            user_id: str,
+    ) -> AsyncGenerator[BaseEvent, None]:
+        """Resume a durable queued message after a refresh or process restart."""
+        try:
+            async with self._uow:
+                session = await self._uow.session.start_next_message_run(
+                    session_id, user_id
+                )
+        except NextMessageNotFoundError as exc:
+            raise NotFoundError(str(exc) or "会话不存在") from exc
+        except NextMessageConflictError as exc:
+            raise ConflictError(str(exc)) from exc
+
+        task = await self._create_task(session)
+        await task.invoke()
+        async for event in self.chat(
+            session_id=session_id,
+            user_id=user_id,
+            message=None,
+        ):
+            yield event
 
     async def resume(
             self,
@@ -360,14 +388,24 @@ class AgentService:
                 await asyncio.sleep(30)  # 保持连接 30 秒后让前端重连
                 return
 
-            # 11.从任务的输出流中读取数据
-            while task and not task.done:
+            # 11.从任务的输出流中读取数据。任务可能先于 SSE 消费循环结束，
+            # 因此必须再做一次有限等待来排空已经写入的尾部终止事件。
+            while task:
                 # 12.从输出消息队列中获取数据
-                event_id, event_str = await task.output_stream.get(start_id=latest_event_id, block_ms=0)
-                latest_event_id = event_id
+                event_id, event_str = await task.output_stream.get(
+                    start_id=latest_event_id,
+                    block_ms=1000,
+                )
                 if event_str is None:
+                    if task.done:
+                        logger.warning(
+                            "会话[%s]任务已结束，但输出流中没有可读取的终止事件",
+                            session_id,
+                        )
+                        break
                     logger.debug(f"在会话[{session_id}]输出队列中未发现事件内容")
                     continue
+                latest_event_id = event_id
 
                 # 13.使用Pydantic提供的类型适配器将event_str转换为指定类实例
                 event = TypeAdapter(Event).validate_json(event_str)
@@ -428,6 +466,7 @@ class AgentService:
 
         # 3.更新会话任务状态
         async with self._uow:
+            await self._uow.session.reset_processing_next_message(session_id)
             await self._uow.session.update_status(session_id, SessionStatus.COMPLETED)
 
     async def shutdown(self) -> None:

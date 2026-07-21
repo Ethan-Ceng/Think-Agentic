@@ -13,6 +13,7 @@ import UiState from '@/components/ui/UiState.vue'
 import { useSessionDetail } from '@/composables/useSessionDetail'
 import { useToast } from '@/composables/useToast'
 import { sessionApi } from '@/lib/api/session'
+import { ApiError } from '@/lib/api/fetch'
 import type { FileInfo, ResolveInteractionParams, ResumeMode, ToolEvent } from '@/lib/api/types'
 import type { AttachmentFile, TimelineItem, UserMessageStatus } from '@/lib/session-events'
 import type { SendMessageInput, SkillRef } from '@/types/skill'
@@ -63,6 +64,7 @@ const pendingUserMessage = ref<PendingUserMessage | null>(null)
 const resolvingActionId = ref<string | null>(null)
 const interactionErrors = ref<Record<string, string>>({})
 const stoppedAt = ref<number | null>(null)
+const queuedRunBusy = ref(false)
 const lastFocusedEvent = ref('')
 let focusTimer = 0
 
@@ -419,6 +421,32 @@ watch(
 onBeforeUnmount(() => window.clearTimeout(focusTimer))
 
 async function handleSend(input: SendMessageInput, uploadedFiles: FileInfo[]) {
+  if (detail.session.value?.status === 'running') {
+    const replacingQueuedMessage = Boolean(detail.session.value.next_message)
+    try {
+      await detail.queueNextMessage(input)
+      stoppedAt.value = null
+      toast.success(replacingQueuedMessage ? '下一条消息已更新' : '已加入下一条消息')
+      return
+    } catch (error) {
+      if (error instanceof ApiError && error.code === 409) {
+        await detail.refresh()
+        if (
+          detail.session.value?.status !== 'running' &&
+          !detail.session.value?.next_message
+        ) {
+          // The active run won the row-lock race. Fall through to a normal send.
+        } else {
+          toast.error(error.message)
+          throw error
+        }
+      } else {
+        toast.error(error instanceof Error ? error.message : '保存下一条消息失败')
+        throw error
+      }
+    }
+  }
+
   const pending = createPendingMessage(
     input.message,
     input.attachmentIds,
@@ -484,6 +512,33 @@ async function handleRecoverTask(mode: ResumeMode) {
     scrollToConversationBottom('smooth')
   } catch (error) {
     toast.error(error instanceof Error ? error.message : '恢复任务失败，请稍后再试')
+  }
+}
+
+async function handleCancelNextMessage() {
+  if (detail.session.value?.next_message?.state === 'processing') return
+  try {
+    await detail.cancelNextMessage()
+    toast.success('下一条消息已取消')
+  } catch (error) {
+    toast.error(error instanceof Error ? error.message : '取消下一条消息失败')
+  }
+}
+
+async function handleRunNextMessage() {
+  if (queuedRunBusy.value) return
+  queuedRunBusy.value = true
+  stoppedAt.value = null
+  try {
+    await detail.runNextMessage()
+  } catch (error) {
+    if (error instanceof ApiError && error.code === 409) {
+      await detail.refresh()
+    } else {
+      toast.error(error instanceof Error ? error.message : '恢复下一条消息失败')
+    }
+  } finally {
+    queuedRunBusy.value = false
   }
 }
 
@@ -666,11 +721,55 @@ async function handleStop() {
 
           <div class="composer-shell">
             <PlanPanel :steps="planSteps" />
+            <div
+              v-if="detail.session.value.next_message"
+              class="next-message-card"
+              role="status"
+              aria-live="polite"
+            >
+              <div class="next-message-copy">
+                <strong>
+                  {{
+                    detail.session.value.next_message.state === 'processing'
+                      ? '正在发送下一条'
+                      : '下一条消息'
+                  }}
+                </strong>
+                <span>{{ detail.session.value.next_message.message }}</span>
+                <small v-if="detail.session.value.next_message.attachment_ids.length">
+                  {{ detail.session.value.next_message.attachment_ids.length }} 个附件
+                </small>
+              </div>
+              <button
+                v-if="detail.session.value.next_message.state === 'queued'"
+                class="next-message-cancel"
+                type="button"
+                @click="handleCancelNextMessage"
+              >
+                取消
+              </button>
+              <button
+                v-if="
+                  detail.session.value.status === 'completed' &&
+                  detail.session.value.next_message.state === 'queued'
+                "
+                class="next-message-run"
+                type="button"
+                :disabled="queuedRunBusy"
+                @click="handleRunNextMessage"
+              >
+                {{ queuedRunBusy ? '发送中' : '发送' }}
+              </button>
+            </div>
             <ChatInput
               :on-send="handleSend"
               :session-id="sessionId"
               :is-running="detail.session.value.status === 'running'"
-              :disabled="Boolean(pendingInteraction)"
+              :disabled="
+                Boolean(pendingInteraction) ||
+                (detail.session.value.status === 'completed' &&
+                  Boolean(detail.session.value.next_message))
+              "
               :on-stop="handleStop"
             />
           </div>

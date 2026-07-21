@@ -81,6 +81,10 @@ class SessionModel(Base):
         nullable=False,
         server_default=text("'{}'::jsonb"),
     )
+    next_message: Mapped[Optional[Dict[str, Any]]] = mapped_column(
+        JSONB,
+        nullable=True,
+    )
     status: Mapped[str] = mapped_column(
         String(255),
         nullable=False,
@@ -104,11 +108,11 @@ class SessionModel(Base):
         return cls(
             **session.model_dump(
                 mode="python",
-                exclude={"memories", "files", "events", "updated_at", "created_at"},
+                exclude={"memories", "files", "events", "next_message", "updated_at", "created_at"},
             ),
             **session.model_dump(
                 mode="json",
-                include={"memories", "files", "events"},
+                include={"memories", "files", "events", "next_message"},
             ),
         )
 
@@ -120,11 +124,11 @@ class SessionModel(Base):
         """Update this ORM model from a domain session."""
         base_data = session.model_dump(
             mode="python",
-            exclude={"memories", "files", "events", "updated_at", "created_at"},
+            exclude={"memories", "files", "events", "next_message", "updated_at", "created_at"},
         )
         json_data = session.model_dump(
             mode="json",
-            include={"memories", "files", "events"},
+            include={"memories", "files", "events", "next_message"},
         )
 
         for field, value in {**base_data, **json_data}.items():
