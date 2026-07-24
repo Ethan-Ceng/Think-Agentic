@@ -6,6 +6,7 @@ from app.core.agent.planner import PlannerAgent
 from app.core.agent.react import ReActAgent
 from app.core.entities.app_config import AgentConfig
 from app.core.entities.memory import Memory
+from app.core.entities.session import BranchContextMessage
 from app.core.entities.skill import (
     SelectedSkill,
     SkillManifest,
@@ -35,6 +36,11 @@ class MemoryRepository:
         self, session_id: str, agent_name: str, memory: Memory
     ) -> None:
         self.memories[(session_id, agent_name)] = memory.model_copy(deep=True)
+
+    async def get_branch_context_seed(
+        self, session_id: str
+    ) -> list[BranchContextMessage]:
+        return []
 
 
 class FakeUow:

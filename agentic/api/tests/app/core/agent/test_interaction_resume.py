@@ -17,6 +17,7 @@ from app.core.entities.event import (
 )
 from app.core.entities.message import Message
 from app.core.entities.memory import Memory
+from app.core.entities.session import BranchContextMessage
 from app.core.entities.plan import ExecutionStatus, Plan, Step
 from app.core.entities.tool_result import ToolResult
 from app.core.tools.base import BaseTool, tool
@@ -40,6 +41,11 @@ class MemoryRepository:
 
     async def save_memory(self, session_id: str, agent_name: str, memory: Memory) -> None:
         self.memories[(session_id, agent_name)] = memory.model_copy(deep=True)
+
+    async def get_branch_context_seed(
+        self, session_id: str
+    ) -> list[BranchContextMessage]:
+        return []
 
 
 class FakeUow:

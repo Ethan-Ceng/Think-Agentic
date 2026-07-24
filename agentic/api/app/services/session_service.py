@@ -12,10 +12,13 @@ from app.schemas.exceptions import ConflictError, NotFoundError, ServerRequestsE
 from app.core.sandbox.base import Sandbox
 from app.core.entities.file import File
 from app.core.entities.session import (
+    BranchOperation,
     NextMessage,
     NextMessageConflictError,
     NextMessageNotFoundError,
     Session,
+    SessionBranchConflictError,
+    SessionBranchNotFoundError,
 )
 from app.core.entities.skill import SkillRef
 from app.repositories.uow import IUnitOfWork
@@ -79,6 +82,52 @@ class SessionService:
         """获取指定会话详情信息"""
         async with self._uow:
             return await self._uow.session.get_by_id_for_user(session_id, user_id)
+
+    async def get_branch_source(
+            self, source_session_id: str, user_id: str
+    ) -> Session | None:
+        """Return a navigable lineage source only when it is still owned."""
+        async with self._uow:
+            return await self._uow.session.get_by_id_for_user(
+                source_session_id,
+                user_id,
+            )
+
+    async def create_branch(
+            self,
+            source_session_id: str,
+            user_id: str,
+            target_event_id: str,
+            operation: BranchOperation,
+            request_id: str,
+            message: str | None = None,
+    ) -> Session:
+        try:
+            async with self._uow:
+                branch = await self._uow.session.create_branch(
+                    source_session_id=source_session_id,
+                    user_id=user_id,
+                    target_event_id=target_event_id,
+                    operation=operation,
+                    request_id=request_id,
+                    message=message,
+                )
+        except SessionBranchNotFoundError as exc:
+            raise NotFoundError("会话或目标消息不存在") from exc
+        except SessionBranchConflictError as exc:
+            raise ConflictError(str(exc) or "当前会话状态无法创建分支") from exc
+
+        logger.info(
+            "session_branch_resolved",
+            extra={
+                "user_id": user_id,
+                "source_session_id": source_session_id,
+                "target_event_id": target_event_id,
+                "branch_operation": operation.value,
+                "branch_session_id": branch.id,
+            },
+        )
+        return branch
 
     async def queue_next_message(
             self,

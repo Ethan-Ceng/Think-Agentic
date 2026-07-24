@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowDown } from 'lucide-vue-next'
+import { ArrowDown, ArrowLeft, GitFork } from 'lucide-vue-next'
 import { ElMessageBox } from 'element-plus'
 import ChatInput from '@/components/chat/ChatInput.vue'
+import ChatEditBranchDialog from '@/components/chat/ChatEditBranchDialog.vue'
 import ChatMessage from '@/components/chat/ChatMessage.vue'
 import PlanPanel from '@/components/chat/PlanPanel.vue'
 import ThinkingIndicator from '@/components/chat/ThinkingIndicator.vue'
@@ -14,11 +15,18 @@ import { useSessionDetail } from '@/composables/useSessionDetail'
 import { useToast } from '@/composables/useToast'
 import { sessionApi } from '@/lib/api/session'
 import { ApiError } from '@/lib/api/fetch'
-import type { FileInfo, ResolveInteractionParams, ResumeMode, ToolEvent } from '@/lib/api/types'
+import type {
+  BranchOperation,
+  FileInfo,
+  ResolveInteractionParams,
+  ResumeMode,
+  ToolEvent,
+} from '@/lib/api/types'
 import type { AttachmentFile, TimelineItem, UserMessageStatus } from '@/lib/session-events'
 import type { SendMessageInput, SkillRef } from '@/types/skill'
 import { eventsToTimeline, formatMessageTimeLabel, getLatestPlanFromEvents } from '@/lib/session-events'
 import { getToolKind } from '@/lib/tool-utils'
+import { createQueuedRunIntent } from '@/lib/session-init'
 
 const props = withDefaults(defineProps<{
   sessionId: string
@@ -26,11 +34,13 @@ const props = withDefaults(defineProps<{
   initialAttachments?: string[]
   initialSkills?: SkillRef[]
   hasInitialMessage?: boolean
+  runQueued?: boolean
 }>(), {
   initialMessage: undefined,
   initialAttachments: () => [],
   initialSkills: () => [],
   hasInitialMessage: false,
+  runQueued: false,
 })
 
 type PendingUserMessage = {
@@ -65,12 +75,16 @@ const resolvingActionId = ref<string | null>(null)
 const interactionErrors = ref<Record<string, string>>({})
 const stoppedAt = ref<number | null>(null)
 const queuedRunBusy = ref(false)
+const queuedRunIntentHandled = ref(false)
+const branchBusyEventId = ref<string | null>(null)
+const editBranchItem = ref<Extract<TimelineItem, { kind: 'user' }> | null>(null)
+const pendingBranchRequest = ref<{ signature: string; requestId: string } | null>(null)
 const lastFocusedEvent = ref('')
 let focusTimer = 0
 
 const detail = useSessionDetail(
   computed(() => props.sessionId),
-  computed(() => props.hasInitialMessage),
+  computed(() => props.hasInitialMessage || props.runQueued),
 )
 
 const baseTimeline = computed(() => eventsToTimeline(detail.events.value))
@@ -142,6 +156,33 @@ const runningStateLabel = computed(() => {
     return '正在生成回复'
   }
   return ''
+})
+const branchDisabledReason = computed(() => {
+  if (detail.streaming.value || detail.session.value?.status === 'running') {
+    return '任务执行中，完成后才能从历史消息创建分支'
+  }
+  if (detail.session.value?.status === 'waiting') {
+    return '请先处理当前待确认操作'
+  }
+  if (detail.session.value?.next_message) {
+    return '请先发送或取消已排队的下一条消息'
+  }
+  return ''
+})
+const branchDisabled = computed(
+  () =>
+    Boolean(branchDisabledReason.value) ||
+    detail.session.value?.status !== 'completed',
+)
+const branchOperationLabel = computed(() => {
+  switch (detail.session.value?.branch_operation) {
+    case 'edit':
+      return '编辑后创建的分支'
+    case 'regenerate':
+      return '重新生成回复的分支'
+    default:
+      return '从历史消息创建的分支'
+  }
 })
 
 const SCROLL_BOTTOM_THRESHOLD = 96
@@ -395,6 +436,10 @@ watch(
     stoppedAt.value = null
     isNearBottom.value = true
     lastFocusedEvent.value = ''
+    queuedRunIntentHandled.value = false
+    editBranchItem.value = null
+    branchBusyEventId.value = null
+    pendingBranchRequest.value = null
     scrollToConversationBottom('auto')
   },
 )
@@ -542,6 +587,102 @@ async function handleRunNextMessage() {
   }
 }
 
+async function createBranch(
+  operation: BranchOperation,
+  item: TimelineItem,
+  message?: string,
+) {
+  if (
+    branchBusyEventId.value ||
+    (item.kind !== 'user' && item.kind !== 'assistant') ||
+    !item.sourceEventId ||
+    branchDisabled.value
+  ) return
+
+  branchBusyEventId.value = item.sourceEventId
+  try {
+    const requestSignature = JSON.stringify({
+      sessionId: props.sessionId,
+      operation,
+      targetEventId: item.sourceEventId,
+      message: operation === 'edit' ? message : undefined,
+    })
+    if (pendingBranchRequest.value?.signature !== requestSignature) {
+      pendingBranchRequest.value = {
+        signature: requestSignature,
+        requestId: crypto.randomUUID(),
+      }
+    }
+    const result = await sessionApi.createBranch(props.sessionId, {
+      operation,
+      target_event_id: item.sourceEventId,
+      request_id: pendingBranchRequest.value.requestId,
+      ...(operation === 'edit' ? { message } : {}),
+    })
+    editBranchItem.value = null
+    const queuedIntent = result.queued
+      ? createQueuedRunIntent(result.session_id)
+      : ''
+    const query = queuedIntent ? { runQueued: queuedIntent } : undefined
+    await router.push({
+      path: `/sessions/${result.session_id}`,
+      query,
+    })
+    pendingBranchRequest.value = null
+  } catch (error) {
+    toast.error(error instanceof Error ? error.message : '创建会话分支失败')
+  } finally {
+    branchBusyEventId.value = null
+  }
+}
+
+function handleBranchAction(operation: BranchOperation, item: TimelineItem) {
+  if (item.kind !== 'user' && item.kind !== 'assistant') return
+  if (operation === 'edit' && item.kind === 'user') {
+    editBranchItem.value = item
+    return
+  }
+  void createBranch(operation, item)
+}
+
+function handleEditBranchSubmit(message: string) {
+  const item = editBranchItem.value
+  if (!item) return
+  void createBranch('edit', item, message)
+}
+
+function setEditBranchDialogOpen(open: boolean) {
+  if (!open && !branchBusyEventId.value) editBranchItem.value = null
+}
+
+function clearRunQueuedQuery() {
+  const { runQueued: _runQueued, ...query } = route.query
+  void router.replace({ path: route.path, query })
+}
+
+function navigateToBranchSource() {
+  const sourceSessionId = detail.session.value?.source_session_id
+  if (sourceSessionId) void router.push(`/sessions/${sourceSessionId}`)
+}
+
+watch(
+  () => [
+    props.runQueued,
+    detail.loading.value,
+    detail.session.value?.status,
+    detail.session.value?.next_message?.state,
+  ] as const,
+  ([runQueued, loading, status, nextMessageState]) => {
+    if (!runQueued || loading || !detail.session.value || queuedRunIntentHandled.value) return
+    queuedRunIntentHandled.value = true
+    clearRunQueuedQuery()
+    if (status === 'completed' && nextMessageState === 'queued') {
+      void handleRunNextMessage()
+    }
+  },
+  { immediate: true },
+)
+
 async function handleResolveInteraction(actionId: string, params: ResolveInteractionParams) {
   if (resolvingActionId.value) return
   resolvingActionId.value = actionId
@@ -657,6 +798,27 @@ async function handleStop() {
             @file-click="handleFileClick"
             @open-trace="openTracePanel"
           />
+          <div
+            v-if="detail.session.value.branch_operation"
+            class="branch-lineage-banner"
+            role="status"
+          >
+            <GitFork :size="15" />
+            <span>
+              {{ branchOperationLabel }}
+              <template v-if="detail.session.value.source_session_title">
+                · 来自「{{ detail.session.value.source_session_title }}」
+              </template>
+            </span>
+            <button
+              v-if="detail.session.value.source_session_id"
+              type="button"
+              @click="navigateToBranchSource"
+            >
+              <ArrowLeft :size="14" />
+              返回原对话
+            </button>
+          </div>
 
           <div
             ref="scrollContainerRef"
@@ -682,12 +844,16 @@ async function handleStop() {
                 :recovery-busy="detail.streaming.value"
                 :interaction-busy="item.kind === 'interaction' && resolvingActionId === item.data.action_id"
                 :interaction-error="item.kind === 'interaction' ? interactionErrors[item.data.action_id] : ''"
+                :branch-disabled="branchDisabled"
+                :branch-disabled-reason="branchDisabledReason"
+                :branch-busy-event-id="branchBusyEventId"
                 @view-all-files="handleViewAllFiles"
                 @file-click="handleFileClick"
                 @tool-click="handleToolClick"
                 @retry-message="handleRetryMessage"
                 @recover-task="handleRecoverTask"
                 @resolve-interaction="handleResolveInteraction"
+                @branch-action="handleBranchAction"
               />
 
               <div
@@ -801,5 +967,15 @@ async function handleStop() {
     </div>
 
     <VNCOverlay v-if="vncOpen" :session-id="sessionId" @close="closeVNC" />
+    <ChatEditBranchDialog
+      v-if="editBranchItem"
+      :open="Boolean(editBranchItem)"
+      :content="editBranchItem.data.message ?? ''"
+      :attachment-names="editBranchItem.data.attachments?.map((file) => file.filename) ?? []"
+      :skills="editBranchItem.data.skills ?? []"
+      :busy="branchBusyEventId === editBranchItem.sourceEventId"
+      @update:open="setEditBranchDialogOpen"
+      @submit="handleEditBranchSubmit"
+    />
   </template>
 </template>

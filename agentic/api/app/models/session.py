@@ -15,6 +15,7 @@ from sqlalchemy import (
     Text,
     text,
     PrimaryKeyConstraint,
+    Index,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -36,6 +37,8 @@ class SessionModel(Base):
     __tablename__ = "sessions"
     __table_args__ = (
         PrimaryKeyConstraint("id", name="pk_sessions_id"),
+        Index("ix_sessions_source_session_id", "source_session_id"),
+        Index("ux_sessions_branch_request_id", "branch_request_id", unique=True),
     )
 
     id: Mapped[str] = mapped_column(
@@ -85,6 +88,15 @@ class SessionModel(Base):
         JSONB,
         nullable=True,
     )
+    source_session_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    forked_from_event_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    branch_operation: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    branch_request_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    context_seed: Mapped[List[Dict[str, Any]]] = mapped_column(
+        JSONB,
+        nullable=False,
+        server_default=text("'[]'::jsonb"),
+    )
     status: Mapped[str] = mapped_column(
         String(255),
         nullable=False,
@@ -108,11 +120,19 @@ class SessionModel(Base):
         return cls(
             **session.model_dump(
                 mode="python",
-                exclude={"memories", "files", "events", "next_message", "updated_at", "created_at"},
+                exclude={
+                    "memories",
+                    "files",
+                    "events",
+                    "next_message",
+                    "context_seed",
+                    "updated_at",
+                    "created_at",
+                },
             ),
             **session.model_dump(
                 mode="json",
-                include={"memories", "files", "events", "next_message"},
+                include={"memories", "files", "events", "next_message", "context_seed"},
             ),
         )
 
@@ -124,11 +144,19 @@ class SessionModel(Base):
         """Update this ORM model from a domain session."""
         base_data = session.model_dump(
             mode="python",
-            exclude={"memories", "files", "events", "next_message", "updated_at", "created_at"},
+            exclude={
+                "memories",
+                "files",
+                "events",
+                "next_message",
+                "context_seed",
+                "updated_at",
+                "created_at",
+            },
         )
         json_data = session.model_dump(
             mode="json",
-            include={"memories", "files", "events", "next_message"},
+            include={"memories", "files", "events", "next_message", "context_seed"},
         )
 
         for field, value in {**base_data, **json_data}.items():

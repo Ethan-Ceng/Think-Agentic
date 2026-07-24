@@ -8,7 +8,7 @@
 import uuid
 from datetime import datetime
 from enum import Enum
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Literal
 
 from pydantic import BaseModel, Field
 
@@ -44,6 +44,28 @@ class NextMessageNotFoundError(LookupError):
 
 class NextMessageConflictError(RuntimeError):
     pass
+
+
+class SessionBranchNotFoundError(LookupError):
+    pass
+
+
+class SessionBranchConflictError(RuntimeError):
+    pass
+
+
+class BranchOperation(str, Enum):
+    FORK = "fork"
+    EDIT = "edit"
+    REGENERATE = "regenerate"
+
+
+class BranchContextMessage(BaseModel):
+    """Safe visible transcript carried into the first run of a branch."""
+
+    role: Literal["user", "assistant"]
+    content: str
+    attachment_names: List[str] = Field(default_factory=list)
 
 
 class NextMessageState(str, Enum):
@@ -86,6 +108,11 @@ class Session(BaseModel):
     files: List[File] = Field(default_factory=list)  # 文件列表
     memories: Dict[str, Memory] = Field(default_factory=dict)  # 记忆
     next_message: Optional[NextMessage] = None
+    source_session_id: Optional[str] = None
+    forked_from_event_id: Optional[str] = None
+    branch_operation: Optional[BranchOperation] = None
+    branch_request_id: Optional[str] = None
+    context_seed: List[BranchContextMessage] = Field(default_factory=list)
     status: SessionStatus = SessionStatus.PENDING  # 状态
     updated_at: datetime = Field(default_factory=datetime.now)  # 更新时间
     created_at: datetime = Field(default_factory=datetime.now)  # 创建时间

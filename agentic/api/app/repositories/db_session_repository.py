@@ -10,22 +10,32 @@ from typing import List, Optional
 
 from sqlalchemy import select, delete, update, func, cast
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.entities.event import BaseEvent, InteractionDecision, InteractionEvent
+from app.core.entities.event import (
+    BaseEvent,
+    InteractionDecision,
+    InteractionEvent,
+    MessageEvent,
+)
 from app.core.entities.file import File
 from app.core.entities.memory import Memory
 from app.core.entities.session import (
+    BranchContextMessage,
+    BranchOperation,
     InteractionNotFoundError,
     NextMessage,
     NextMessageConflictError,
     NextMessageNotFoundError,
     NextMessageState,
     Session,
+    SessionBranchConflictError,
+    SessionBranchNotFoundError,
     SessionStatus,
 )
 from app.repositories.session_repository import SessionRepository
-from app.models import SessionModel
+from app.models import FileModel, SessionModel
 
 
 class DBSessionRepository(SessionRepository):
@@ -64,6 +74,224 @@ class DBSessionRepository(SessionRepository):
 
         # 3.会话存在则更新会话
         record.update_from_domain(session)
+
+    async def create_branch(
+            self,
+            source_session_id: str,
+            user_id: str,
+            target_event_id: str,
+            operation: BranchOperation,
+            request_id: str,
+            message: Optional[str] = None,
+    ) -> Session:
+        """Create an immutable session snapshot while the owned source row is locked."""
+        source_result = await self.db_session.execute(
+            select(SessionModel)
+            .where(
+                SessionModel.id == source_session_id,
+                SessionModel.user_id == user_id,
+            )
+            .with_for_update()
+        )
+        source = source_result.scalar_one_or_none()
+        if source is None:
+            raise SessionBranchNotFoundError("会话不存在或无权访问")
+
+        existing_result = await self.db_session.execute(
+            select(SessionModel).where(
+                SessionModel.branch_request_id == request_id,
+            )
+        )
+        existing = existing_result.scalar_one_or_none()
+        if existing is not None:
+            return self._validate_branch_replay(
+                existing=existing,
+                user_id=user_id,
+                source_session_id=source_session_id,
+                target_event_id=target_event_id,
+                operation=operation,
+            )
+
+        if (
+            source.status != SessionStatus.COMPLETED.value
+            or source.next_message is not None
+        ):
+            raise SessionBranchConflictError("仅可从已完成且没有排队消息的会话创建分支")
+
+        visible_messages = [
+            MessageEvent.model_validate(raw_event)
+            for raw_event in (source.events or [])
+            if raw_event.get("type") == "message"
+            and raw_event.get("visible", True)
+        ]
+        target_index = next(
+            (
+                index
+                for index, event in enumerate(visible_messages)
+                if event.id == target_event_id
+            ),
+            None,
+        )
+        if target_index is None:
+            raise SessionBranchNotFoundError("目标消息不存在或不可见")
+
+        replay: Optional[MessageEvent] = None
+        if operation == BranchOperation.FORK:
+            prefix = visible_messages[: target_index + 1]
+        elif operation == BranchOperation.EDIT:
+            target = visible_messages[target_index]
+            if target.role != "user":
+                raise SessionBranchConflictError("只能编辑用户消息")
+            revised = (message or "").strip()
+            if not revised:
+                raise SessionBranchConflictError("编辑后的消息不能为空")
+            prefix = visible_messages[:target_index]
+            replay = target.model_copy(update={"message": revised})
+        elif operation == BranchOperation.REGENERATE:
+            target = visible_messages[target_index]
+            if target.role != "assistant":
+                raise SessionBranchConflictError("只能重新生成助手消息")
+            replay_index = next(
+                (
+                    index
+                    for index in range(target_index - 1, -1, -1)
+                    if visible_messages[index].role == "user"
+                ),
+                None,
+            )
+            if replay_index is None:
+                raise SessionBranchConflictError("助手消息之前没有可重放的用户消息")
+            prefix = visible_messages[:replay_index]
+            replay = visible_messages[replay_index]
+        else:
+            raise SessionBranchConflictError("不支持的分支操作")
+
+        attachment_ids: List[str] = []
+        for event in [*prefix, *([replay] if replay is not None else [])]:
+            for attachment in event.attachments:
+                if attachment.id not in attachment_ids:
+                    attachment_ids.append(attachment.id)
+
+        accessible_files = {}
+        if attachment_ids:
+            files_result = await self.db_session.execute(
+                select(FileModel).where(
+                    FileModel.id.in_(attachment_ids),
+                    FileModel.user_id == user_id,
+                    FileModel.status == "available",
+                )
+            )
+            accessible_files = {
+                record.id: record.to_domain()
+                for record in files_result.scalars().all()
+            }
+            if set(accessible_files) != set(attachment_ids):
+                raise SessionBranchConflictError("分支引用的附件已不可访问")
+
+        copied_events = []
+        for event in prefix:
+            copied_events.append(
+                MessageEvent(
+                    role=event.role,
+                    message=event.message,
+                    attachments=[
+                        accessible_files[attachment.id]
+                        for attachment in event.attachments
+                    ],
+                    skills=event.skills,
+                    visible=True,
+                    created_at=event.created_at,
+                )
+            )
+
+        next_message = None
+        if replay is not None:
+            next_message = NextMessage(
+                message=replay.message,
+                attachment_ids=[attachment.id for attachment in replay.attachments],
+                skills=replay.skills,
+            )
+
+        context_seed = [
+            BranchContextMessage(
+                role=event.role,
+                content=event.message,
+                attachment_names=[
+                    attachment.filename for attachment in event.attachments
+                ],
+            )
+            for event in copied_events
+        ]
+        branch_files = [
+            accessible_files[file_id]
+            for file_id in attachment_ids
+        ]
+        latest_event = copied_events[-1] if copied_events else None
+        latest_message = (
+            replay.message
+            if replay is not None
+            else latest_event.message if latest_event is not None else ""
+        )
+        latest_message_at = (
+            datetime.now()
+            if replay is not None
+            else latest_event.created_at if latest_event is not None else None
+        )
+        title_suffix = " · 分支"
+        branch = Session(
+            user_id=user_id,
+            title=f"{source.title[: 255 - len(title_suffix)]}{title_suffix}",
+            latest_message=latest_message,
+            latest_message_at=latest_message_at,
+            events=copied_events,
+            files=branch_files,
+            next_message=next_message,
+            source_session_id=source_session_id,
+            forked_from_event_id=target_event_id,
+            branch_operation=operation,
+            branch_request_id=request_id,
+            context_seed=context_seed,
+            status=SessionStatus.COMPLETED,
+        )
+        try:
+            async with self.db_session.begin_nested():
+                self.db_session.add(SessionModel.from_domain(branch))
+                await self.db_session.flush()
+        except IntegrityError:
+            winner_result = await self.db_session.execute(
+                select(SessionModel).where(
+                    SessionModel.branch_request_id == request_id,
+                )
+            )
+            winner = winner_result.scalar_one_or_none()
+            if winner is None:
+                raise
+            return self._validate_branch_replay(
+                existing=winner,
+                user_id=user_id,
+                source_session_id=source_session_id,
+                target_event_id=target_event_id,
+                operation=operation,
+            )
+        return branch
+
+    @staticmethod
+    def _validate_branch_replay(
+            *,
+            existing: SessionModel,
+            user_id: str,
+            source_session_id: str,
+            target_event_id: str,
+            operation: BranchOperation,
+    ) -> Session:
+        if (
+            existing.user_id != user_id
+            or existing.source_session_id != source_session_id
+            or existing.forked_from_event_id != target_event_id
+            or existing.branch_operation != operation.value
+        ):
+            raise SessionBranchConflictError("request_id 已用于其他分支请求")
+        return existing.to_domain()
 
     async def get_all(self) -> List[Session]:
         """获取所有会话列表"""
@@ -478,3 +706,16 @@ class DBSessionRepository(SessionRepository):
 
         # 3.如果记忆不存在，则构建一个空记忆后返回
         return Memory(messages=[])
+
+    async def get_branch_context_seed(
+            self, session_id: str
+    ) -> List[BranchContextMessage]:
+        """Return only typed user/assistant context generated by branch creation."""
+        result = await self.db_session.execute(
+            select(SessionModel.context_seed).where(SessionModel.id == session_id)
+        )
+        raw_seed = result.scalar_one_or_none() or []
+        return [
+            BranchContextMessage.model_validate(item)
+            for item in raw_seed
+        ]

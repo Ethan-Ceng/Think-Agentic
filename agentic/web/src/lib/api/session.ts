@@ -1,6 +1,8 @@
 import { createSSEStream, del, get, parseSSEStream, post, put } from './fetch'
 import type {
   ChatParams,
+  CreateSessionBranchParams,
+  CreateSessionBranchResult,
   CreateSessionParams,
   NextMessage,
   QueueNextMessageParams,
@@ -42,6 +44,13 @@ export const sessionApi = {
       sessionId: session.session_id,
       init: encodeInitialSessionMessage(input),
     }
+  },
+
+  createBranch: (
+    sessionId: string,
+    params: CreateSessionBranchParams,
+  ): Promise<CreateSessionBranchResult> => {
+    return post<CreateSessionBranchResult>(`/sessions/${sessionId}/branches`, params)
   },
 
   streamSessions: (

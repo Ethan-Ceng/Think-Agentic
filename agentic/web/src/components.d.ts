@@ -14,6 +14,7 @@ declare module 'vue' {
     AssistantAvatar: typeof import('./components/chat/AssistantAvatar.vue')['default']
     AttachmentsMessage: typeof import('./components/chat/AttachmentsMessage.vue')['default']
     ChatComposer: typeof import('./components/chat/ChatComposer.vue')['default']
+    ChatEditBranchDialog: typeof import('./components/chat/ChatEditBranchDialog.vue')['default']
     ChatHeader: typeof import('./components/ChatHeader.vue')['default']
     ChatInput: typeof import('./components/chat/ChatInput.vue')['default']
     ChatMessage: typeof import('./components/chat/ChatMessage.vue')['default']

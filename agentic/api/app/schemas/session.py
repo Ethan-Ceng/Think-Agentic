@@ -5,11 +5,13 @@ Session Schemas - 请求和响应模型
 """
 from datetime import datetime
 from typing import List, Dict, Any, Literal, Optional
+from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.core.entities.skill import SkillRef
 from app.core.entities.event import InteractionDecision
+from app.core.entities.session import BranchOperation
 
 
 class SessionResponse(BaseModel):
@@ -66,6 +68,44 @@ class GetSessionResponse(BaseModel):
     status: str
     unread_message_count: int = 0
     next_message: Optional[NextMessageResponse] = None
+    source_session_id: Optional[str] = None
+    source_session_title: Optional[str] = None
+    forked_from_event_id: Optional[str] = None
+    branch_operation: Optional[BranchOperation] = None
+
+
+class CreateSessionBranchRequest(BaseModel):
+    operation: BranchOperation
+    target_event_id: str = Field(min_length=1, max_length=255)
+    request_id: UUID
+    message: Optional[str] = Field(default=None, max_length=10000)
+
+    @field_validator("target_event_id")
+    @classmethod
+    def trim_target_event_id(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("target_event_id cannot be blank")
+        return value
+
+    @model_validator(mode="after")
+    def validate_message_for_operation(self) -> "CreateSessionBranchRequest":
+        if self.operation == BranchOperation.EDIT:
+            message = (self.message or "").strip()
+            if not message:
+                raise ValueError("message is required for edit")
+            self.message = message
+        elif self.message is not None:
+            raise ValueError("message is only allowed for edit")
+        return self
+
+
+class CreateSessionBranchResponse(BaseModel):
+    session_id: str
+    source_session_id: str
+    forked_from_event_id: str
+    operation: BranchOperation
+    queued: bool
 
 
 class ChatRequest(BaseModel):

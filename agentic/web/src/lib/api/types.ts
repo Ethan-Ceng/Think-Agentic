@@ -551,6 +551,22 @@ export type ChatParams = {
 }
 
 export type ResumeMode = 'continue' | 'restart'
+export type BranchOperation = 'fork' | 'edit' | 'regenerate'
+
+export type CreateSessionBranchParams = {
+  operation: BranchOperation
+  target_event_id: string
+  request_id: string
+  message?: string
+}
+
+export type CreateSessionBranchResult = {
+  session_id: string
+  source_session_id: string
+  forked_from_event_id: string
+  operation: BranchOperation
+  queued: boolean
+}
 
 export type ResumeSessionParams = {
   mode: ResumeMode
@@ -580,6 +596,10 @@ export type ResolveInteractionParams = {
 export type SessionDetail = Session & {
   events?: SSEEventData[]
   next_message?: NextMessage | null
+  source_session_id?: string | null
+  source_session_title?: string | null
+  forked_from_event_id?: string | null
+  branch_operation?: BranchOperation | null
 }
 
 export type PlanStep = {

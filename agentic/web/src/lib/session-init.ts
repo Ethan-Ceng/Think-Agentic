@@ -30,3 +30,27 @@ export function decodeInitialSessionMessage(value: string): InitialSessionMessag
     hasInitialMessage: Boolean(parsed.message),
   }
 }
+
+const QUEUED_RUN_INTENT_PREFIX = 'agentic:queued-run-intent:'
+
+export function createQueuedRunIntent(sessionId: string): string {
+  try {
+    const token = crypto.randomUUID()
+    window.sessionStorage.setItem(`${QUEUED_RUN_INTENT_PREFIX}${token}`, sessionId)
+    return token
+  } catch {
+    return ''
+  }
+}
+
+export function consumeQueuedRunIntent(token: string, sessionId: string): boolean {
+  if (!token) return false
+  try {
+    const key = `${QUEUED_RUN_INTENT_PREFIX}${token}`
+    const intendedSessionId = window.sessionStorage.getItem(key)
+    window.sessionStorage.removeItem(key)
+    return intendedSessionId === sessionId
+  } catch {
+    return false
+  }
+}

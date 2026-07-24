@@ -412,6 +412,93 @@
   opacity: 0.45;
 }
 
+.branch-lineage-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--accent-primary) 24%, var(--border-light));
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--accent-primary) 7%, var(--surface-canvas));
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.branch-lineage-banner > span {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.branch-lineage-banner button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  background: transparent;
+  color: var(--accent-primary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.branch-lineage-banner button:hover {
+  text-decoration: underline;
+}
+
+.branch-edit-dialog {
+  display: grid;
+  gap: 18px;
+}
+
+.branch-edit-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--surface-hover);
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.branch-edit-notice svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  color: var(--accent-primary);
+}
+
+.branch-edit-field {
+  display: grid;
+  gap: 8px;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.branch-edit-readonly {
+  display: grid;
+  gap: 8px;
+}
+
+.branch-edit-readonly > span {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.branch-edit-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .timeline-tool-row {
   display: flex;
   min-width: 0;

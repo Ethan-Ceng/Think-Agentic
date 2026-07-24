@@ -1,13 +1,14 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import SessionDetailView from '@/components/SessionDetailView.vue'
 import type { SkillRef } from '@/types/skill'
-import { decodeInitialSessionMessage } from '@/lib/session-init'
+import { consumeQueuedRunIntent, decodeInitialSessionMessage } from '@/lib/session-init'
 
 const route = useRoute()
 
 const sessionId = computed(() => String(route.params.id || ''))
+const runQueued = ref(false)
 const initialData = computed<{
   message?: string
   attachments?: string[]
@@ -24,6 +25,16 @@ const initialData = computed<{
     return { hasInitialMessage: false }
   }
 })
+
+watch(
+  () => [sessionId.value, route.query.runQueued] as const,
+  ([currentSessionId, token]) => {
+    runQueued.value =
+      typeof token === 'string' &&
+      consumeQueuedRunIntent(token, currentSessionId)
+  },
+  { immediate: true },
+)
 </script>
 
 <template>
@@ -34,5 +45,6 @@ const initialData = computed<{
     :initial-attachments="initialData.attachments"
     :initial-skills="initialData.skills"
     :has-initial-message="initialData.hasInitialMessage"
+    :run-queued="runQueued"
   />
 </template>

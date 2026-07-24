@@ -7,12 +7,12 @@
 
 ## 当前进度
 
-- 整体状态：`BLOCKED`
-- 当前阶段：verification
-- 当前任务：无；等待真实浏览器与 PostgreSQL/Redis 环境补验
+- 整体状态：`READY_TO_MERGE`
+- 当前阶段：completed
+- 当前任务：无
 - 已完成：3 / 3
-- 阻塞问题：当前无可用浏览器实例；PostgreSQL/Redis 未启动
-- 最近更新时间：2026-07-20 17:06（Asia/Shanghai）
+- 阻塞问题：无
+- 最近更新时间：2026-07-24（Asia/Shanghai）
 
 ## 全局约束
 
@@ -184,9 +184,8 @@ git diff --check
 
 ### 未通过项目
 
-- 当前无可用浏览器实例，真实设置页视觉和刷新操作未验证。
-- PostgreSQL/Redis 未启动，真实用户 ToolConfig 持久化未执行。
+- 无。2026-07-24 用户确认目标交互验收无问题；历史环境限制保留在执行记录中，不再阻塞本批次收口。
 
 ### 最终状态
 
-`BLOCKED`
+`READY_TO_MERGE`

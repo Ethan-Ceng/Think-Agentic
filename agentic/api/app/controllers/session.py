@@ -22,6 +22,8 @@ from app.schemas.session import (
     ListSessionItem,
     ListSessionResponse,
     GetSessionResponse,
+    CreateSessionBranchRequest,
+    CreateSessionBranchResponse,
     ChatRequest,
     NextMessageResponse,
     QueueNextMessageRequest,
@@ -130,6 +132,14 @@ async def get_session(
         session = await session_service.get_session(session_id, current_user.id)
         if not session:
             raise NotFoundError("该会话不存在，请核实后重试")
+        source_session = (
+            await session_service.get_branch_source(
+                session.source_session_id,
+                current_user.id,
+            )
+            if session.source_session_id
+            else None
+        )
 
         return Response.success(
             msg="获取会话详情成功",
@@ -145,6 +155,10 @@ async def get_session(
                     if session.next_message
                     else None
                 ),
+                source_session_id=source_session.id if source_session else None,
+                source_session_title=source_session.title if source_session else None,
+                forked_from_event_id=session.forked_from_event_id,
+                branch_operation=session.branch_operation,
             ),
         )
     except NotFoundError:
@@ -155,6 +169,32 @@ async def get_session(
 
 
 # ==================== 会话操作 ====================
+
+@router.post("/{session_id}/branches", summary="从历史消息创建新会话分支")
+async def create_session_branch(
+    session_id: str,
+    request: CreateSessionBranchRequest,
+    current_user: User = Depends(get_current_user),
+    session_service: SessionService = Depends(get_session_service),
+) -> Response[CreateSessionBranchResponse]:
+    branch = await session_service.create_branch(
+        source_session_id=session_id,
+        user_id=current_user.id,
+        target_event_id=request.target_event_id,
+        operation=request.operation,
+        request_id=str(request.request_id),
+        message=request.message,
+    )
+    return Response.success(
+        msg="会话分支创建成功",
+        data=CreateSessionBranchResponse(
+            session_id=branch.id,
+            source_session_id=branch.source_session_id or session_id,
+            forked_from_event_id=branch.forked_from_event_id or request.target_event_id,
+            operation=branch.branch_operation or request.operation,
+            queued=branch.next_message is not None,
+        ),
+    )
 
 @router.post("/{session_id}/clear-unread-message-count", summary="清除未读消息数")
 async def clear_unread_message_count(

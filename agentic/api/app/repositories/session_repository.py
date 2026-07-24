@@ -11,7 +11,13 @@ from typing import Protocol, List, Optional
 from app.core.entities.event import BaseEvent, InteractionDecision, InteractionEvent
 from app.core.entities.file import File
 from app.core.entities.memory import Memory
-from app.core.entities.session import NextMessage, Session, SessionStatus
+from app.core.entities.session import (
+    BranchContextMessage,
+    BranchOperation,
+    NextMessage,
+    Session,
+    SessionStatus,
+)
 
 
 class SessionRepository(Protocol):
@@ -71,6 +77,18 @@ class SessionRepository(Protocol):
 
     async def add_event(self, session_id: str, event: BaseEvent) -> None:
         """往会话中新增事件"""
+        ...
+
+    async def create_branch(
+            self,
+            source_session_id: str,
+            user_id: str,
+            target_event_id: str,
+            operation: BranchOperation,
+            request_id: str,
+            message: Optional[str] = None,
+    ) -> Session:
+        """Atomically create or replay an immutable conversation branch."""
         ...
 
     async def put_next_message(
@@ -137,4 +155,10 @@ class SessionRepository(Protocol):
 
     async def get_memory(self, session_id: str, agent_name: str) -> Memory:
         """根据传递的会话id+Agent名字获取记忆"""
+        ...
+
+    async def get_branch_context_seed(
+            self, session_id: str
+    ) -> List[BranchContextMessage]:
+        """Read the server-validated visible transcript seed for an Agent."""
         ...

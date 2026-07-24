@@ -29,6 +29,7 @@ from app.core.entities.event import (
 )
 from app.core.entities.memory import Memory
 from app.core.entities.message import Message
+from app.core.entities.session import BranchContextMessage
 from app.core.entities.tool_result import ToolResult
 from app.repositories.uow import IUnitOfWork
 from app.core.tools.base import BaseTool
@@ -64,6 +65,7 @@ class BaseAgent(ABC):
         self._agent_config = agent_config
         self._llm = llm
         self._memory: Optional[Memory] = None
+        self._branch_context_seed: List[BranchContextMessage] = []
         self._json_parser = json_parser
         self._tools = tools
         self._trace_service = trace_service
@@ -98,6 +100,10 @@ class BaseAgent(ABC):
         if self._memory is None:
             async with self._uow:
                 self._memory = await self._uow.session.get_memory(self._session_id, self.name)
+                if self._memory.empty:
+                    self._branch_context_seed = (
+                        await self._uow.session.get_branch_context_seed(self._session_id)
+                    )
 
     def _get_available_tools(self) -> List[Dict[str, Any]]:
         """获取Agent所有可用的工具列表参数声明/Schema"""
@@ -228,6 +234,11 @@ class BaseAgent(ABC):
             self._memory.add_message({
                 "role": "system", "content": self._system_prompt,
             })
+            self._memory.add_messages([
+                self._branch_seed_to_memory_message(item)
+                for item in self._branch_context_seed
+            ])
+            self._branch_context_seed = []
 
         # 3.将正常消息添加到记忆中
         self._memory.add_messages(messages)
@@ -235,6 +246,18 @@ class BaseAgent(ABC):
         # 4.将记忆持久化到数据仓库中
         async with self._uow:
             await self._uow.session.save_memory(self._session_id, self.name, self._memory)
+
+    @staticmethod
+    def _branch_seed_to_memory_message(
+            item: BranchContextMessage,
+    ) -> Dict[str, Any]:
+        content = item.content
+        if item.attachment_names:
+            content = (
+                f"{content}\n\n历史附件文件名："
+                f"{'、'.join(item.attachment_names)}"
+            )
+        return {"role": item.role, "content": content}
 
     async def compact_memory(self) -> None:
         """压缩Agent的记忆"""

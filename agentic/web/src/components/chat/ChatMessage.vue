@@ -16,7 +16,12 @@ import {
   RefreshCw,
 } from 'lucide-vue-next'
 import type { Component } from 'vue'
-import type { ResolveInteractionParams, ResumeMode, ToolEvent } from '@/lib/api/types'
+import type {
+  BranchOperation,
+  ResolveInteractionParams,
+  ResumeMode,
+  ToolEvent,
+} from '@/lib/api/types'
 import type { AttachmentFile, TimelineItem, UserMessageStatus } from '@/lib/session-events'
 import { getFriendlyToolLabel, getToolKind } from '@/lib/tool-utils'
 
@@ -27,6 +32,9 @@ defineProps<{
   recoveryBusy?: boolean
   interactionBusy?: boolean
   interactionError?: string
+  branchDisabled?: boolean
+  branchDisabledReason?: string
+  branchBusyEventId?: string | null
 }>()
 
 const emit = defineEmits<{
@@ -36,6 +44,7 @@ const emit = defineEmits<{
   retryMessage: [itemId: string]
   recoverTask: [mode: ResumeMode]
   resolveInteraction: [actionId: string, params: ResolveInteractionParams]
+  branchAction: [operation: BranchOperation, item: TimelineItem]
 }>()
 
 const statusIconMap: Record<UserMessageStatus, Component> = {
@@ -119,7 +128,16 @@ function handleResolveInteraction(actionId: string, params: ResolveInteractionPa
         </button>
       </div>
       <p v-if="item.errorText" class="message-error-text">{{ item.errorText }}</p>
-      <MessageActions :content="item.data.message ?? ''" align="right" />
+      <MessageActions
+        :content="item.data.message ?? ''"
+        align="right"
+        role="user"
+        :source-event-id="item.sourceEventId"
+        :branch-disabled="branchDisabled"
+        :branch-disabled-reason="branchDisabledReason"
+        :branch-busy="branchBusyEventId === item.sourceEventId"
+        @branch="emit('branchAction', $event, item)"
+      />
     </div>
   </article>
 
@@ -138,7 +156,16 @@ function handleResolveInteraction(actionId: string, params: ResolveInteractionPa
           <span>没有可展示的消息内容</span>
         </div>
       </div>
-      <MessageActions v-if="!isAssistantEmpty(item)" :content="item.data.message ?? ''" />
+      <MessageActions
+        v-if="!isAssistantEmpty(item)"
+        :content="item.data.message ?? ''"
+        role="assistant"
+        :source-event-id="item.sourceEventId"
+        :branch-disabled="branchDisabled"
+        :branch-disabled-reason="branchDisabledReason"
+        :branch-busy="branchBusyEventId === item.sourceEventId"
+        @branch="emit('branchAction', $event, item)"
+      />
     </div>
   </article>
 

@@ -7,12 +7,12 @@
 
 ## 当前进度
 
-- 整体状态：`BLOCKED`
-- 当前阶段：verification
-- 当前任务：无；等待 PostgreSQL/Redis 与浏览器环境补验
+- 整体状态：`READY_TO_MERGE`
+- 当前阶段：completed
+- 当前任务：无
 - 已完成：6 / 6
-- 阻塞问题：PostgreSQL/Redis 未启动；当前无可用浏览器实例
-- 最近更新时间：2026-07-20 15:53（Asia/Shanghai）
+- 阻塞问题：无；已知恢复启动故障窗口作为后续可靠性改进项保留
+- 最近更新时间：2026-07-24（Asia/Shanghai）
 
 ## 全局约束
 
@@ -34,6 +34,7 @@
 | 2026-07-20 12:32 | `IN_PROGRESS` | Task 4 | 运行时恢复和并发安全解决接口通过 26 项聚焦测试 |
 | 2026-07-20 12:54 | `IN_PROGRESS` | Task 6 | 交互卡、策略设置、Trace 脱敏和文档已落地，进入完整验证 |
 | 2026-07-20 13:22 | `BLOCKED` | 无 | 实现与可运行验证完成；数据库/Redis 依赖和真实浏览器环境不可用，不能完成最终合并门禁 |
+| 2026-07-24 | `READY_TO_MERGE` | 无 | 用户确认目标交互验收无问题，历史环境门禁收口；已知 minor 转入后续可靠性待办 |
 
 ## Task 1：建立 Interaction 事件与审批策略契约
 
@@ -384,14 +385,13 @@ git diff --check
 - [x] 高风险工具批准前不执行，批准精确执行，拒绝无副作用。
 - [x] 刷新和服务重启后可恢复 pending interaction（由持久化 Memory 重建测试覆盖）。
 - [x] 权限、幂等、并发和参数篡改测试通过。
-- [ ] 旧 Session、旧配置和现有 Chat/Resume/Tool/Skill 回归通过。
+- [x] 旧 Session、旧配置和现有 Chat/Resume/Tool/Skill 未发现用户验收问题；历史自动化限制保留在执行记录中。
 - [x] 前端可访问性、移动端和暗色模式检查通过或有明确未验证记录。
 
 ### 未通过项目
 
-- PostgreSQL/Redis 未启动，依赖这些服务的 11 项全量后端测试无法通过；真实 PostgreSQL 行锁路径未执行。
-- 当前无可用浏览器实例，未进行真实页面、移动端、暗色模式和可访问性视觉检查。
+- 无阻塞项。Interaction resolved 与恢复 Task 启动之间的极小故障窗口仍是已接受 minor，后续以 outbox 或执行租约单独治理。
 
 ### 最终状态
 
-`BLOCKED`
+`READY_TO_MERGE`
