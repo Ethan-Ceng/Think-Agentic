@@ -36,6 +36,8 @@ from app.core.entities.session import (
     NextMessageConflictError,
     NextMessageNotFoundError,
     Session,
+    SessionOrganizationConflictError,
+    SessionOrganizationNotFoundError,
     SessionStatus,
 )
 from app.core.entities.skill import SkillRef
@@ -107,6 +109,22 @@ class AgentService:
         # 2.调用人物类的get方法获取对应的任务实例
         return self._task_cls.get(task_id)
 
+    async def _claim_execution(
+            self,
+            session_id: str,
+            user_id: str,
+    ) -> tuple[Session, SessionStatus | None]:
+        try:
+            async with self._uow:
+                return await self._uow.session.claim_execution(
+                    session_id,
+                    user_id,
+                )
+        except SessionOrganizationNotFoundError as exc:
+            raise NotFoundError("任务会话不存在, 请核实后重试") from exc
+        except SessionOrganizationConflictError as exc:
+            raise ConflictError(str(exc)) from exc
+
     async def _create_task(self, session: Session) -> Task:
         """根据传递的会话创建一个新任务"""
         # 1.获取沙箱实例
@@ -121,7 +139,10 @@ class AgentService:
             sandbox = await self._sandbox_cls.create()
             session.sandbox_id = sandbox.id
             async with self._uow:
-                await self._uow.session.save(session)
+                await self._uow.session.update_runtime_handles(
+                    session.id,
+                    sandbox_id=sandbox.id,
+                )
 
         # 4.从沙箱中获取浏览器实例
         browser = await sandbox.get_browser()
@@ -158,7 +179,10 @@ class AgentService:
         task = self._task_cls.create(task_runner=task_runner)
         session.task_id = task.id
         async with self._uow:
-            await self._uow.session.save(session)
+            await self._uow.session.update_runtime_handles(
+                session.id,
+                task_id=task.id,
+            )
 
         return task
 
@@ -311,31 +335,59 @@ class AgentService:
         """根据传递的信息调用Agent服务发起对话请求"""
         attachments = attachments or []
         skills = skills or []
+        previous_status: SessionStatus | None = None
         try:
-            # 1.检查会话是否存在
-            async with self._uow:
-                session = await self._uow.session.get_by_id_for_user(session_id, user_id)
+            # 1. 新 Run 与归档在同一行锁上串行化；只读订阅保持原查询。
+            if message:
+                session, previous_status = await self._claim_execution(
+                    session_id,
+                    user_id,
+                )
+            else:
+                async with self._uow:
+                    session = await self._uow.session.get_by_id_for_user(
+                        session_id,
+                        user_id,
+                    )
             if not session:
                 logger.error(f"尝试与不存在的任务会话[{session_id}]对话")
                 raise NotFoundError("任务会话不存在, 请核实后重试")
 
             # 2.获取对应会话任务
-            task = await self._get_task(session)
+            task = None if previous_status is not None else await self._get_task(session)
 
             # A running database record without an in-process task can never make progress.
             # Finalize it before accepting a user-triggered recovery run.
-            if session.status == SessionStatus.RUNNING and task is None:
+            if (
+                previous_status is None
+                and session.status == SessionStatus.RUNNING
+                and task is None
+            ):
                 orphaned_event = await self._finalize_orphaned_run(session)
                 if not message:
                     yield orphaned_event
                     return
+                session, previous_status = await self._claim_execution(
+                    session_id,
+                    user_id,
+                )
+                task = None
 
             # 3.判断是否传递了message
             if message:
                 # 4.判断会话的状态是什么,如果不是运行中则表示已完成或者空闲中
-                if session.status != SessionStatus.RUNNING or task is None:
+                if previous_status is not None or session.status != SessionStatus.RUNNING or task is None:
                     # 5.不在运行中需要创建一个新的task并启动
-                    task = await self._create_task(session)
+                    try:
+                        task = await self._create_task(session)
+                    except Exception:
+                        if previous_status is not None:
+                            async with self._uow:
+                                await self._uow.session.update_status(
+                                    session_id,
+                                    previous_status,
+                                )
+                        raise
                     if not task:
                         logger.error(f"会话[{session_id}]创建任务失败")
                         raise RuntimeError(f"会话[{session_id}]创建任务失败")

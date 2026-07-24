@@ -6,10 +6,10 @@ Session Controller - 完整实现（接入真实 Agent 流程）
 import asyncio
 import logging
 from datetime import datetime
-from typing import AsyncGenerator, Optional, Dict
+from typing import AsyncGenerator, Optional, Dict, Literal
 
 import websockets
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sse_starlette import EventSourceResponse, ServerSentEvent
 from starlette.websockets import WebSocket, WebSocketDisconnect
 from websockets import ConnectionClosed
@@ -24,6 +24,7 @@ from app.schemas.session import (
     GetSessionResponse,
     CreateSessionBranchRequest,
     CreateSessionBranchResponse,
+    UpdateSessionOrganizationRequest,
     ChatRequest,
     NextMessageResponse,
     QueueNextMessageRequest,
@@ -85,6 +86,9 @@ async def stream_sessions(
                     latest_message_at=s.latest_message_at,
                     status=s.status,
                     unread_message_count=s.unread_message_count,
+                    is_pinned=s.is_pinned,
+                    archived_at=s.archived_at,
+                    has_next_message=s.next_message is not None,
                 )
                 for s in sessions
             ]
@@ -99,11 +103,15 @@ async def stream_sessions(
 
 @router.get("", summary="获取会话列表")
 async def get_sessions(
+    scope: Literal["active", "archived"] = Query(default="active"),
     current_user: User = Depends(get_current_user),
     session_service: SessionService = Depends(get_session_service),
 ) -> Response[ListSessionResponse]:
     """获取会话列表"""
-    sessions = await session_service.get_all_sessions(current_user.id)
+    sessions = await session_service.get_all_sessions(
+        current_user.id,
+        archived=scope == "archived",
+    )
     session_items = [
         ListSessionItem(
             session_id=s.id,
@@ -112,6 +120,9 @@ async def get_sessions(
             latest_message_at=s.latest_message_at,
             status=s.status,
             unread_message_count=s.unread_message_count,
+            is_pinned=s.is_pinned,
+            archived_at=s.archived_at,
+            has_next_message=s.next_message is not None,
         )
         for s in sessions
     ]
@@ -159,6 +170,8 @@ async def get_session(
                 source_session_title=source_session.title if source_session else None,
                 forked_from_event_id=session.forked_from_event_id,
                 branch_operation=session.branch_operation,
+                is_pinned=session.is_pinned,
+                archived_at=session.archived_at,
             ),
         )
     except NotFoundError:
@@ -169,6 +182,35 @@ async def get_session(
 
 
 # ==================== 会话操作 ====================
+
+@router.patch("/{session_id}", summary="更新会话整理元数据")
+async def update_session_organization(
+    session_id: str,
+    request: UpdateSessionOrganizationRequest,
+    current_user: User = Depends(get_current_user),
+    session_service: SessionService = Depends(get_session_service),
+) -> Response[ListSessionItem]:
+    session = await session_service.update_organization(
+        session_id=session_id,
+        user_id=current_user.id,
+        title=request.title,
+        pinned=request.pinned,
+        archived=request.archived,
+    )
+    return Response.success(
+        msg="更新任务会话成功",
+        data=ListSessionItem(
+            session_id=session.id,
+            title=session.title,
+            latest_message=session.latest_message,
+            latest_message_at=session.latest_message_at,
+            status=session.status,
+            unread_message_count=session.unread_message_count,
+            is_pinned=session.is_pinned,
+            archived_at=session.archived_at,
+            has_next_message=session.next_message is not None,
+        ),
+    )
 
 @router.post("/{session_id}/branches", summary="从历史消息创建新会话分支")
 async def create_session_branch(
@@ -266,7 +308,10 @@ async def run_next_message(
     session_id: str,
     current_user: User = Depends(get_current_user),
     agent_service: AgentService = Depends(get_agent_service),
+    session_service: SessionService = Depends(get_session_service),
 ) -> EventSourceResponse:
+    await session_service.ensure_session_active(session_id, current_user.id)
+
     async def event_generator() -> AsyncGenerator[ServerSentEvent, None]:
         async for event in agent_service.run_next_message(
             session_id=session_id,
@@ -288,8 +333,10 @@ async def chat(
     request: ChatRequest,
     current_user: User = Depends(get_current_user),
     agent_service: AgentService = Depends(get_agent_service),
+    session_service: SessionService = Depends(get_session_service),
 ) -> EventSourceResponse:
     """聊天（SSE流式响应） - 接入真实 Agent 流程"""
+    await session_service.ensure_session_active(session_id, current_user.id)
 
     async def event_generator() -> AsyncGenerator[ServerSentEvent, None]:
         async for event in agent_service.chat(
@@ -319,8 +366,10 @@ async def resume_session(
     request: ResumeSessionRequest,
     current_user: User = Depends(get_current_user),
     agent_service: AgentService = Depends(get_agent_service),
+    session_service: SessionService = Depends(get_session_service),
 ) -> EventSourceResponse:
     """在保留当前对话上下文的前提下，由用户发起一个新的 Run。"""
+    await session_service.ensure_session_active(session_id, current_user.id)
 
     async def event_generator() -> AsyncGenerator[ServerSentEvent, None]:
         async for event in agent_service.resume(

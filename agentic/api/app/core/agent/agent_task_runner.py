@@ -529,7 +529,10 @@ class AgentTaskRunner(TaskRunner):
 
                     if isinstance(flow_event, TitleEvent):
                         async with self._uow:
-                            await self._uow.session.update_title(self._session_id, flow_event.title)
+                            await self._uow.session.update_generated_title(
+                                self._session_id,
+                                flow_event.title,
+                            )
                     elif isinstance(flow_event, MessageEvent):
                         async with self._uow:
                             await self._uow.session.update_latest_message(

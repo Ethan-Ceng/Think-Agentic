@@ -12,6 +12,7 @@ from sqlalchemy import select, delete, update, func, cast
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import set_committed_value
 
 from app.core.entities.event import (
     BaseEvent,
@@ -32,6 +33,8 @@ from app.core.entities.session import (
     Session,
     SessionBranchConflictError,
     SessionBranchNotFoundError,
+    SessionOrganizationConflictError,
+    SessionOrganizationNotFoundError,
     SessionStatus,
 )
 from app.repositories.session_repository import SessionRepository
@@ -96,6 +99,8 @@ class DBSessionRepository(SessionRepository):
         source = source_result.scalar_one_or_none()
         if source is None:
             raise SessionBranchNotFoundError("会话不存在或无权访问")
+        if source.archived_at is not None:
+            raise SessionBranchConflictError("归档会话恢复后才能创建分支")
 
         existing_result = await self.db_session.execute(
             select(SessionModel).where(
@@ -303,13 +308,29 @@ class DBSessionRepository(SessionRepository):
         # 2.将数据循环遍历成Session
         return [record.to_domain() for record in records]
 
-    async def get_all_by_user(self, user_id: str) -> List[Session]:
+    async def get_all_by_user(
+            self, user_id: str, archived: bool = False
+    ) -> List[Session]:
         """获取指定用户的会话列表"""
-        stmt = (
-            select(SessionModel)
-            .where(SessionModel.user_id == user_id)
-            .order_by(SessionModel.latest_message_at.desc())
+        stmt = select(SessionModel).where(
+            SessionModel.user_id == user_id,
+            (
+                SessionModel.archived_at.is_not(None)
+                if archived
+                else SessionModel.archived_at.is_(None)
+            ),
         )
+        if archived:
+            stmt = stmt.order_by(
+                SessionModel.archived_at.desc(),
+                SessionModel.created_at.desc(),
+            )
+        else:
+            stmt = stmt.order_by(
+                SessionModel.is_pinned.desc(),
+                SessionModel.latest_message_at.desc().nullslast(),
+                SessionModel.created_at.desc(),
+            )
         result = await self.db_session.execute(stmt)
         records = result.scalars().all()
         return [record.to_domain() for record in records]
@@ -351,16 +372,160 @@ class DBSessionRepository(SessionRepository):
         await self.db_session.execute(stmt)
 
     async def update_title(self, session_id: str, title: str) -> None:
-        """更新会话标题"""
-        # 1.构建更新语句并执行
+        """兼容旧调用；自动标题不得覆盖手工标题。"""
+        await self.update_generated_title(session_id, title)
+
+    async def update_generated_title(self, session_id: str, title: str) -> bool:
+        """Update an Agent-generated title only while the title is not user-owned."""
         stmt = (
             update(SessionModel)
-            .where(SessionModel.id == session_id)
+            .where(
+                SessionModel.id == session_id,
+                SessionModel.title_is_manual.is_(False),
+            )
             .values(title=title)
         )
         result = await self.db_session.execute(stmt)
+        return bool(result.rowcount)
 
-        # 2.检查是否更新成功
+    async def update_manual_title(
+            self, session_id: str, user_id: str, title: str
+    ) -> Session:
+        """Set and lock a user-owned title."""
+        return await self.update_organization(
+            session_id,
+            user_id,
+            title=title,
+        )
+
+    async def update_organization(
+            self,
+            session_id: str,
+            user_id: str,
+            *,
+            title: Optional[str] = None,
+            pinned: Optional[bool] = None,
+            archived: Optional[bool] = None,
+    ) -> Session:
+        """Atomically update user-owned navigation metadata."""
+        result = await self.db_session.execute(
+            select(SessionModel)
+            .where(
+                SessionModel.id == session_id,
+                SessionModel.user_id == user_id,
+            )
+            .with_for_update()
+        )
+        record = result.scalar_one_or_none()
+        if record is None:
+            raise SessionOrganizationNotFoundError("会话不存在或无权访问")
+
+        is_currently_archived = record.archived_at is not None
+        will_be_archived = (
+            archived if archived is not None else is_currently_archived
+        )
+        if pinned is True and will_be_archived:
+            raise SessionOrganizationConflictError("已归档会话不能置顶")
+        if (
+            archived is True
+            and not is_currently_archived
+            and (
+                record.status
+                in {SessionStatus.RUNNING.value, SessionStatus.WAITING.value}
+                or record.next_message is not None
+            )
+        ):
+            raise SessionOrganizationConflictError(
+                "运行中、等待中或存在排队消息的会话不能归档"
+            )
+
+        values = {}
+        if title is not None:
+            values["title"] = title
+            values["title_is_manual"] = True
+        if archived is True:
+            values["archived_at"] = record.archived_at or datetime.now()
+            values["is_pinned"] = False
+        elif archived is False:
+            values["archived_at"] = None
+        if pinned is not None:
+            values["is_pinned"] = pinned
+
+        if not values:
+            return record.to_domain()
+
+        # Organization metadata is navigation state, not conversation activity.
+        # Explicitly carrying the current value suppresses SessionModel.updated_at
+        # client-side onupdate while retaining one atomic row-locked write.
+        values["updated_at"] = record.updated_at
+        update_result = await self.db_session.execute(
+            update(SessionModel)
+            .where(
+                SessionModel.id == session_id,
+                SessionModel.user_id == user_id,
+            )
+            .values(**values)
+        )
+        if update_result.rowcount == 0:
+            raise SessionOrganizationNotFoundError("会话不存在或无权访问")
+        for field_name, value in values.items():
+            set_committed_value(record, field_name, value)
+        return record.to_domain()
+
+    async def claim_execution(
+            self,
+            session_id: str,
+            user_id: str,
+    ) -> tuple[Session, Optional[SessionStatus]]:
+        """Serialize starting a Run with archive transitions on the same row lock."""
+        result = await self.db_session.execute(
+            select(SessionModel)
+            .where(
+                SessionModel.id == session_id,
+                SessionModel.user_id == user_id,
+            )
+            .with_for_update()
+        )
+        record = result.scalar_one_or_none()
+        if record is None:
+            raise SessionOrganizationNotFoundError("会话不存在或无权访问")
+        if record.archived_at is not None:
+            raise SessionOrganizationConflictError(
+                "任务已归档，请先恢复后再继续执行"
+            )
+
+        if record.status == SessionStatus.RUNNING.value:
+            return record.to_domain(), None
+
+        previous_status = SessionStatus(record.status)
+        record.status = SessionStatus.RUNNING.value
+        await self.db_session.flush()
+        return record.to_domain(), previous_status
+
+    async def update_runtime_handles(
+            self,
+            session_id: str,
+            *,
+            sandbox_id: Optional[str] = None,
+            task_id: Optional[str] = None,
+    ) -> None:
+        """Patch runtime handles without writing a stale Session aggregate."""
+        values = {
+            field_name: value
+            for field_name, value in (
+                ("sandbox_id", sandbox_id),
+                ("task_id", task_id),
+            )
+            if value is not None
+        }
+        if not values:
+            return
+
+        result = await self.db_session.execute(
+            update(SessionModel)
+            .where(SessionModel.id == session_id)
+            .values(**values)
+        )
         if result.rowcount == 0:
             raise ValueError(f"会话[{session_id}]不存在，请核实后重试")
 
@@ -404,6 +569,8 @@ class DBSessionRepository(SessionRepository):
             self, session_id: str, user_id: str, next_message: NextMessage
     ) -> NextMessage:
         record = await self._get_session_record_for_update(session_id, user_id)
+        if record.archived_at is not None:
+            raise NextMessageConflictError("任务已归档，请先恢复后再继续执行")
         if record.status != SessionStatus.RUNNING.value:
             raise NextMessageConflictError("会话已不在运行中，请直接发送消息")
 
@@ -486,6 +653,8 @@ class DBSessionRepository(SessionRepository):
 
     async def start_next_message_run(self, session_id: str, user_id: str) -> Session:
         record = await self._get_session_record_for_update(session_id, user_id)
+        if record.archived_at is not None:
+            raise NextMessageConflictError("任务已归档，请先恢复后再继续执行")
         if record.status != SessionStatus.COMPLETED.value or record.next_message is None:
             raise NextMessageConflictError("排队消息当前不可恢复执行")
 

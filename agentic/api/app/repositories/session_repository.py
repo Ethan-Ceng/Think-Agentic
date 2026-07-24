@@ -31,7 +31,9 @@ class SessionRepository(Protocol):
         """获取所有会话列表信息"""
         ...
 
-    async def get_all_by_user(self, user_id: str) -> List[Session]:
+    async def get_all_by_user(
+            self, user_id: str, archived: bool = False
+    ) -> List[Session]:
         """获取指定用户的会话列表信息"""
         ...
 
@@ -52,7 +54,47 @@ class SessionRepository(Protocol):
         ...
 
     async def update_title(self, session_id: str, title: str) -> None:
-        """根据传递的会话id+标题更新会话信息"""
+        """兼容旧调用；按自动标题规则更新会话信息"""
+        ...
+
+    async def update_generated_title(self, session_id: str, title: str) -> bool:
+        """仅在标题未被用户锁定时更新，返回是否写入"""
+        ...
+
+    async def update_manual_title(
+            self, session_id: str, user_id: str, title: str
+    ) -> Session:
+        """更新所属会话标题并锁定后续自动标题"""
+        ...
+
+    async def update_organization(
+            self,
+            session_id: str,
+            user_id: str,
+            *,
+            title: Optional[str] = None,
+            pinned: Optional[bool] = None,
+            archived: Optional[bool] = None,
+    ) -> Session:
+        """原子更新所属会话的导航整理元数据"""
+        ...
+
+    async def claim_execution(
+            self,
+            session_id: str,
+            user_id: str,
+    ) -> tuple[Session, Optional[SessionStatus]]:
+        """原子确认会话未归档，并在新 Run 时占用运行态。"""
+        ...
+
+    async def update_runtime_handles(
+            self,
+            session_id: str,
+            *,
+            sandbox_id: Optional[str] = None,
+            task_id: Optional[str] = None,
+    ) -> None:
+        """只更新 Agent 运行句柄，避免覆盖并发写入的导航元数据。"""
         ...
 
     async def update_latest_message(self, session_id: str, message: str, timestamp: datetime) -> None:

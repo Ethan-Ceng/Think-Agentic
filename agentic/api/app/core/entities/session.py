@@ -54,6 +54,14 @@ class SessionBranchConflictError(RuntimeError):
     pass
 
 
+class SessionOrganizationNotFoundError(LookupError):
+    pass
+
+
+class SessionOrganizationConflictError(RuntimeError):
+    pass
+
+
 class BranchOperation(str, Enum):
     FORK = "fork"
     EDIT = "edit"
@@ -101,6 +109,9 @@ class Session(BaseModel):
     sandbox_id: Optional[str] = None  # 沙箱id
     task_id: Optional[str] = None  # 任务id
     title: str = ""  # 标题
+    title_is_manual: bool = False
+    is_pinned: bool = False
+    archived_at: Optional[datetime] = None
     unread_message_count: int = 0  # 未读消息数
     latest_message: str = ""  # 最新消息
     latest_message_at: Optional[datetime] = None  # 最新消息时间

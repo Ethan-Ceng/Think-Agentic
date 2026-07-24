@@ -21,6 +21,7 @@ WITH search_items AS (
         jsonb_build_object('status', s.status) AS metadata
     FROM sessions s
     WHERE s.user_id = :user_id
+      AND s.archived_at IS NULL
       AND (s.title ILIKE :pattern ESCAPE '\' OR s.latest_message ILIKE :pattern ESCAPE '\')
 
     UNION ALL
@@ -38,6 +39,7 @@ WITH search_items AS (
     FROM sessions s
     CROSS JOIN LATERAL jsonb_array_elements(COALESCE(s.events, '[]'::jsonb)) WITH ORDINALITY AS event(value, ordinality)
     WHERE s.user_id = :user_id
+      AND s.archived_at IS NULL
       AND event.value->>'type' = 'message'
       AND COALESCE(event.value->>'message', '') ILIKE :pattern ESCAPE '\'
 
@@ -59,7 +61,9 @@ WITH search_items AS (
         ) AS metadata
     FROM tool_calls tc
     JOIN agent_runs ar ON ar.id = tc.run_id
+    JOIN sessions search_session ON search_session.id = tc.session_id
     WHERE ar.user_id = :user_id
+      AND search_session.archived_at IS NULL
       AND concat_ws(' ', tc.tool_name, tc.function_name, tc.arguments_preview, tc.result_preview, tc.error)
           ILIKE :pattern ESCAPE '\'
 
@@ -77,7 +81,9 @@ WITH search_items AS (
         jsonb_build_object('source', te.source, 'trace_id', te.trace_id) AS metadata
     FROM trace_events te
     JOIN agent_runs ar ON ar.id = te.run_id
+    JOIN sessions search_session ON search_session.id = te.session_id
     WHERE ar.user_id = :user_id
+      AND search_session.archived_at IS NULL
       AND concat_ws(' ', te.event_type, te.payload::text) ILIKE :pattern ESCAPE '\'
 
     UNION ALL
@@ -98,7 +104,9 @@ WITH search_items AS (
             'size', f.size
         ) AS metadata
     FROM files f
+    LEFT JOIN sessions search_session ON search_session.id = f.origin_session_id
     WHERE f.user_id = :user_id
+      AND (f.origin_session_id IS NULL OR search_session.archived_at IS NULL)
       AND f.status = 'available'
       AND f.entry_type = 'file'
       AND (f.metadata->>'visible' IS NULL OR f.metadata->>'visible' <> 'false')

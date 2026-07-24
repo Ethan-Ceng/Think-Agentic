@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import List, Dict, Any, Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.core.entities.skill import SkillRef
 from app.core.entities.event import InteractionDecision
@@ -44,6 +44,9 @@ class ListSessionItem(BaseModel):
     latest_message_at: Optional[datetime] = None
     status: str
     unread_message_count: int = 0
+    is_pinned: bool = False
+    archived_at: Optional[datetime] = None
+    has_next_message: bool = False
 
 
 class ListSessionResponse(BaseModel):
@@ -72,6 +75,37 @@ class GetSessionResponse(BaseModel):
     source_session_title: Optional[str] = None
     forked_from_event_id: Optional[str] = None
     branch_operation: Optional[BranchOperation] = None
+    is_pinned: bool = False
+    archived_at: Optional[datetime] = None
+
+
+class UpdateSessionOrganizationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: Optional[str] = Field(default=None, max_length=100)
+    pinned: Optional[bool] = None
+    archived: Optional[bool] = None
+
+    @field_validator("title")
+    @classmethod
+    def trim_title(cls, value: Optional[str]) -> str:
+        if value is None:
+            raise ValueError("title cannot be null")
+        value = value.strip()
+        if not value:
+            raise ValueError("title cannot be blank")
+        return value
+
+    @model_validator(mode="after")
+    def validate_patch(self) -> "UpdateSessionOrganizationRequest":
+        if not self.model_fields_set:
+            raise ValueError("at least one organization field is required")
+        for field_name in self.model_fields_set:
+            if getattr(self, field_name) is None:
+                raise ValueError(f"{field_name} cannot be null")
+        if self.archived is True and self.pinned is True:
+            raise ValueError("an archived session cannot be pinned")
+        return self
 
 
 class CreateSessionBranchRequest(BaseModel):

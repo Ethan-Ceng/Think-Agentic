@@ -19,6 +19,8 @@ from app.core.entities.session import (
     Session,
     SessionBranchConflictError,
     SessionBranchNotFoundError,
+    SessionOrganizationConflictError,
+    SessionOrganizationNotFoundError,
 )
 from app.core.entities.skill import SkillRef
 from app.repositories.uow import IUnitOfWork
@@ -49,10 +51,56 @@ class SessionService:
         logger.info(f"成功创建一个新任务会话: {session.id}")
         return session
 
-    async def get_all_sessions(self, user_id: str) -> List[Session]:
+    async def get_all_sessions(
+            self, user_id: str, archived: bool = False
+    ) -> List[Session]:
         """获取项目所有任务会话列表"""
         async with self._uow:
-            return await self._uow.session.get_all_by_user(user_id)
+            return await self._uow.session.get_all_by_user(
+                user_id,
+                archived=archived,
+            )
+
+    async def update_organization(
+            self,
+            session_id: str,
+            user_id: str,
+            *,
+            title: str | None = None,
+            pinned: bool | None = None,
+            archived: bool | None = None,
+    ) -> Session:
+        """Update user-owned navigation metadata with stable public errors."""
+        try:
+            async with self._uow:
+                updated = await self._uow.session.update_organization(
+                    session_id,
+                    user_id,
+                    title=title,
+                    pinned=pinned,
+                    archived=archived,
+                )
+            logger.info(
+                "更新会话整理元数据成功",
+                extra={
+                    "session_id": session_id,
+                    "user_id": user_id,
+                    "fields": [
+                        field_name
+                        for field_name, value in (
+                            ("title", title),
+                            ("pinned", pinned),
+                            ("archived", archived),
+                        )
+                        if value is not None
+                    ],
+                },
+            )
+            return updated
+        except SessionOrganizationNotFoundError as error:
+            raise NotFoundError("会话不存在或无权访问") from error
+        except SessionOrganizationConflictError as error:
+            raise ConflictError(str(error)) from error
 
     async def clear_unread_message_count(self, session_id: str, user_id: str) -> None:
         """清空指定会话未读消息数"""
@@ -82,6 +130,21 @@ class SessionService:
         """获取指定会话详情信息"""
         async with self._uow:
             return await self._uow.session.get_by_id_for_user(session_id, user_id)
+
+    async def ensure_session_active(
+            self, session_id: str, user_id: str
+    ) -> Session:
+        """Reject new execution on archived sessions before opening an SSE response."""
+        async with self._uow:
+            session = await self._uow.session.get_by_id_for_user(
+                session_id,
+                user_id,
+            )
+        if not session:
+            raise NotFoundError("会话不存在或无权访问")
+        if session.archived_at is not None:
+            raise ConflictError("任务已归档，请先恢复后再继续执行")
+        return session
 
     async def get_branch_source(
             self, source_session_id: str, user_id: str
@@ -137,6 +200,7 @@ class SessionService:
             attachments: List[str],
             skills: List[SkillRef],
     ) -> NextMessage:
+        await self.ensure_session_active(session_id, user_id)
         queued = NextMessage(
             message=message,
             attachment_ids=attachments,

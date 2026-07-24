@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime
 
+from app.repositories.db_search_repository import SEARCH_SQL
 from app.services.search_service import SearchService
 
 
@@ -64,3 +65,10 @@ def test_search_service_skips_repository_for_blank_query() -> None:
         assert result.total_record == 0
 
     asyncio.run(run())
+
+
+def test_default_search_sql_excludes_archived_session_content() -> None:
+    sql = str(SEARCH_SQL)
+
+    assert "s.archived_at IS NULL" in sql
+    assert "search_session.archived_at IS NULL" in sql

@@ -7,7 +7,14 @@ import pytest
 from pydantic import TypeAdapter
 
 from app.core.agent.agent_task_runner import AgentTaskRunner
-from app.core.entities.event import DoneEvent, ErrorEvent, Event, MessageEvent, WaitEvent
+from app.core.entities.event import (
+    DoneEvent,
+    ErrorEvent,
+    Event,
+    MessageEvent,
+    TitleEvent,
+    WaitEvent,
+)
 from app.core.entities.session import NextMessage, NextMessageState, SessionStatus
 
 
@@ -17,6 +24,7 @@ class FakeSessionRepository:
         self.status_updates: list[SessionStatus] = []
         self.next_messages: list[NextMessage] = []
         self.consumed_next_messages: list[str] = []
+        self.generated_titles: list[str] = []
         self.finish_calls = 0
 
     async def add_event(self, session_id: str, event: Event) -> None:
@@ -32,6 +40,11 @@ class FakeSessionRepository:
 
     async def increment_unread_message_count(self, session_id: str) -> None:
         assert session_id == "session-1"
+
+    async def update_generated_title(self, session_id: str, title: str) -> bool:
+        assert session_id == "session-1"
+        self.generated_titles.append(title)
+        return True
 
     async def finish_or_claim_next_message(self, session_id: str, task_id: str):
         assert session_id == "session-1"
@@ -151,6 +164,20 @@ def test_normal_completion_updates_status_then_emits_done_event() -> None:
     assert isinstance(output_events[0], DoneEvent)
     assert len(session_repo.events) == 1
     assert isinstance(session_repo.events[0], DoneEvent)
+
+
+def test_title_events_use_generated_title_guard() -> None:
+    runner, session_repo = make_runner()
+
+    async def title_flow(_message):
+        yield TitleEvent(title="Generated title")
+
+    runner._run_flow = title_flow
+    task = FakeTask(MessageEvent(role="user", message="hello"))
+
+    asyncio.run(runner.invoke(task))
+
+    assert session_repo.generated_titles == ["Generated title"]
 
 
 def test_normal_flow_done_event_is_not_duplicated_by_completion_fallback() -> None:

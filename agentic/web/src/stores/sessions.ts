@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { sessionApi } from '@/lib/api/session'
-import type { Session } from '@/lib/api/types'
+import type { Session, UpdateSessionOrganizationParams } from '@/lib/api/types'
 
 const RETRY_CONFIG = {
   maxRetries: 10,
@@ -20,8 +20,11 @@ function normalizeSessions(raw: unknown): Session[] {
 
 export const useSessionsStore = defineStore('sessions', () => {
   const sessions = ref<Session[]>([])
+  const archivedSessions = ref<Session[]>([])
   const loading = ref(true)
+  const archivedLoading = ref(false)
   const error = ref<string | null>(null)
+  const archivedError = ref<string | null>(null)
 
   let cleanup: (() => void) | null = null
   let retryTimer: ReturnType<typeof window.setTimeout> | null = null
@@ -29,7 +32,19 @@ export const useSessionsStore = defineStore('sessions', () => {
   let sseReceived = false
   let mounted = false
 
-  const sortedSessions = computed(() => sessions.value)
+  const sortedSessions = computed(() =>
+    [...sessions.value].sort((left, right) => {
+      if (left.is_pinned !== right.is_pinned) return left.is_pinned ? -1 : 1
+      const leftTime = left.latest_message_at
+        ? new Date(left.latest_message_at).getTime()
+        : 0
+      const rightTime = right.latest_message_at
+        ? new Date(right.latest_message_at).getTime()
+        : 0
+      if (leftTime !== rightTime) return rightTime - leftTime
+      return 0
+    }),
+  )
 
   async function refresh(): Promise<void> {
     try {
@@ -128,8 +143,11 @@ export const useSessionsStore = defineStore('sessions', () => {
 
   function clear(): void {
     sessions.value = []
+    archivedSessions.value = []
     error.value = null
+    archivedError.value = null
     loading.value = false
+    archivedLoading.value = false
     initialFetched = false
     sseReceived = false
   }
@@ -138,20 +156,76 @@ export const useSessionsStore = defineStore('sessions', () => {
     try {
       await sessionApi.deleteSession(sessionId)
       sessions.value = sessions.value.filter((session) => session.session_id !== sessionId)
+      archivedSessions.value = archivedSessions.value.filter(
+        (session) => session.session_id !== sessionId,
+      )
       return true
     } catch {
       return false
     }
   }
 
+  async function loadArchivedSessions(): Promise<void> {
+    archivedLoading.value = true
+    archivedError.value = null
+    try {
+      const raw = await sessionApi.getSessions('archived')
+      archivedSessions.value = normalizeSessions(raw)
+    } catch (err) {
+      console.error('[Sessions] 获取归档会话失败:', err)
+      archivedError.value = err instanceof Error ? err.message : '获取归档会话失败'
+      throw err
+    } finally {
+      archivedLoading.value = false
+    }
+  }
+
+  async function updateOrganization(
+    sessionId: string,
+    params: UpdateSessionOrganizationParams,
+  ): Promise<Session> {
+    const updated = await sessionApi.updateOrganization(sessionId, params)
+    if (updated.archived_at) {
+      sessions.value = sessions.value.filter(
+        (session) => session.session_id !== sessionId,
+      )
+      const archivedIndex = archivedSessions.value.findIndex(
+        (session) => session.session_id === sessionId,
+      )
+      if (archivedIndex >= 0) {
+        archivedSessions.value[archivedIndex] = updated
+      } else {
+        archivedSessions.value = [updated, ...archivedSessions.value]
+      }
+    } else {
+      archivedSessions.value = archivedSessions.value.filter(
+        (session) => session.session_id !== sessionId,
+      )
+      const index = sessions.value.findIndex(
+        (session) => session.session_id === sessionId,
+      )
+      if (index >= 0) {
+        sessions.value[index] = updated
+      } else {
+        sessions.value = [updated, ...sessions.value]
+      }
+    }
+    return updated
+  }
+
   return {
     sessions: sortedSessions,
+    archivedSessions,
     loading,
+    archivedLoading,
     error,
+    archivedError,
     refresh,
+    loadArchivedSessions,
     start,
     stop,
     clear,
     deleteSession,
+    updateOrganization,
   }
 })

@@ -8,6 +8,15 @@
 - 恢复时以后端持久化的 React Memory Tool Call 为准，前端不能改写函数名或参数。
 - 本期未包含消息编辑、重新生成和更完整的 Markdown artifact 展示，这些仍作为后续增量。
 
+## 2026-07-24：会话整理能力已进入最终验证
+
+- 选择性借鉴 LibreChat 的会话整理交互，在 Vue 3 侧栏实现原位重命名、置顶分组和归档入口，没有迁移其 React 状态代码。
+- 新增独立的已归档任务弹窗，支持标题/最近消息筛选、当前页或新标签页打开、恢复、永久删除、加载失败重试和移动端布局。
+- Agentic 继续以 Session 为业务边界：手工标题优先于后续自动标题；运行中、等待交互或存在排队消息的任务不能归档；归档不会删除事件、Trace、文件或 lineage。
+- 默认列表、SSE 和全局搜索排除归档任务；按 ID 打开详情和 lineage 仍然可用，打开归档任务不会隐式恢复。
+- 实际落地集中在 `api/app/{models,repositories,services,controllers}`、`web/src/components/{SessionListItem,SessionList,ArchivedSessionsDialog}.vue`、`web/src/stores/sessions.ts` 及对应迁移和测试。
+- 本批明确不包含 LibreChat 的 Project、标签、批量操作、拖拽排序、分享、导出或导入；这些能力需要独立设计，不能作为空壳入口加入。
+
 整理日期：2026-07-15
 
 状态：持续演进；Skills、Creator 与 Marketplace 闭环已于 2026-07-16 落地

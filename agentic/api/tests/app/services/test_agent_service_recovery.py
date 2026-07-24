@@ -24,11 +24,23 @@ class FakeSessionRepository:
         self.events: List[BaseEvent] = []
         self.status_updates: List[SessionStatus] = []
         self.latest_messages: List[str] = []
+        self.claim_calls = 0
 
     async def get_by_id_for_user(self, session_id: str, user_id: str) -> Optional[Session]:
         if session_id == self.session.id and user_id == self.session.user_id:
             return self.session
         return None
+
+    async def claim_execution(self, session_id: str, user_id: str):
+        self.claim_calls += 1
+        session = await self.get_by_id_for_user(session_id, user_id)
+        if session is None:
+            return None, None
+        if session.status == SessionStatus.RUNNING:
+            return session, None
+        previous_status = session.status
+        session.status = SessionStatus.RUNNING
+        return session, previous_status
 
     async def update_status(self, session_id: str, status: SessionStatus) -> None:
         assert session_id == self.session.id
@@ -286,6 +298,40 @@ def test_internal_message_stays_in_agent_input_without_updating_conversation_sum
     assert session_repo.latest_messages == []
     assert session_repo.events == [message_event]
     assert MessageSSEEvent.from_event(message_event).data.visible is False
+
+
+def test_message_reclaims_execution_after_finalizing_an_orphaned_run() -> None:
+    session = Session(
+        id="session-1",
+        user_id="user-1",
+        task_id="missing-task",
+        status=SessionStatus.RUNNING,
+    )
+    service, session_repo, _ = make_service(session)
+    task = CompletedTask()
+
+    async def fake_create_task(_session: Session) -> CompletedTask:
+        return task
+
+    service._create_task = fake_create_task  # type: ignore[method-assign]
+
+    async def run() -> List[BaseEvent]:
+        return [
+            event
+            async for event in service.chat(
+                session_id=session.id,
+                user_id=session.user_id,
+                message="continue after restart",
+                visible=False,
+            )
+        ]
+
+    events = asyncio.run(run())
+
+    assert session_repo.claim_calls == 2
+    assert session_repo.status_updates == [SessionStatus.COMPLETED]
+    assert session.status == SessionStatus.RUNNING
+    assert isinstance(events[0], MessageEvent)
 
 
 def test_stop_finalizes_orphaned_run_instead_of_leaving_trace_running() -> None:

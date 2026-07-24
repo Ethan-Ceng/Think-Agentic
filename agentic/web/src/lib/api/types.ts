@@ -513,14 +513,25 @@ export type Session = {
   session_id: string
   title: string
   latest_message: string
-  latest_message_at: string
+  latest_message_at: string | null
   status: SessionStatus
   unread_message_count: number
+  is_pinned: boolean
+  archived_at: string | null
+  has_next_message: boolean
   [key: string]: unknown
 }
 
 export type SessionsData = {
   sessions: Session[]
+}
+
+export type SessionScope = 'active' | 'archived'
+
+export type UpdateSessionOrganizationParams = {
+  title?: string
+  pinned?: boolean
+  archived?: boolean
 }
 
 export type CreateSessionParams = {

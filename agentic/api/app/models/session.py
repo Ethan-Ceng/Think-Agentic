@@ -12,6 +12,7 @@ from sqlalchemy import (
     String,
     Integer,
     DateTime,
+    Boolean,
     Text,
     text,
     PrimaryKeyConstraint,
@@ -39,6 +40,13 @@ class SessionModel(Base):
         PrimaryKeyConstraint("id", name="pk_sessions_id"),
         Index("ix_sessions_source_session_id", "source_session_id"),
         Index("ux_sessions_branch_request_id", "branch_request_id", unique=True),
+        Index(
+            "ix_sessions_user_archive_pin_latest",
+            "user_id",
+            "archived_at",
+            "is_pinned",
+            "latest_message_at",
+        ),
     )
 
     id: Mapped[str] = mapped_column(
@@ -54,6 +62,20 @@ class SessionModel(Base):
         String(255),
         nullable=False,
         server_default=text("''::character varying"),
+    )
+    title_is_manual: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    )
+    is_pinned: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    )
+    archived_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime,
+        nullable=True,
     )
     unread_message_count: Mapped[int] = mapped_column(
         Integer,

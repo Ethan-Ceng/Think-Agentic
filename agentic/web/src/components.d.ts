@@ -11,6 +11,7 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
+    ArchivedSessionsDialog: typeof import('./components/ArchivedSessionsDialog.vue')['default']
     AssistantAvatar: typeof import('./components/chat/AssistantAvatar.vue')['default']
     AttachmentsMessage: typeof import('./components/chat/AttachmentsMessage.vue')['default']
     ChatComposer: typeof import('./components/chat/ChatComposer.vue')['default']

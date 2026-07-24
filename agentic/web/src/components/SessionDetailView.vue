@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowDown, ArrowLeft, GitFork } from 'lucide-vue-next'
+import { Archive, ArrowDown, ArrowLeft, GitFork } from 'lucide-vue-next'
 import { ElMessageBox } from 'element-plus'
+import ArchivedSessionsDialog from '@/components/ArchivedSessionsDialog.vue'
 import ChatInput from '@/components/chat/ChatInput.vue'
 import ChatEditBranchDialog from '@/components/chat/ChatEditBranchDialog.vue'
 import ChatMessage from '@/components/chat/ChatMessage.vue'
@@ -66,6 +67,7 @@ const previewFile = ref<AttachmentFile | null>(null)
 const previewTool = ref<ToolEvent | null>(null)
 const traceOpen = ref(false)
 const vncOpen = ref(false)
+const archivedDialogOpen = ref(false)
 const initialMessageSent = ref(false)
 const scrollContainerRef = ref<HTMLDivElement | null>(null)
 const prevToolCount = ref(0)
@@ -88,6 +90,7 @@ const detail = useSessionDetail(
 )
 
 const baseTimeline = computed(() => eventsToTimeline(detail.events.value))
+const isArchived = computed(() => Boolean(detail.session.value?.archived_at))
 const timeline = computed<TimelineItem[]>(() => {
   const items = [...baseTimeline.value]
   const pending = pendingUserMessage.value
@@ -158,6 +161,9 @@ const runningStateLabel = computed(() => {
   return ''
 })
 const branchDisabledReason = computed(() => {
+  if (isArchived.value) {
+    return '任务已归档，恢复后才能创建分支'
+  }
   if (detail.streaming.value || detail.session.value?.status === 'running') {
     return '任务执行中，完成后才能从历史消息创建分支'
   }
@@ -247,6 +253,9 @@ function markPendingFailed(itemId: string, error: unknown) {
 }
 
 async function sendPendingMessage(pending: PendingUserMessage) {
+  if (isArchived.value) {
+    throw new Error('任务已归档，请先恢复后再继续执行')
+  }
   pendingUserMessage.value = {
     ...pending,
     status: 'sending',
@@ -364,6 +373,7 @@ watch(
       props.initialMessage &&
       !initialMessageSent.value &&
       detail.session.value &&
+      !isArchived.value &&
       !detail.loading.value &&
       !detail.streaming.value
     ) {
@@ -466,6 +476,10 @@ watch(
 onBeforeUnmount(() => window.clearTimeout(focusTimer))
 
 async function handleSend(input: SendMessageInput, uploadedFiles: FileInfo[]) {
+  if (isArchived.value) {
+    toast.info('任务已归档，请先从归档管理中恢复')
+    throw new Error('任务已归档，请先恢复后再继续执行')
+  }
   if (detail.session.value?.status === 'running') {
     const replacingQueuedMessage = Boolean(detail.session.value.next_message)
     try {
@@ -532,6 +546,10 @@ function handleFileClick(file: AttachmentFile) {
 }
 
 async function handleRecoverTask(mode: ResumeMode) {
+  if (isArchived.value) {
+    toast.info('任务已归档，请先从归档管理中恢复')
+    return
+  }
   if (detail.streaming.value || detail.session.value?.status === 'running') return
 
   if (mode === 'restart') {
@@ -571,6 +589,10 @@ async function handleCancelNextMessage() {
 }
 
 async function handleRunNextMessage() {
+  if (isArchived.value) {
+    toast.info('任务已归档，请先从归档管理中恢复')
+    return
+  }
   if (queuedRunBusy.value) return
   queuedRunBusy.value = true
   stoppedAt.value = null
@@ -799,6 +821,17 @@ async function handleStop() {
             @open-trace="openTracePanel"
           />
           <div
+            v-if="isArchived"
+            class="archived-session-banner"
+            role="status"
+          >
+            <Archive :size="16" aria-hidden="true" />
+            <span>此任务已归档。恢复后才能继续发送消息或重新执行。</span>
+            <button type="button" @click="archivedDialogOpen = true">
+              管理已归档任务
+            </button>
+          </div>
+          <div
             v-if="detail.session.value.branch_operation"
             class="branch-lineage-banner"
             role="status"
@@ -840,7 +873,11 @@ async function handleStop() {
                 :key="item.id"
                 :item="item"
                 :dom-id="item.sourceEventId ? `event-${item.sourceEventId}` : undefined"
-                :show-recovery-actions="item.kind === 'error' && item.id === latestRecoverableErrorId"
+                :show-recovery-actions="
+                  !isArchived &&
+                  item.kind === 'error' &&
+                  item.id === latestRecoverableErrorId
+                "
                 :recovery-busy="detail.streaming.value"
                 :interaction-busy="item.kind === 'interaction' && resolvingActionId === item.data.action_id"
                 :interaction-error="item.kind === 'interaction' ? interactionErrors[item.data.action_id] : ''"
@@ -932,6 +969,7 @@ async function handleStop() {
               :session-id="sessionId"
               :is-running="detail.session.value.status === 'running'"
               :disabled="
+                isArchived ||
                 Boolean(pendingInteraction) ||
                 (detail.session.value.status === 'completed' &&
                   Boolean(detail.session.value.next_message))
@@ -967,6 +1005,7 @@ async function handleStop() {
     </div>
 
     <VNCOverlay v-if="vncOpen" :session-id="sessionId" @close="closeVNC" />
+    <ArchivedSessionsDialog v-model:open="archivedDialogOpen" />
     <ChatEditBranchDialog
       v-if="editBranchItem"
       :open="Boolean(editBranchItem)"

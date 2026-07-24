@@ -1,4 +1,4 @@
-import { createSSEStream, del, get, parseSSEStream, post, put } from './fetch'
+import { createSSEStream, del, get, parseSSEStream, patch, post, put } from './fetch'
 import type {
   ChatParams,
   CreateSessionBranchParams,
@@ -13,7 +13,9 @@ import type {
   Session,
   SessionDetail,
   SessionFile,
+  SessionScope,
   SessionsData,
+  UpdateSessionOrganizationParams,
   ViewFileParams,
   ViewShellParams,
 } from './types'
@@ -28,8 +30,8 @@ export type SessionLaunch = {
 }
 
 export const sessionApi = {
-  getSessions: (): Promise<SessionsData> => {
-    return get<SessionsData>('/sessions')
+  getSessions: (scope: SessionScope = 'active'): Promise<SessionsData> => {
+    return get<SessionsData>('/sessions', { scope })
   },
 
   createSession: (params?: CreateSessionParams): Promise<Session> => {
@@ -51,6 +53,13 @@ export const sessionApi = {
     params: CreateSessionBranchParams,
   ): Promise<CreateSessionBranchResult> => {
     return post<CreateSessionBranchResult>(`/sessions/${sessionId}/branches`, params)
+  },
+
+  updateOrganization: (
+    sessionId: string,
+    params: UpdateSessionOrganizationParams,
+  ): Promise<Session> => {
+    return patch<Session>(`/sessions/${sessionId}`, params)
   },
 
   streamSessions: (

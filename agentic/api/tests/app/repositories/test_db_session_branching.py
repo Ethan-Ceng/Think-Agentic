@@ -195,6 +195,24 @@ def test_fork_copies_only_visible_messages_through_target_without_mutating_sourc
     asyncio.run(scenario())
 
 
+def test_archived_source_cannot_create_a_new_branch():
+    async def scenario():
+        source, _ = _source_record()
+        source.archived_at = datetime.now()
+        repository = _repository(source)
+
+        with pytest.raises(SessionBranchConflictError, match="归档"):
+            await repository.create_branch(
+                source_session_id=source.id,
+                user_id=source.user_id,
+                target_event_id="assistant-2",
+                operation=BranchOperation.FORK,
+                request_id="request-archived",
+            )
+
+    asyncio.run(scenario())
+
+
 def test_edit_queues_replacement_with_original_attachments_and_skills():
     async def scenario():
         source, messages = _source_record()
@@ -349,6 +367,8 @@ def test_repeated_request_returns_same_branch_and_mismatched_request_conflicts()
             id="branch-1",
             user_id=source.user_id,
             title="Existing branch",
+            title_is_manual=False,
+            is_pinned=False,
             unread_message_count=0,
             latest_message="second answer",
             events=[],
@@ -383,6 +403,8 @@ def test_repeated_request_returns_same_branch_and_mismatched_request_conflicts()
             id="branch-2",
             user_id=source.user_id,
             title="Mismatched branch",
+            title_is_manual=False,
+            is_pinned=False,
             unread_message_count=0,
             latest_message="",
             events=[],
@@ -421,6 +443,8 @@ def test_unique_request_race_rereads_the_winning_branch():
             id="branch-winner",
             user_id=source.user_id,
             title="Winning branch",
+            title_is_manual=False,
+            is_pinned=False,
             unread_message_count=0,
             latest_message="second answer",
             events=[],
