@@ -1,8 +1,12 @@
+// @ts-expect-error Vitest executes this regression test in Node without exposing Node types globally.
+import { readFileSync } from 'node:fs'
 import { mount } from '@vue/test-utils'
 import { defineComponent, nextTick } from 'vue'
 import { describe, expect, it } from 'vitest'
 import SessionListItem from './SessionListItem.vue'
 import type { Session } from '@/lib/api/types'
+
+const styles = readFileSync('src/style.css', 'utf8')
 
 const DropdownStub = defineComponent({
   name: 'ElDropdown',
@@ -52,6 +56,21 @@ function mountItem(value = session()) {
 }
 
 describe('SessionListItem', () => {
+  it('keeps the operation rail inside narrow sidebar items with long text', () => {
+    const wrapper = mountItem(
+      session({
+        title: 'A'.repeat(100),
+        latest_message: 'https://example.com/' + 'unbroken'.repeat(40),
+      }),
+    )
+
+    expect(wrapper.find('.session-item-actions button').exists()).toBe(true)
+    expect(styles).toMatch(/\.session-group\s*\{[^}]*min-width:\s*0;/s)
+    expect(styles).toMatch(
+      /\.session-item\s*\{[^}]*width:\s*100%;[^}]*max-width:\s*100%;[^}]*min-width:\s*0;/s,
+    )
+  })
+
   it('renames inline with Enter and cancels with Escape', async () => {
     const wrapper = mountItem()
     wrapper.findComponent(DropdownStub).vm.$emit('command', 'rename')
