@@ -8,7 +8,12 @@
 import logging
 from typing import List, Callable, Type
 
-from app.schemas.exceptions import ConflictError, NotFoundError, ServerRequestsError
+from app.schemas.exceptions import (
+    ConflictError,
+    NotFoundError,
+    ServerRequestsError,
+    ValidationError,
+)
 from app.core.sandbox.base import Sandbox
 from app.core.entities.file import File
 from app.core.entities.session import (
@@ -18,13 +23,19 @@ from app.core.entities.session import (
     NextMessageNotFoundError,
     Session,
     SessionBranchConflictError,
+    SessionBranchFamilyValidationError,
     SessionBranchNotFoundError,
     SessionOrganizationConflictError,
     SessionOrganizationNotFoundError,
 )
 from app.core.entities.skill import SkillRef
 from app.repositories.uow import IUnitOfWork
-from app.schemas.session import FileReadResponse, ShellReadResponse
+from app.schemas.session import (
+    BranchFamilyResponse,
+    BranchFamilyVariantResponse,
+    FileReadResponse,
+    ShellReadResponse,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -155,6 +166,76 @@ class SessionService:
                 source_session_id,
                 user_id,
             )
+
+    async def get_branch_family(
+            self,
+            session_id: str,
+            user_id: str,
+            target_event_id: str | None = None,
+    ) -> BranchFamilyResponse:
+        """Return lightweight metadata for one owned direct branch family."""
+        normalized_target = None
+        if target_event_id is not None:
+            normalized_target = target_event_id.strip()
+            if not normalized_target or len(normalized_target) > 255:
+                raise ValidationError("target_event_id 格式无效")
+
+        try:
+            async with self._uow:
+                family = await self._uow.session.get_branch_family(
+                    session_id=session_id,
+                    user_id=user_id,
+                    target_event_id=normalized_target,
+                )
+        except SessionBranchNotFoundError as exc:
+            raise NotFoundError("会话或目标消息不存在") from exc
+        except SessionBranchConflictError as exc:
+            raise ConflictError(str(exc) or "分支版本上下文已变化") from exc
+        except SessionBranchFamilyValidationError as exc:
+            raise ValidationError(str(exc) or "分支版本查询参数无效") from exc
+
+        source_session_id = (
+            family.source_session.id
+            if family.source_session is not None
+            else None
+        )
+        variants = []
+        for variant in family.variants:
+            if source_session_id is not None and variant.id == source_session_id:
+                operation = "original"
+            else:
+                if variant.branch_operation is None:
+                    raise ConflictError("分支版本缺少 operation")
+                operation = variant.branch_operation.value
+            variants.append(
+                BranchFamilyVariantResponse(
+                    session_id=variant.id,
+                    title=variant.title,
+                    operation=operation,
+                    status=variant.status.value,
+                    archived_at=variant.archived_at,
+                    created_at=variant.created_at,
+                    is_current=variant.id == family.current_session.id,
+                )
+            )
+
+        response = BranchFamilyResponse(
+            source_session_id=source_session_id,
+            target_event_id=family.target_event_id,
+            current_session_id=family.current_session.id,
+            variants=variants,
+        )
+        logger.info(
+            "branch_family_loaded",
+            extra={
+                "user_id": user_id,
+                "current_session_id": family.current_session.id,
+                "source_session_id": source_session_id,
+                "target_event_id": family.target_event_id,
+                "variant_count": len(variants),
+            },
+        )
+        return response
 
     async def create_branch(
             self,

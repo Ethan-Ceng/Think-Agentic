@@ -9,9 +9,9 @@
 
 - 整体状态：`IN_PROGRESS`
 - 当前阶段：implementation
-- 当前任务：Task 2：提供 branch-family 只读 API 与错误契约（pending）
-- 已完成：1 / 5
-- 阻塞问题：无；实施前需从最新 `master` 创建普通功能分支，并保留当前未提交文档
+- 当前任务：Task 3：实现分支版本导航和路由恢复（pending）
+- 已完成：2 / 5
+- 阻塞问题：无
 - 最近更新时间：2026-07-25（Asia/Shanghai）
 
 ## 全局约束
@@ -33,6 +33,8 @@
 | 2026-07-25 | `PLAN_READY` | 无 | 发现第一阶段 edit/regenerate/fork 已完成，转为直接分支族版本导航与气泡内编辑增强；设计和五项任务拆分完成 |
 | 2026-07-25 | `IN_PROGRESS` | Task 1 | 已创建 `feature/chat-branch-version-navigation` 普通功能分支，开始仓储查询测试先行实施 |
 | 2026-07-25 | `IN_PROGRESS` | Task 2（pending） | Task 1 的仓储契约、用户隔离、锚点解析、来源降级和稳定排序已实现并通过 22 项组合测试 |
+| 2026-07-25 | `IN_PROGRESS` | Task 2 | 开始 branch-family 响应投影、只读路由和错误契约的测试先行实施 |
+| 2026-07-25 | `IN_PROGRESS` | Task 3（pending） | Task 2 的轻量响应、只读 API、404/409/422 映射与安全日志已实现并通过 32 项扩大回归 |
 
 ## Task 1：建立用户隔离的直接分支族仓储查询
 
@@ -93,7 +95,7 @@
 
 ## Task 2：提供 branch-family 只读 API 与错误契约
 
-状态：pending
+状态：completed
 
 ### 目标
 
@@ -133,15 +135,25 @@
 
 ### 执行结果
 
-待执行。
+已增加 `BranchFamilyVariantResponse` 和 `BranchFamilyResponse`，由 SessionService 将仓储领域结果投影为不含 events、files、Memory 或消息正文的轻量版本元数据。新增 `GET /sessions/{session_id}/branch-family`，支持可选 target_event_id、认证用户透传、来源隐藏降级、归档标记与 original/fork/edit/regenerate operation；仓储异常稳定映射为 404/409/422，并记录不含标题或正文的结构化加载日志。
 
 ### 验证证据
 
 ```text
-命令：待执行
-退出状态：待执行
-关键结果：待执行
-执行时间：待执行
+命令：uv run pytest tests/app/services/test_session_branch_family.py tests/app/interfaces/endpoints/test_session_branch_family_route.py -q
+退出状态：0
+关键结果：13 passed；成功响应、来源隐藏、归档版本、参数校验、404、409、422 和日志字段断言通过
+执行时间：2026-07-25 09:36（Asia/Shanghai）
+
+命令：uv run pytest tests/app/repositories/test_db_session_branch_family.py tests/app/services/test_session_branch_family.py tests/app/services/test_session_branching.py tests/app/interfaces/endpoints/test_session_branch_family_route.py tests/app/interfaces/endpoints/test_session_branching_route.py -q
+退出状态：0
+关键结果：32 passed；Task 1 仓储、新旧分支 Service 与新旧路由扩大回归通过
+执行时间：2026-07-25 09:36（Asia/Shanghai）
+
+命令：uv run ruff check app/schemas/session.py app/services/session_service.py app/controllers/session.py tests/app/services/test_session_branch_family.py tests/app/interfaces/endpoints/test_session_branch_family_route.py
+退出状态：0
+关键结果：All checks passed
+执行时间：2026-07-25 09:36（Asia/Shanghai）
 ```
 
 ## Task 3：实现分支版本导航和路由恢复
@@ -376,4 +388,4 @@ git diff --check
 
 ### 最终状态
 
-`IN_PROGRESS`：Task 1 已完成并有局部验证证据，等待开始 Task 2。
+`IN_PROGRESS`：Task 1–2 已完成并有局部验证证据，等待开始 Task 3。

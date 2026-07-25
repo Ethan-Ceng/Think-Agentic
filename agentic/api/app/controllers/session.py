@@ -24,6 +24,7 @@ from app.schemas.session import (
     GetSessionResponse,
     CreateSessionBranchRequest,
     CreateSessionBranchResponse,
+    BranchFamilyResponse,
     UpdateSessionOrganizationRequest,
     ChatRequest,
     NextMessageResponse,
@@ -237,6 +238,29 @@ async def create_session_branch(
             queued=branch.next_message is not None,
         ),
     )
+
+
+@router.get("/{session_id}/branch-family", summary="获取消息直接分支版本")
+async def get_session_branch_family(
+    session_id: str,
+    target_event_id: Optional[str] = Query(
+        default=None,
+        min_length=1,
+        max_length=255,
+    ),
+    current_user: User = Depends(get_current_user),
+    session_service: SessionService = Depends(get_session_service),
+) -> Response[BranchFamilyResponse]:
+    family = await session_service.get_branch_family(
+        session_id=session_id,
+        user_id=current_user.id,
+        target_event_id=target_event_id,
+    )
+    return Response.success(
+        msg="获取会话分支版本成功",
+        data=family,
+    )
+
 
 @router.post("/{session_id}/clear-unread-message-count", summary="清除未读消息数")
 async def clear_unread_message_count(

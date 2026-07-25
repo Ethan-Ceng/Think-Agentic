@@ -142,6 +142,23 @@ class CreateSessionBranchResponse(BaseModel):
     queued: bool
 
 
+class BranchFamilyVariantResponse(BaseModel):
+    session_id: str
+    title: str
+    operation: Literal["original", "fork", "edit", "regenerate"]
+    status: str
+    archived_at: Optional[datetime] = None
+    created_at: datetime
+    is_current: bool
+
+
+class BranchFamilyResponse(BaseModel):
+    source_session_id: Optional[str] = None
+    target_event_id: str
+    current_session_id: str
+    variants: List[BranchFamilyVariantResponse]
+
+
 class ChatRequest(BaseModel):
     """聊天请求"""
     message: Optional[str] = None
