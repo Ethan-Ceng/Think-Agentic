@@ -54,6 +54,10 @@ class SessionBranchConflictError(RuntimeError):
     pass
 
 
+class SessionBranchFamilyValidationError(ValueError):
+    pass
+
+
 class SessionOrganizationNotFoundError(LookupError):
     pass
 

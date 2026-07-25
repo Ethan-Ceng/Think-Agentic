@@ -5,6 +5,7 @@
 @Author  : thezehui@gmail.com
 @File    : session_repository.py
 """
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol, List, Optional
 
@@ -18,6 +19,16 @@ from app.core.entities.session import (
     Session,
     SessionStatus,
 )
+
+
+@dataclass(frozen=True)
+class SessionBranchFamily:
+    """Owned direct branch family resolved around one source message."""
+
+    source_session: Optional[Session]
+    target_event_id: str
+    current_session: Session
+    variants: tuple[Session, ...]
 
 
 class SessionRepository(Protocol):
@@ -131,6 +142,15 @@ class SessionRepository(Protocol):
             message: Optional[str] = None,
     ) -> Session:
         """Atomically create or replay an immutable conversation branch."""
+        ...
+
+    async def get_branch_family(
+            self,
+            session_id: str,
+            user_id: str,
+            target_event_id: Optional[str] = None,
+    ) -> SessionBranchFamily:
+        """Resolve one owned source and its same-anchor direct child branches."""
         ...
 
     async def put_next_message(

@@ -32,12 +32,13 @@ from app.core.entities.session import (
     NextMessageState,
     Session,
     SessionBranchConflictError,
+    SessionBranchFamilyValidationError,
     SessionBranchNotFoundError,
     SessionOrganizationConflictError,
     SessionOrganizationNotFoundError,
     SessionStatus,
 )
-from app.repositories.session_repository import SessionRepository
+from app.repositories.session_repository import SessionBranchFamily, SessionRepository
 from app.models import FileModel, SessionModel
 
 
@@ -279,6 +280,121 @@ class DBSessionRepository(SessionRepository):
                 operation=operation,
             )
         return branch
+
+    async def get_branch_family(
+            self,
+            session_id: str,
+            user_id: str,
+            target_event_id: Optional[str] = None,
+    ) -> SessionBranchFamily:
+        """Resolve an owned direct branch family without mutating session state."""
+        current_result = await self.db_session.execute(
+            select(SessionModel).where(
+                SessionModel.id == session_id,
+                SessionModel.user_id == user_id,
+            )
+        )
+        current = current_result.scalar_one_or_none()
+        if current is None:
+            raise SessionBranchNotFoundError("会话不存在或无权访问")
+
+        explicit_source_target = (
+            target_event_id is not None
+            and self._has_visible_message(current, target_event_id)
+        )
+        source: Optional[SessionModel]
+        if current.source_session_id is not None and not explicit_source_target:
+            canonical_target = current.forked_from_event_id
+            if canonical_target is None:
+                raise SessionBranchConflictError("分支会话缺少来源锚点")
+            if (
+                target_event_id is not None
+                and target_event_id != canonical_target
+            ):
+                raise SessionBranchConflictError("目标消息锚点与分支来源不一致")
+
+            family_source_id = current.source_session_id
+            source_result = await self.db_session.execute(
+                select(SessionModel).where(
+                    SessionModel.id == family_source_id,
+                    SessionModel.user_id == user_id,
+                )
+            )
+            source = source_result.scalar_one_or_none()
+            if (
+                source is not None
+                and not self._has_visible_message(source, canonical_target)
+            ):
+                raise SessionBranchConflictError("分支来源锚点不存在或不可见")
+        else:
+            if target_event_id is None:
+                raise SessionBranchFamilyValidationError("必须提供目标消息 ID")
+            if not explicit_source_target:
+                if current.source_session_id is not None:
+                    raise SessionBranchConflictError("目标消息锚点与分支来源不一致")
+                raise SessionBranchNotFoundError("目标消息不存在或不可见")
+
+            canonical_target = target_event_id
+            family_source_id = current.id
+            source = current
+
+        children_result = await self.db_session.execute(
+            select(SessionModel)
+            .where(
+                SessionModel.user_id == user_id,
+                SessionModel.source_session_id == family_source_id,
+                SessionModel.forked_from_event_id == canonical_target,
+            )
+            .order_by(
+                SessionModel.created_at.asc(),
+                SessionModel.id.asc(),
+            )
+        )
+        children = sorted(
+            children_result.scalars().all(),
+            key=lambda record: (record.created_at, record.id),
+        )
+
+        if current.id != family_source_id and all(
+            child.id != current.id for child in children
+        ):
+            raise SessionBranchConflictError("当前会话不在计算出的分支族中")
+
+        source_domain = source.to_domain() if source is not None else None
+        child_domains = tuple(child.to_domain() for child in children)
+        variants = (
+            (source_domain, *child_domains)
+            if source_domain is not None
+            else child_domains
+        )
+        current_domain = next(
+            (
+                variant
+                for variant in variants
+                if variant.id == current.id
+            ),
+            None,
+        )
+        if current_domain is None:
+            raise SessionBranchConflictError("当前会话不在计算出的分支族中")
+
+        return SessionBranchFamily(
+            source_session=source_domain,
+            target_event_id=canonical_target,
+            current_session=current_domain,
+            variants=variants,
+        )
+
+    @staticmethod
+    def _has_visible_message(record: SessionModel, event_id: str) -> bool:
+        return any(
+            isinstance(raw_event, dict)
+            and raw_event.get("id") == event_id
+            and raw_event.get("type") == "message"
+            and raw_event.get("visible", True)
+            and raw_event.get("role") in {"user", "assistant"}
+            for raw_event in (record.events or [])
+        )
 
     @staticmethod
     def _validate_branch_replay(
