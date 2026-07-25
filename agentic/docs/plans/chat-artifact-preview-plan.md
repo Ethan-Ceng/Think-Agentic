@@ -9,10 +9,10 @@
 
 - 整体状态：`IN_PROGRESS`
 - 当前阶段：implementation
-- 当前任务：Task 4：将生成文件纳入源码/预览/下载体验（pending）
-- 已完成：3 / 5
+- 当前任务：Task 5：完成全量回归、安全验收和代码审查（pending）
+- 已完成：4 / 5
 - 阻塞问题：无
-- 最近更新时间：2026-07-25（Asia/Shanghai）
+- 最近更新时间：2026-07-25 20:37（Asia/Shanghai）
 
 ## 全局约束
 
@@ -39,6 +39,8 @@
 | 2026-07-25 20:09 | `IN_PROGRESS` | Task 3（pending） | Task 2 安全面板、定向回归和类型检查通过 |
 | 2026-07-25 | `IN_PROGRESS` | Task 3 | 用户确认继续，开始统一 Session 预览选择 |
 | 2026-07-25 20:22 | `IN_PROGRESS` | Task 4（pending） | Task 3 消息接入、固定选择、自动跟随和类型检查通过 |
+| 2026-07-25 | `IN_PROGRESS` | Task 4 | 用户确认继续，开始升级聊天生成文件预览 |
+| 2026-07-25 20:37 | `IN_PROGRESS` | Task 5（pending） | Task 4 文件分类、安全预览、竞态清理、键盘入口和类型检查通过 |
 
 ## Task 1：建立只读 Inline Artifact 模型与代码块动作
 
@@ -265,7 +267,7 @@ Assistant 正文现在使用事件 ID（缺失时使用 timeline item ID）启�
 
 ## Task 4：将生成文件纳入源码/预览/下载体验
 
-状态：pending
+状态：completed
 
 ### 目标
 
@@ -273,6 +275,8 @@ Assistant 正文现在使用事件 ID（缺失时使用 timeline item ID）启�
 
 ### 涉及文件
 
+- `agentic/web/src/lib/file-preview.ts`（新建）
+- `agentic/web/src/lib/file-preview.spec.ts`（新建）
 - `agentic/web/src/components/FilePreviewPanel.vue`
 - `agentic/web/src/components/FilePreviewPanel.spec.ts`（新建）
 - `agentic/web/src/components/chat/SafeHtmlPreview.vue`
@@ -310,15 +314,36 @@ Assistant 正文现在使用事件 ID（缺失时使用 timeline item ID）启�
 
 ### 执行结果
 
-待执行。
+新增集中式文件预览描述器，按扩展名将 Markdown、HTML、SVG、栅格图片、代码/文本和未知文件保守映射为双视图、仅预览、仅源码或不支持。缺失扩展名时可从文件名回退推导；SVG 不再作为主页面图片直接加载，而是与 HTML 一样提供源码和空权限 sandbox 预览。
+
+FilePreviewPanel 继续复用既有鉴权下载 API，但会缓存本次加载的 Blob：切换源码/预览以及加载后从头部下载都不会重复请求。Markdown 使用现有 `html: false` 渲染，HTML/SVG 复用 SafeHtmlPreview；普通代码和文本仅显示源码，栅格图片继续使用 Blob URL，未知类型不预取、只提供说明和按需下载。
+
+文件 ID、文件名或扩展名变化时会重置视图、内容、错误、缓存 Blob 和对象 URL，并使用请求版本号丢弃旧响应、旧错误和延迟文本解析；卸载时使在途响应失效并撤销对象 URL。双视图标签支持点击和左右方向键，标题沿用 Artifact 面板的截断与响应式样式；附件卡既有点击、Enter、Space 和“查看全部”分离语义已用回归测试锁定，无需修改生产组件。
+
+测试先行首次运行按预期失败：缺少文件分类模块，旧面板没有标签和安全 SVG 预览，且旧图片请求会覆盖新选择。实现后新增键盘焦点断言时，首次重跑先遇到 Windows 沙箱 `spawn EPERM`，在已批准的测试命令范围外层重跑后又发现测试组件未挂到文档导致焦点断言无效；改为真实 DOM 挂载并卸载后，定向测试及相邻面板回归全部通过。类型检查自动生成的两条全局组件声明已移除，`components.d.ts` 无本批差异。
 
 ### 验证证据
 
 ```text
-命令：待执行
-退出状态：待执行
-关键结果：待执行
-执行时间：待执行
+命令：pnpm test:run -- src/lib/file-preview.spec.ts src/components/FilePreviewPanel.spec.ts src/components/chat/AttachmentsMessage.spec.ts
+退出状态：0
+关键结果：3 个测试文件、10 项测试全部通过；覆盖文件分类、Markdown/SVG 安全预览、单次请求与 Blob 复用、键盘标签、源码-only、竞态、URL 清理、未知类型按需下载、错误重试和附件键盘入口
+执行时间：2026-07-25 20:36（Asia/Shanghai）
+
+命令：pnpm test:run -- src/lib/file-preview.spec.ts src/components/FilePreviewPanel.spec.ts src/components/chat/AttachmentsMessage.spec.ts src/components/SessionDetailView.spec.ts src/components/chat/SafeHtmlPreview.spec.ts src/components/MarkdownContent.spec.ts src/components/chat/ChatArtifactPreviewPanel.spec.ts
+退出状态：0
+关键结果：7 个测试文件、34 项测试全部通过；文件预览与 Session 选择、HTML 沙箱、Markdown 和 Artifact 面板相邻回归通过
+执行时间：2026-07-25 20:34（Asia/Shanghai）
+
+命令：pnpm type-check
+退出状态：0
+关键结果：vue-tsc -b 通过；移除自动扫描条目后 components.d.ts 无本批差异
+执行时间：2026-07-25 20:35（Asia/Shanghai）
+
+命令：git diff --check
+退出状态：0
+关键结果：无空白错误；仅显示仓库既有 LF/CRLF 转换提示
+执行时间：2026-07-25 20:35（Asia/Shanghai）
 ```
 
 ## Task 5：完成全量回归、安全验收和代码审查

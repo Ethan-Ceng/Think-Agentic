@@ -87,6 +87,15 @@
   background: var(--surface-secondary);
 }
 
+.file-preview-body .safe-html-preview {
+  min-height: 100%;
+}
+
+.file-preview-body .image-preview {
+  min-height: 100%;
+  background: var(--surface-primary);
+}
+
 .artifact-source-code {
   box-sizing: border-box;
   width: 100%;
