@@ -14,17 +14,10 @@ import {
 import { formatFileSize } from '@/lib/utils'
 import SkillChip from '@/components/skills/SkillChip.vue'
 import SkillPicker from '@/components/skills/SkillPicker.vue'
+import type { ComposerAttachmentFile } from '@/lib/composer-attachments'
 import type { SkillRef, SkillSummary } from '@/types/skill'
 
-export type ComposerFileItem = {
-  id: string
-  filename: string
-  extension?: string
-  size: number
-  uploadStatus?: 'uploading' | 'uploaded' | 'failed'
-  uploadError?: string
-  progress?: number
-}
+export type ComposerFileItem = ComposerAttachmentFile
 
 const props = withDefaults(defineProps<{
   modelValue: string

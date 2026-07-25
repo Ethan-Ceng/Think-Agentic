@@ -19,7 +19,6 @@ import { ApiError } from '@/lib/api/fetch'
 import type {
   BranchFamilyResponse,
   BranchOperation,
-  FileInfo,
   ResolveInteractionParams,
   ResumeMode,
   ToolEvent,
@@ -29,6 +28,7 @@ import {
   canAutoFollowTool,
   type ChatPreviewSelection,
 } from '@/lib/chat-preview'
+import type { ComposerAttachmentMetadata } from '@/lib/composer-attachments'
 import type { AttachmentFile, TimelineItem, UserMessageStatus } from '@/lib/session-events'
 import type { SendMessageInput, SkillRef } from '@/types/skill'
 import { eventsToTimeline, formatMessageTimeLabel, getLatestPlanFromEvents } from '@/lib/session-events'
@@ -236,7 +236,7 @@ function getPendingStatusText(status: PendingUserMessage['status']): string {
   }
 }
 
-function fileInfoToAttachment(file: FileInfo): AttachmentFile {
+function fileInfoToAttachment(file: ComposerAttachmentMetadata): AttachmentFile {
   return {
     id: file.id,
     filename: file.filename,
@@ -580,7 +580,7 @@ onBeforeUnmount(() => {
   window.clearTimeout(focusTimer)
 })
 
-async function handleSend(input: SendMessageInput, uploadedFiles: FileInfo[]) {
+async function handleSend(input: SendMessageInput, uploadedFiles: ComposerAttachmentMetadata[]) {
   if (isArchived.value) {
     toast.info('任务已归档，请先从归档管理中恢复')
     throw new Error('任务已归档，请先恢复后再继续执行')

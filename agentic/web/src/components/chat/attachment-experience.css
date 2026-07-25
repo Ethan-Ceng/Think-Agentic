@@ -1,0 +1,232 @@
+.chat-file-picker-dialog {
+  --chat-file-picker-row-height: 58px;
+}
+
+.chat-file-picker {
+  display: grid;
+  min-width: 0;
+  gap: 12px;
+}
+
+.chat-file-picker-toolbar,
+.chat-file-picker-filters,
+.chat-file-picker-footer {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.chat-file-picker-toolbar {
+  justify-content: space-between;
+}
+
+.chat-file-picker-breadcrumb {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.chat-file-picker-breadcrumb button {
+  min-width: 0;
+  max-width: 160px;
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.chat-file-picker-breadcrumb button[aria-current='page'] {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.chat-file-picker-search {
+  width: min(260px, 42%);
+  flex: 0 1 260px;
+}
+
+.chat-file-picker-filters {
+  flex-wrap: wrap;
+}
+
+.chat-file-picker-filters label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.chat-file-picker-filters select {
+  height: 32px;
+  border: 1px solid var(--border-medium);
+  border-radius: 8px;
+  background: var(--surface-primary);
+  color: var(--text-primary);
+  padding: 0 28px 0 9px;
+}
+
+.chat-file-picker-selection {
+  margin-left: auto;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.chat-file-picker-content {
+  min-height: 280px;
+  max-height: min(52vh, 480px);
+  overflow: auto;
+  border: 1px solid var(--border-light);
+  border-radius: 12px;
+  background: var(--surface-secondary);
+}
+
+.chat-file-picker-content > .ui-state {
+  min-height: 278px;
+  border: 0;
+  background: transparent;
+}
+
+.chat-file-picker-list {
+  display: grid;
+}
+
+.chat-file-picker-row {
+  min-width: 0;
+  border-bottom: 1px solid var(--border-light);
+  background: var(--surface-primary);
+}
+
+.chat-file-picker-row:last-child {
+  border-bottom: 0;
+}
+
+.chat-file-picker-row.selected {
+  background: var(--accent-soft);
+}
+
+.chat-file-picker-file {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: var(--chat-file-picker-row-height);
+  align-items: center;
+  gap: 11px;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  padding: 8px 12px;
+  text-align: left;
+}
+
+button.chat-file-picker-file {
+  cursor: pointer;
+}
+
+.chat-file-picker-file input {
+  flex: 0 0 auto;
+}
+
+.chat-file-picker-icon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  place-items: center;
+  border-radius: 9px;
+  background: var(--surface-tertiary);
+  color: var(--text-secondary);
+}
+
+.chat-file-picker-copy {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 3px;
+}
+
+.chat-file-picker-copy strong,
+.chat-file-picker-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-file-picker-copy strong {
+  font-size: 14px;
+}
+
+.chat-file-picker-copy small {
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.chat-file-picker-added {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: var(--surface-tertiary);
+  color: var(--text-secondary);
+  padding: 3px 8px;
+  font-size: 12px;
+}
+
+.chat-file-picker-pagination {
+  justify-content: flex-end;
+}
+
+.chat-file-picker-footer {
+  justify-content: flex-end;
+}
+
+@media (max-width: 640px) {
+  .chat-file-picker-dialog {
+    --chat-file-picker-row-height: 62px;
+  }
+
+  .chat-file-picker-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .chat-file-picker-search {
+    width: 100%;
+    flex-basis: auto;
+  }
+
+  .chat-file-picker-filters {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .chat-file-picker-filters label {
+    display: grid;
+  }
+
+  .chat-file-picker-filters select {
+    width: 100%;
+  }
+
+  .chat-file-picker-selection {
+    grid-column: 1 / -1;
+    margin-left: 0;
+  }
+
+  .chat-file-picker-content {
+    min-height: 240px;
+    max-height: 48vh;
+  }
+
+  .chat-file-picker-content > .ui-state {
+    min-height: 238px;
+  }
+
+  .chat-file-picker-file {
+    padding-inline: 9px;
+  }
+}

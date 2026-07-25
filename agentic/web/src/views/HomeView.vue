@@ -7,7 +7,7 @@ import ChatInput from '@/components/chat/ChatInput.vue'
 import SuggestedQuestions from '@/components/SuggestedQuestions.vue'
 import { useToast } from '@/composables/useToast'
 import { sessionApi } from '@/lib/api/session'
-import type { FileInfo } from '@/lib/api/types'
+import type { ComposerAttachmentMetadata } from '@/lib/composer-attachments'
 import type { SendMessageInput } from '@/types/skill'
 import { encodeInitialSessionMessage } from '@/lib/session-init'
 import { useAuthStore } from '@/stores/auth'
@@ -31,7 +31,7 @@ function handleQuestionClick(question: string) {
   chatInputRef.value?.setInputText(question)
 }
 
-async function handleSend(input: SendMessageInput, _files: FileInfo[]) {
+async function handleSend(input: SendMessageInput, _files: ComposerAttachmentMetadata[]) {
   if (sending.value) return
   sending.value = true
 

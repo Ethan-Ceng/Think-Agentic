@@ -1,9 +1,15 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import ChatComposer, { type ComposerFileItem } from '@/components/chat/ChatComposer.vue'
+import ChatComposer from '@/components/chat/ChatComposer.vue'
 import { useToast } from '@/composables/useToast'
 import { fileApi } from '@/lib/api/file'
-import type { FileInfo } from '@/lib/api/types'
+import {
+  completeComposerUpload,
+  createLocalComposerAttachment,
+  toComposerAttachmentMetadata,
+  type ComposerAttachmentFile,
+  type ComposerAttachmentMetadata,
+} from '@/lib/composer-attachments'
 import { useSkillsStore } from '@/stores/skills'
 import type { SendMessageInput, SkillRef, SkillSummary } from '@/types/skill'
 
@@ -11,7 +17,7 @@ const props = withDefaults(defineProps<{
   disabled?: boolean
   sessionId?: string | null
   isRunning?: boolean
-  onSend?: (input: SendMessageInput, files: FileInfo[]) => Promise<void>
+  onSend?: (input: SendMessageInput, files: ComposerAttachmentMetadata[]) => Promise<void>
   onStop?: () => void
 }>(), {
   disabled: false,
@@ -52,9 +58,9 @@ function writeSessionDraft(sessionId: string | null | undefined, value: string):
 
 const toast = useToast()
 const skillsStore = useSkillsStore()
-type UploadEntry = ComposerFileItem & {
+type UploadEntry = ComposerAttachmentFile & {
   rawFile?: File
-  fileInfo?: FileInfo
+  fileInfo?: ComposerAttachmentMetadata
 }
 
 const uploadItems = ref<UploadEntry[]>([])
@@ -80,7 +86,7 @@ function getInputValue() {
 function getFiles() {
   return uploadItems.value
     .filter((file) => file.uploadStatus === 'uploaded' && file.fileInfo)
-    .map((file) => file.fileInfo as FileInfo)
+    .map((file) => file.fileInfo as ComposerAttachmentMetadata)
 }
 
 function skillKey(skill: SkillRef): string {
@@ -129,12 +135,7 @@ async function handleFileSelect(event: Event) {
 function createUploadEntry(file: File): UploadEntry {
   uploadEntryId += 1
   return {
-    id: `local-${Date.now()}-${uploadEntryId}`,
-    filename: file.name,
-    extension: file.name.split('.').pop() || 'file',
-    size: file.size,
-    uploadStatus: 'uploading',
-    progress: 20,
+    ...createLocalComposerAttachment(file, `local-${Date.now()}-${uploadEntryId}`),
     rawFile: file,
   }
 }
@@ -160,13 +161,10 @@ async function uploadEntry(entry: UploadEntry) {
       ...(props.sessionId ? { session_id: props.sessionId } : {}),
     })
 
+    const completed = completeComposerUpload(entry, uploadedFile)
     patchUploadEntry(entry.id, {
-      filename: uploadedFile.filename,
-      extension: uploadedFile.extension || entry.extension,
-      size: uploadedFile.size,
-      uploadStatus: 'uploaded',
-      progress: 100,
-      fileInfo: uploadedFile,
+      ...completed,
+      fileInfo: toComposerAttachmentMetadata(uploadedFile),
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : '上传失败'
