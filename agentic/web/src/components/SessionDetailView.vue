@@ -6,7 +6,6 @@ import { ElMessageBox } from 'element-plus'
 import ArchivedSessionsDialog from '@/components/ArchivedSessionsDialog.vue'
 import BranchVersionNavigator from '@/components/chat/BranchVersionNavigator.vue'
 import ChatInput from '@/components/chat/ChatInput.vue'
-import ChatEditBranchDialog from '@/components/chat/ChatEditBranchDialog.vue'
 import ChatMessage from '@/components/chat/ChatMessage.vue'
 import PlanPanel from '@/components/chat/PlanPanel.vue'
 import ThinkingIndicator from '@/components/chat/ThinkingIndicator.vue'
@@ -427,6 +426,14 @@ watch(
 watch(
   baseTimeline,
   (items) => {
+    const editing = editBranchItem.value
+    if (
+      editing?.sourceEventId &&
+      !items.some((item) => item.sourceEventId === editing.sourceEventId)
+    ) {
+      editBranchItem.value = null
+    }
+
     const pending = pendingUserMessage.value
     if (!pending) return
     if (hasMatchingUserMessage(items, pending)) {
@@ -434,6 +441,12 @@ watch(
     }
   },
 )
+
+watch(branchDisabled, (disabled) => {
+  if (disabled && !branchBusyEventId.value) {
+    editBranchItem.value = null
+  }
+})
 
 watch(
   () => detail.error.value,
@@ -734,6 +747,7 @@ async function createBranch(
 function handleBranchAction(operation: BranchOperation, item: TimelineItem) {
   if (item.kind !== 'user' && item.kind !== 'assistant') return
   if (operation === 'edit' && item.kind === 'user') {
+    if (!item.sourceEventId || branchDisabled.value || branchBusyEventId.value) return
     editBranchItem.value = item
     return
   }
@@ -746,8 +760,8 @@ function handleEditBranchSubmit(message: string) {
   void createBranch('edit', item, message)
 }
 
-function setEditBranchDialogOpen(open: boolean) {
-  if (!open && !branchBusyEventId.value) editBranchItem.value = null
+function cancelEditBranch() {
+  if (!branchBusyEventId.value) editBranchItem.value = null
 }
 
 function clearRunQueuedQuery() {
@@ -976,6 +990,21 @@ async function handleStop() {
                 :branch-disabled="branchDisabled"
                 :branch-disabled-reason="branchDisabledReason"
                 :branch-busy-event-id="branchBusyEventId"
+                :editing="
+                  Boolean(
+                    editBranchItem &&
+                    item.kind === 'user' &&
+                    editBranchItem.sourceEventId === item.sourceEventId
+                  )
+                "
+                :edit-busy="
+                  Boolean(
+                    editBranchItem &&
+                    item.kind === 'user' &&
+                    editBranchItem.sourceEventId === item.sourceEventId &&
+                    branchBusyEventId === item.sourceEventId
+                  )
+                "
                 @view-all-files="handleViewAllFiles"
                 @file-click="handleFileClick"
                 @tool-click="handleToolClick"
@@ -983,6 +1012,8 @@ async function handleStop() {
                 @recover-task="handleRecoverTask"
                 @resolve-interaction="handleResolveInteraction"
                 @branch-action="handleBranchAction"
+                @edit-submit="handleEditBranchSubmit"
+                @edit-cancel="cancelEditBranch"
               />
 
               <div
@@ -1098,15 +1129,5 @@ async function handleStop() {
 
     <VNCOverlay v-if="vncOpen" :session-id="sessionId" @close="closeVNC" />
     <ArchivedSessionsDialog v-model:open="archivedDialogOpen" />
-    <ChatEditBranchDialog
-      v-if="editBranchItem"
-      :open="Boolean(editBranchItem)"
-      :content="editBranchItem.data.message ?? ''"
-      :attachment-names="editBranchItem.data.attachments?.map((file) => file.filename) ?? []"
-      :skills="editBranchItem.data.skills ?? []"
-      :busy="branchBusyEventId === editBranchItem.sourceEventId"
-      @update:open="setEditBranchDialogOpen"
-      @submit="handleEditBranchSubmit"
-    />
   </template>
 </template>

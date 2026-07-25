@@ -594,11 +594,6 @@
   font: inherit;
 }
 
-.branch-edit-dialog {
-  display: grid;
-  gap: 18px;
-}
-
 .branch-edit-notice {
   display: flex;
   align-items: flex-start;
@@ -643,6 +638,120 @@
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+
+.chat-inline-branch-editor {
+  display: grid;
+  gap: 12px;
+  width: min(100%, 680px);
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--accent-primary) 30%, var(--border-light));
+  border-radius: var(--radius-lg);
+  background: var(--surface-primary);
+  box-shadow: var(--shadow-sm);
+}
+
+.chat-inline-branch-editor .branch-edit-notice {
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.chat-inline-branch-editor textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 118px;
+  padding: 10px 11px;
+  resize: vertical;
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-md);
+  outline: none;
+  background: var(--surface-canvas);
+  color: var(--text-primary);
+  font: inherit;
+  font-weight: 400;
+  line-height: 1.6;
+}
+
+.chat-inline-branch-editor textarea:focus {
+  border-color: var(--accent-primary);
+  box-shadow: var(--focus-ring);
+}
+
+.chat-inline-branch-editor textarea:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
+.branch-edit-attachment {
+  max-width: 220px;
+  overflow: hidden;
+  padding: 3px 7px;
+  border: 1px solid var(--border-light);
+  border-radius: 999px;
+  background: var(--surface-canvas);
+  color: var(--text-secondary);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-inline-branch-editor-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.branch-edit-character-count {
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.chat-inline-branch-editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chat-inline-branch-editor-actions button {
+  min-height: 32px;
+  padding: 0 11px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  background: var(--surface-canvas);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+
+.chat-inline-branch-editor-actions button.is-primary {
+  border-color: var(--accent-primary);
+  background: var(--accent-primary);
+  color: var(--text-inverse);
+}
+
+.chat-inline-branch-editor-actions button:hover:not(:disabled) {
+  border-color: var(--border-medium);
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.chat-inline-branch-editor-actions button.is-primary:hover:not(:disabled) {
+  border-color: var(--accent-hover);
+  background: var(--accent-hover);
+  color: var(--text-inverse);
+}
+
+.chat-inline-branch-editor-actions button:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.chat-inline-branch-editor-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .timeline-tool-row {

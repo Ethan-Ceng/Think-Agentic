@@ -1,8 +1,12 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
-import { defineComponent, ref } from 'vue'
+import { defineComponent, nextTick, ref } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { BranchFamilyResponse, SessionDetail } from '@/lib/api/types'
+import {
+  consumeQueuedRunIntent,
+  createQueuedRunIntent,
+} from '@/lib/session-init'
 import SessionDetailView from './SessionDetailView.vue'
 
 const mocks = vi.hoisted(() => ({
@@ -46,23 +50,61 @@ const ArchivedDialogStub = defineComponent({
   template: '<div class="stub-archived-dialog" :data-open="open" />',
 })
 
+const ChatMessageStub = defineComponent({
+  name: 'ChatMessage',
+  props: {
+    item: { type: Object, required: true },
+    editing: Boolean,
+    editBusy: Boolean,
+  },
+  emits: ['branchAction', 'editSubmit', 'editCancel'],
+  template: `
+    <article
+      class="stub-chat-message"
+      :data-event-id="item.sourceEventId"
+      :data-editing="editing ? 'true' : 'false'"
+      :data-edit-busy="editBusy ? 'true' : 'false'"
+    >
+      <button
+        v-if="item.kind === 'user'"
+        class="start-inline-edit"
+        type="button"
+        @click="$emit('branchAction', 'edit', item)"
+      />
+      <button
+        v-if="editing"
+        class="submit-inline-edit"
+        type="button"
+        @click="$emit('editSubmit', ' revised question ')"
+      />
+      <button
+        v-if="editing"
+        class="cancel-inline-edit"
+        type="button"
+        @click="$emit('editCancel')"
+      />
+    </article>
+  `,
+})
+
 function makeDetail(session: Partial<SessionDetail> = {}) {
+  const sessionValue = {
+    session_id: 'session-1',
+    title: 'Task',
+    status: 'completed',
+    archived_at: null,
+    events: [],
+    next_message: null,
+    source_session_id: null,
+    source_session_title: null,
+    forked_from_event_id: null,
+    branch_operation: null,
+    ...session,
+  } as SessionDetail
   return {
-    session: ref({
-      session_id: 'session-1',
-      title: 'Task',
-      status: 'completed',
-      archived_at: null,
-      events: [],
-      next_message: null,
-      source_session_id: null,
-      source_session_title: null,
-      forked_from_event_id: null,
-      branch_operation: null,
-      ...session,
-    }),
+    session: ref(sessionValue),
     files: ref([]),
-    events: ref([]),
+    events: ref(sessionValue.events),
     loading: ref(false),
     error: ref(null),
     streaming: ref(false),
@@ -114,6 +156,38 @@ function makeFamily(currentSessionId = 'branch-1'): BranchFamilyResponse {
   }
 }
 
+function makeEditableEvents() {
+  return [
+    {
+      type: 'message',
+      data: {
+        role: 'user',
+        message: 'first question',
+        event_id: 'event-user-1',
+        created_at: '2026-07-25T11:00:00',
+      },
+    },
+    {
+      type: 'message',
+      data: {
+        role: 'assistant',
+        message: 'first answer',
+        event_id: 'event-assistant-1',
+        created_at: '2026-07-25T11:00:10',
+      },
+    },
+    {
+      type: 'message',
+      data: {
+        role: 'user',
+        message: 'second question',
+        event_id: 'event-user-2',
+        created_at: '2026-07-25T11:01:00',
+      },
+    },
+  ] as SessionDetail['events']
+}
+
 async function mountView(
   path: string,
   sessionId: string,
@@ -134,7 +208,7 @@ async function mountView(
       stubs: {
         ArchivedSessionsDialog: ArchivedDialogStub,
         ChatInput: ChatInputStub,
-        ChatMessage: true,
+        ChatMessage: ChatMessageStub,
         PlanPanel: true,
         SessionHeader: true,
         ThinkingIndicator: true,
@@ -175,7 +249,7 @@ describe('SessionDetailView archived state', () => {
         stubs: {
           ArchivedSessionsDialog: ArchivedDialogStub,
           ChatInput: ChatInputStub,
-          ChatMessage: true,
+          ChatMessage: ChatMessageStub,
           PlanPanel: true,
           SessionHeader: true,
           ThinkingIndicator: true,
@@ -308,5 +382,123 @@ describe('SessionDetailView branch version navigation', () => {
       expect(router.currentRoute.value.query.branchEvent).toBeUndefined()
     })
     expect(wrapper.find('.conversation-scroll').exists()).toBe(true)
+  })
+})
+
+describe('SessionDetailView inline branch editing', () => {
+  beforeEach(() => {
+    mocks.toastInfo.mockReset()
+    mocks.getBranchFamily.mockReset()
+    mocks.createBranch.mockReset()
+    mocks.stopSession.mockReset()
+    window.sessionStorage.clear()
+    mocks.detail = makeDetail({ events: makeEditableEvents() })
+  })
+
+  it('keeps at most one user message in edit mode and supports cancel', async () => {
+    const { wrapper } = await mountView('/sessions/session-1', 'session-1')
+
+    await wrapper
+      .get('[data-event-id="event-user-1"] .start-inline-edit')
+      .trigger('click')
+    expect(
+      wrapper.get('[data-event-id="event-user-1"]').attributes('data-editing'),
+    ).toBe('true')
+
+    await wrapper
+      .get('[data-event-id="event-user-2"] .start-inline-edit')
+      .trigger('click')
+    expect(
+      wrapper.get('[data-event-id="event-user-1"]').attributes('data-editing'),
+    ).toBe('false')
+    expect(
+      wrapper.get('[data-event-id="event-user-2"]').attributes('data-editing'),
+    ).toBe('true')
+
+    await wrapper
+      .get('[data-event-id="event-user-2"] .cancel-inline-edit')
+      .trigger('click')
+    expect(
+      wrapper.get('[data-event-id="event-user-2"]').attributes('data-editing'),
+    ).toBe('false')
+  })
+
+  it('retains the editor after failure and reuses the request id on retry', async () => {
+    mocks.createBranch
+      .mockRejectedValueOnce(new Error('network unavailable'))
+      .mockResolvedValueOnce({
+        session_id: 'branch-1',
+        forked_from_event_id: 'event-user-1',
+        queued: true,
+      })
+    const randomUuid = vi
+      .spyOn(crypto, 'randomUUID')
+      .mockReturnValueOnce('de305d54-75b4-431b-adb2-eb6b9e546014')
+      .mockReturnValueOnce('123e4567-e89b-42d3-a456-426614174000')
+    const { router, wrapper } = await mountView(
+      '/sessions/session-1',
+      'session-1',
+    )
+
+    await wrapper
+      .get('[data-event-id="event-user-1"] .start-inline-edit')
+      .trigger('click')
+    await wrapper
+      .get('[data-event-id="event-user-1"] .submit-inline-edit')
+      .trigger('click')
+    await flushPromises()
+    expect(
+      wrapper.get('[data-event-id="event-user-1"]').attributes('data-editing'),
+    ).toBe('true')
+
+    await wrapper
+      .get('[data-event-id="event-user-1"] .submit-inline-edit')
+      .trigger('click')
+    await flushPromises()
+
+    expect(mocks.createBranch).toHaveBeenCalledTimes(2)
+    const firstPayload = mocks.createBranch.mock.calls[0][1]
+    const retryPayload = mocks.createBranch.mock.calls[1][1]
+    expect(firstPayload).toMatchObject({
+      operation: 'edit',
+      target_event_id: 'event-user-1',
+      message: ' revised question ',
+    })
+    expect(retryPayload.request_id).toBe(firstPayload.request_id)
+    expect(router.currentRoute.value.path).toBe('/sessions/branch-1')
+    expect(router.currentRoute.value.query.branchEvent).toBe('event-user-1')
+    const queuedToken = String(router.currentRoute.value.query.runQueued)
+    expect(consumeQueuedRunIntent(queuedToken, 'branch-1')).toBe(true)
+    expect(consumeQueuedRunIntent(queuedToken, 'branch-1')).toBe(false)
+    randomUuid.mockRestore()
+  })
+
+  it('cancels editing when the session becomes unavailable for branching', async () => {
+    const { wrapper } = await mountView('/sessions/session-1', 'session-1')
+    await wrapper
+      .get('[data-event-id="event-user-1"] .start-inline-edit')
+      .trigger('click')
+    expect(
+      wrapper.get('[data-event-id="event-user-1"]').attributes('data-editing'),
+    ).toBe('true')
+
+    ;(mocks.detail as ReturnType<typeof makeDetail>).session.value.status =
+      'running'
+    await nextTick()
+
+    expect(
+      wrapper.get('[data-event-id="event-user-1"]').attributes('data-editing'),
+    ).toBe('false')
+  })
+
+  it('falls back to manual queued sending when session storage is unavailable', () => {
+    const setItem = vi
+      .spyOn(window.sessionStorage, 'setItem')
+      .mockImplementationOnce(() => {
+        throw new DOMException('blocked')
+      })
+
+    expect(createQueuedRunIntent('branch-1')).toBe('')
+    setItem.mockRestore()
   })
 })

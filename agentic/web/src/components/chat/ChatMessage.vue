@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import AttachmentsMessage from '@/components/chat/AttachmentsMessage.vue'
+import ChatInlineBranchEditor from '@/components/chat/ChatInlineBranchEditor.vue'
 import MarkdownContent from '@/components/MarkdownContent.vue'
 import AssistantAvatar from '@/components/chat/AssistantAvatar.vue'
 import MessageActions from '@/components/chat/MessageActions.vue'
@@ -35,6 +36,8 @@ defineProps<{
   branchDisabled?: boolean
   branchDisabledReason?: string
   branchBusyEventId?: string | null
+  editing?: boolean
+  editBusy?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -45,6 +48,8 @@ const emit = defineEmits<{
   recoverTask: [mode: ResumeMode]
   resolveInteraction: [actionId: string, params: ResolveInteractionParams]
   branchAction: [operation: BranchOperation, item: TimelineItem]
+  editSubmit: [message: string]
+  editCancel: []
 }>()
 
 const statusIconMap: Record<UserMessageStatus, Component> = {
@@ -101,12 +106,23 @@ function handleResolveInteraction(actionId: string, params: ResolveInteractionPa
 <template>
   <article v-if="item.kind === 'user'" :id="domId" class="chat-message chat-message-user" aria-label="你的消息">
     <div class="message-stack user-stack">
-      <div class="message-bubble user-bubble" :class="`status-${getUserStatus(item)}`">
-        <p class="message-text">{{ item.data.message ?? '' }}</p>
-      </div>
-      <div v-if="item.data.skills?.length" class="message-skill-chips">
-        <SkillChip v-for="skill in item.data.skills" :key="`${skill.source}:${skill.skill_id ?? skill.name}`" :skill="skill" />
-      </div>
+      <ChatInlineBranchEditor
+        v-if="editing"
+        :content="item.data.message ?? ''"
+        :attachment-names="item.data.attachments?.map((file) => file.filename) ?? []"
+        :skills="item.data.skills ?? []"
+        :busy="editBusy"
+        @submit="emit('editSubmit', $event)"
+        @cancel="emit('editCancel')"
+      />
+      <template v-else>
+        <div class="message-bubble user-bubble" :class="`status-${getUserStatus(item)}`">
+          <p class="message-text">{{ item.data.message ?? '' }}</p>
+        </div>
+        <div v-if="item.data.skills?.length" class="message-skill-chips">
+          <SkillChip v-for="skill in item.data.skills" :key="`${skill.source}:${skill.skill_id ?? skill.name}`" :skill="skill" />
+        </div>
+      </template>
       <div class="user-message-meta" :class="`status-${getUserStatus(item)}`">
         <span v-if="item.timeLabel">{{ item.timeLabel }}</span>
         <span class="message-status-pill">
@@ -129,6 +145,7 @@ function handleResolveInteraction(actionId: string, params: ResolveInteractionPa
       </div>
       <p v-if="item.errorText" class="message-error-text">{{ item.errorText }}</p>
       <MessageActions
+        v-if="!editing"
         :content="item.data.message ?? ''"
         align="right"
         role="user"

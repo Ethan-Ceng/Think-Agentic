@@ -9,8 +9,8 @@
 
 - 整体状态：`IN_PROGRESS`
 - 当前阶段：implementation
-- 当前任务：Task 4：将用户消息编辑迁移为气泡内分支编辑（pending）
-- 已完成：3 / 5
+- 当前任务：Task 5：完成全量回归、页面验收和代码审查
+- 已完成：4 / 5
 - 阻塞问题：无
 - 最近更新时间：2026-07-25（Asia/Shanghai）
 
@@ -37,6 +37,8 @@
 | 2026-07-25 | `IN_PROGRESS` | Task 3（pending） | Task 2 的轻量响应、只读 API、404/409/422 映射与安全日志已实现并通过 32 项扩大回归 |
 | 2026-07-25 | `IN_PROGRESS` | Task 3 | 开始前端 API 客户端、版本导航组件和 branchEvent 路由恢复的测试先行实施 |
 | 2026-07-25 | `IN_PROGRESS` | Task 4（pending） | Task 3 的 `1 / N` 导航、版本列表、失败降级和 branchEvent 路由恢复已实现，8 项组件测试与类型检查通过 |
+| 2026-07-25 | `IN_PROGRESS` | Task 4 | 开始气泡内编辑组件、单编辑态与现有 edit 分支提交链路的测试先行迁移 |
+| 2026-07-25 | `IN_PROGRESS` | Task 5（pending） | Task 4 已完成气泡内编辑迁移并删除旧 Dialog；目标组件测试 20 项与类型检查通过 |
 
 ## Task 1：建立用户隔离的直接分支族仓储查询
 
@@ -221,7 +223,7 @@
 
 ## Task 4：将用户消息编辑迁移为气泡内分支编辑
 
-状态：pending
+状态：completed
 
 ### 目标
 
@@ -268,15 +270,25 @@
 
 ### 执行结果
 
-待执行。
+已新增原消息位置的内联分支编辑器，支持自动聚焦、取消、Escape、Ctrl/Cmd + Enter、空白/长度校验和忙碌态；附件及 Skills 作为只读继承上下文展示。SessionDetail 只维护一个编辑目标，继续复用现有 edit 分支、稳定 request ID 和 queued-run 意图；失败保留编辑态，运行、归档、Session 变化或消息失效时取消。旧 `ChatEditBranchDialog` 及其测试已删除，queued-run 可靠性测试已迁移到 SessionDetail。
 
 ### 验证证据
 
 ```text
-命令：待执行
-退出状态：待执行
-关键结果：待执行
-执行时间：待执行
+命令：pnpm test:run -- src/components/chat/ChatInlineBranchEditor.spec.ts src/components/chat/ChatMessage.spec.ts src/components/chat/MessageActions.spec.ts src/components/SessionDetailView.spec.ts
+退出状态：0
+关键结果：4 个测试文件、20 项测试全部通过
+执行时间：2026-07-25 11:08（Asia/Shanghai）
+
+命令：pnpm type-check
+退出状态：0
+关键结果：vue-tsc -b 通过
+执行时间：2026-07-25 11:09（Asia/Shanghai）
+
+命令：git diff --check
+退出状态：0
+关键结果：无空白错误；仅显示仓库既有的 LF/CRLF 转换提示
+执行时间：2026-07-25 11:10（Asia/Shanghai）
 ```
 
 ## Task 5：完成全量回归、页面验收和代码审查
@@ -395,4 +407,4 @@ git diff --check
 
 ### 最终状态
 
-`IN_PROGRESS`：Task 1–3 已完成并有局部验证证据，等待开始 Task 4。
+`IN_PROGRESS`：Task 1–4 已完成并有局部验证证据，等待开始 Task 5。

@@ -2,8 +2,18 @@ import { shallowMount } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
 import MarkdownContent from '@/components/MarkdownContent.vue'
 import type { TimelineItem } from '@/lib/session-events'
+import ChatInlineBranchEditor from './ChatInlineBranchEditor.vue'
 import ChatMessage from './ChatMessage.vue'
 
+vi.mock('@/components/chat/ChatInlineBranchEditor.vue', () => ({
+  default: {
+    name: 'ChatInlineBranchEditor',
+    props: ['content', 'attachmentNames', 'skills', 'busy'],
+    emits: ['submit', 'cancel'],
+    template:
+      '<div class="stub-inline-editor"><button data-submit @click="$emit(\'submit\', \'revised\')" /><button data-cancel @click="$emit(\'cancel\')" /></div>',
+  },
+}))
 vi.mock('@/components/chat/AttachmentsMessage.vue', () => ({
   default: { name: 'AttachmentsMessage', template: '<div />' },
 }))
@@ -93,5 +103,69 @@ describe('ChatMessage reply failure recovery', () => {
     for (const button of recovering.findAll('.task-recovery-button')) {
       expect(button.attributes('disabled')).toBeDefined()
     }
+  })
+})
+
+describe('ChatMessage inline branch editing', () => {
+  const userItem = {
+    kind: 'user',
+    id: 'user-1',
+    sourceEventId: 'event-user-1',
+    timeLabel: '11:00',
+    data: {
+      role: 'user',
+      message: 'original question',
+      attachments: [
+        {
+          file_id: 'file-1',
+          filename: 'brief.pdf',
+          size: 12,
+        },
+      ],
+      skills: [{ source: 'bundled', name: 'browser' }],
+    },
+  } as TimelineItem
+
+  it('replaces only the target user bubble with the inline editor', () => {
+    const wrapper = shallowMount(ChatMessage, {
+      props: {
+        item: userItem,
+        editing: true,
+        editBusy: true,
+      },
+    })
+
+    expect(wrapper.find('.user-bubble').exists()).toBe(false)
+    const editor = wrapper.getComponent(ChatInlineBranchEditor)
+    expect(editor.props('content')).toBe('original question')
+    expect(editor.props('attachmentNames')).toEqual(['brief.pdf'])
+    expect(editor.props('skills')).toEqual([
+      { source: 'bundled', name: 'browser' },
+    ])
+    expect(editor.props('busy')).toBe(true)
+    expect(wrapper.findComponent({ name: 'MessageActions' }).exists()).toBe(false)
+    expect(wrapper.text()).toContain('11:00')
+  })
+
+  it('forwards inline submit and cancel while normal messages keep actions', async () => {
+    const editing = shallowMount(ChatMessage, {
+      props: {
+        item: userItem,
+        editing: true,
+      },
+    })
+    editing.getComponent(ChatInlineBranchEditor).vm.$emit('submit', 'revised')
+    editing.getComponent(ChatInlineBranchEditor).vm.$emit('cancel')
+    expect(editing.emitted('editSubmit')).toEqual([['revised']])
+    expect(editing.emitted('editCancel')).toHaveLength(1)
+
+    const normal = shallowMount(ChatMessage, {
+      props: {
+        item: userItem,
+        editing: false,
+      },
+    })
+    expect(normal.find('.user-bubble').exists()).toBe(true)
+    expect(normal.findComponent({ name: 'MessageActions' }).exists()).toBe(true)
   })
 })
