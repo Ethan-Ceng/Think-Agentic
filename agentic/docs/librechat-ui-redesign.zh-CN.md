@@ -576,13 +576,15 @@ web/src/
 - [x] 桌面端支持合理的面板宽度；移动端使用全屏/Sheet。
 - [x] 保留跳到底部、自动滚动和用户主动向上浏览逻辑。
 - [x] 完善 Streaming、Stopped、Failed、Retrying 状态。
-- [ ] 评估 Artifact 的代码/预览切换，但不替代现有文件模型。
+- [x] 落地只读 Artifact 的代码/预览切换，并与现有文件模型和侧栏选择整合。
 
 主要实现文件：
 
 - `web/src/components/SessionDetailView.vue`
 - `web/src/components/SessionHeader.vue`
 - `web/src/components/chat/ChatMessage.vue`
+- `web/src/components/chat/ChatArtifactPreviewPanel.vue`
+- `web/src/components/chat/SafeHtmlPreview.vue`
 - `web/src/components/chat/PlanPanel.vue`
 - `web/src/components/chat/ThinkingBlock.vue`
 - `web/src/components/chat/ToolCallCard.vue`
@@ -590,11 +592,18 @@ web/src/
 - `web/src/components/chat/ToolPreviewPanel.vue`
 - `web/src/components/TracePanel.vue`
 - `web/src/components/chat/chat.css`
+- `web/src/components/chat/artifact-preview.css`
 - `web/src/components/chat/tool-preview.css`
 
-决策记录：桌面宽屏使用 `clamp(420px, 40vw, 640px)` 控制预览宽度；901–1100px 改为右侧覆盖面板，避免同时打开侧栏和预览时过度挤压对话；900px 以下沿用全屏文件/Trace 与底部 Tool Sheet。当前继续使用文件、Tool 和 Trace 三套业务组件，只统一外壳与状态语义，不为视觉复用强行合并数据模型。
+决策记录：桌面宽屏使用 `clamp(420px, 40vw, 640px)` 控制预览宽度；901–1100px 改为右侧覆盖面板，避免同时打开侧栏和预览时过度挤压对话；900px 以下沿用全屏文件/Trace 与底部 Tool Sheet。File、Tool、Artifact 和 Trace 继续保留各自业务组件，但使用单一可判别 selection 保证互斥，并通过 `user/auto` 来源防止自动工具抢占手工选择。
+
+Artifact 采用只读派生方案：Assistant 已闭合代码块提供语言、复制、浏览器下载和侧栏入口；Markdown/HTML 支持源码与预览，其他代码仅显示源码。生成文件继续使用既有文件 ID 与鉴权下载，按 Markdown/HTML/SVG、栅格图片、代码/文本和未知类型提供双视图、仅预览、仅源码或下载降级，不新增 Artifact 数据模型或后端接口。
+
+安全边界使用三层防护：Markdown 关闭原始 HTML；HTML/SVG 在生成 `srcdoc` 前移除 refresh、导航、表单、嵌套文档和外部资源 URL；最终仍进入空 sandbox iframe，并由严格 CSP 禁止脚本、连接、Worker、frame、表单、对象和外部资源。浏览器内复制和 Blob 下载不触发 shell、文件工具或批准请求。
 
 验证记录（2026-07-15）：`pnpm build` 已通过。运行中工具自动打开预览、主动向上浏览不跟随滚动、VNC 返回后恢复最新工具等原有逻辑未改动。真实 SSE 运行会话、失败会话和移动触屏视觉回归仍待浏览器环境可用后补充，因此暂不标记为“已完成”。
+
+Artifact 验证记录（2026-07-25）：前端全量 33 个测试文件、119 项测试通过，`pnpm type-check` 与 `pnpm build` 通过。真实 Chrome 组件验收确认恶意脚本、父页面读取、远程图片、子 frame、表单、refresh 和点击链接均未产生外部请求；1440px 侧栏宽 576px，390px 无横向溢出，暗色和方向键焦点正常。内置浏览器插件连接不可用，使用本机 Chrome + Playwright 替代；尚未重复执行登录态真实 SSE 会话生成，因此 UI-3 整体状态继续保留“进行中”。
 
 验收标准：
 

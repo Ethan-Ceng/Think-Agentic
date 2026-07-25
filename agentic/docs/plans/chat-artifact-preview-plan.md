@@ -7,12 +7,12 @@
 
 ## 当前进度
 
-- 整体状态：`IN_PROGRESS`
-- 当前阶段：implementation
-- 当前任务：Task 5：完成全量回归、安全验收和代码审查（pending）
-- 已完成：4 / 5
+- 整体状态：`READY_TO_MERGE`
+- 当前阶段：completed
+- 当前任务：Task 5：完成全量回归、安全验收和代码审查（completed）
+- 已完成：5 / 5
 - 阻塞问题：无
-- 最近更新时间：2026-07-25 20:37（Asia/Shanghai）
+- 最近更新时间：2026-07-25 22:15（Asia/Shanghai）
 
 ## 全局约束
 
@@ -41,6 +41,9 @@
 | 2026-07-25 20:22 | `IN_PROGRESS` | Task 4（pending） | Task 3 消息接入、固定选择、自动跟随和类型检查通过 |
 | 2026-07-25 | `IN_PROGRESS` | Task 4 | 用户确认继续，开始升级聊天生成文件预览 |
 | 2026-07-25 20:37 | `IN_PROGRESS` | Task 5（pending） | Task 4 文件分类、安全预览、竞态清理、键盘入口和类型检查通过 |
+| 2026-07-25 | `IN_PROGRESS` | Task 5 | 用户确认继续，开始最终验证、安全验收和代码审查 |
+| 2026-07-25 20:51 | `REVIEWING` | Task 5 | 定向测试、前端全量测试、类型检查和生产构建通过，进入完整 diff 与页面安全审查 |
+| 2026-07-25 22:15 | `READY_TO_MERGE` | Task 5（completed） | 浏览器发现的 iframe 自身导航问题已整改；最终全量回归、安全验收、构建和代码审查通过 |
 
 ## Task 1：建立只读 Inline Artifact 模型与代码块动作
 
@@ -348,7 +351,7 @@ FilePreviewPanel 继续复用既有鉴权下载 API，但会缓存本次加载�
 
 ## Task 5：完成全量回归、安全验收和代码审查
 
-状态：pending
+状态：completed
 
 ### 目标
 
@@ -395,15 +398,46 @@ FilePreviewPanel 继续复用既有鉴权下载 API，但会缓存本次加载�
 
 ### 执行结果
 
-待执行。
+完成 Artifact、Markdown、文件预览、ChatMessage 和 SessionDetail 定向回归，并运行前端全量测试、类型检查和生产构建。变更边界确认没有后端、数据库迁移、`package.json`、lockfile 或新运行依赖变化；构建工具自动生成的 Artifact 组件声明已再次移除，`components.d.ts` 保持 Task 1 开始前已有的 `ChatEditBranchDialog` 用户条目，没有新增本批自动扫描差异。
+
+代码审查首次进行真实 Chrome 安全验收时发现一项 `major`：空 sandbox 能阻止脚本和顶层越权，但普通链接点击仍可让 iframe 自身请求外部地址，远程资源 URL 也可能进入请求管线，不能只依赖浏览器对 `navigate-to` 和资源 CSP 的支持。新增失败回归测试后，SafeHtmlPreview 改为在生成 `srcdoc` 前使用惰性 `<template>` 解析，移除 refresh、导航、表单、嵌套文档和外部资源 URL；`src/poster` 仅保留 `data:`/`blob:`。空 sandbox 和严格 CSP 继续作为后续防线。
+
+整改后本机 Chrome 实测恶意脚本未执行、父页面未被修改，远程图片、子 frame、表单、refresh、弹窗和点击链接产生的外部请求总数为 0。桌面 1440px 下侧栏宽 576px，390×844 下侧栏准确铺满视口且无横向溢出；暗色背景/文字可读，左右方向键能切换标签并移动焦点。内置浏览器插件因版本路径引用失效无法连接，页面验收按技能降级流程使用本机 Chrome + Playwright 完成。
+
+最终代码审查结论为 `APPROVED`，未发现未处理的 blocking、major、minor 或 suggestion。审查记录已保存到 `agentic/docs/reviews/chat-artifact-preview-review.md`，LibreChat 学习文档已将只读 Artifact 与生成文件统一预览标记为已落地。剩余限制是本次为同一 Agent 自检，且没有重新生成一条登录态真实 SSE Agent 回复；相关消息、工具、Trace、输入、分支、审批和 HITL 由全量自动化与实际组件浏览器验收覆盖。
 
 ### 验证证据
 
 ```text
-命令：待执行
-退出状态：待执行
-关键结果：待执行
-执行时间：待执行
+命令：pnpm test:run -- src/lib/chat-artifacts.spec.ts src/components/MarkdownContent.spec.ts src/components/chat/ChatArtifactPreviewPanel.spec.ts src/components/chat/SafeHtmlPreview.spec.ts src/lib/file-preview.spec.ts src/components/FilePreviewPanel.spec.ts src/components/chat/AttachmentsMessage.spec.ts src/lib/chat-preview.spec.ts src/components/chat/ChatMessage.spec.ts src/components/SessionDetailView.spec.ts
+退出状态：0
+关键结果：10 个测试文件、46 项定向测试全部通过
+执行时间：2026-07-25 20:49（Asia/Shanghai）
+
+命令：pnpm test:run
+退出状态：0
+关键结果：安全整改后 33 个测试文件、119 项前端全量测试全部通过
+执行时间：2026-07-25 22:11（Asia/Shanghai）
+
+命令：pnpm type-check
+退出状态：0
+关键结果：vue-tsc -b 通过
+执行时间：2026-07-25 22:12（Asia/Shanghai）
+
+命令：pnpm build
+退出状态：0
+关键结果：vue-tsc -b 与 Vite 生产构建通过，3665 个模块完成转换
+执行时间：2026-07-25 22:12（Asia/Shanghai）
+
+命令：本机 Chrome + Playwright 实际组件验收
+退出状态：0
+关键结果：sandbox/CSP/内容净化生效，恶意外部请求 0；1440px、390px、暗色和键盘焦点通过
+执行时间：2026-07-25 22:10（Asia/Shanghai）
+
+命令：git diff --check；git diff master -- agentic/api agentic/web/package.json agentic/web/pnpm-lock.yaml；git diff --exit-code HEAD -- agentic/web/src/components.d.ts
+退出状态：0
+关键结果：无空白错误、后端/依赖边界无差异、components.d.ts 无 Task 5 工作区差异；仅有仓库既有 LF/CRLF 提示
+执行时间：2026-07-25 22:15（Asia/Shanghai）
 ```
 
 ## 计划变更
@@ -433,36 +467,38 @@ git diff -- agentic/api agentic/web/package.json agentic/web/pnpm-lock.yaml
 
 ### 执行结果
 
-- 单元测试：未执行。
-- 集成测试：未执行。
-- 静态检查：未执行。
-- 类型检查：未执行。
-- 构建：未执行。
-- 数据库迁移：不适用；设计不允许数据库变化，实施后需确认。
-- 手工验证：未执行。
-- 代码审查：未执行。
+- 单元测试：通过；33 个测试文件、119 项测试。
+- 集成测试：通过；ChatMessage、SessionDetail、文件/工具/Artifact/Trace 选择、自动跟随、分支、审批和 HITL 均包含在全量套件中。
+- 静态检查：通过；`git diff --check` 无空白错误，仅有仓库既有 LF/CRLF 提示。
+- 类型检查：通过；`vue-tsc -b` 退出 0。
+- 构建：通过；Vite 生产构建完成 3665 个模块。
+- 数据库迁移：不适用；无后端、数据库或迁移变化。
+- 手工验证：通过；真实 Chrome 组件验收覆盖恶意 HTML、无外部请求、桌面、390px、暗色和键盘。
+- 代码审查：`APPROVED`；审查发现的一项 iframe 自身导航 major 已整改并重新验证，无未处理 blocking/major。
 
 ### 验收标准检查
 
-- [ ] Assistant fenced code 的语言、复制、下载和侧栏入口正确。
-- [ ] 多代码块、特殊字符、未闭合 fence 和流式重渲染正确。
-- [ ] Markdown/HTML 双视图和其他代码 source-only 正确。
-- [ ] HTML 脚本、网络、表单、弹窗、导航和父页面访问被阻止。
-- [ ] Markdown 不执行 HTML、不递归生成 Artifact。
-- [ ] 浏览器内复制/下载不产生 API、shell 或批准请求。
-- [ ] 生成文件按 Markdown/HTML/图片/代码/未知类型正确展示。
-- [ ] 文件鉴权、失败重试、竞态和 Blob URL 清理正确。
-- [ ] file/tool/artifact/trace 互斥，手工 pinned 与自动工具恢复正确。
-- [ ] Session 切换和 VNC 无状态残留或回归。
-- [ ] 桌面、平板、390px、暗色和键盘焦点通过。
-- [ ] 现有聊天、工具、Trace、输入、分支、审批和 HITL 回归通过。
-- [ ] 无意外后端、迁移、依赖或用户工作区文件变化。
-- [ ] 自动化、类型、构建、静态、审查和页面验收有最新证据。
+- [x] Assistant fenced code 的语言、复制、下载和侧栏入口正确。
+- [x] 多代码块、特殊字符、未闭合 fence 和流式重渲染正确。
+- [x] Markdown/HTML 双视图和其他代码 source-only 正确。
+- [x] HTML 脚本、网络、表单、弹窗、导航和父页面访问被阻止。
+- [x] Markdown 不执行 HTML、不递归生成 Artifact。
+- [x] 浏览器内复制/下载不产生 API、shell 或批准请求。
+- [x] 生成文件按 Markdown/HTML/图片/代码/未知类型正确展示。
+- [x] 文件鉴权、失败重试、竞态和 Blob URL 清理正确。
+- [x] file/tool/artifact/trace 互斥，手工 pinned 与自动工具恢复正确。
+- [x] Session 切换和 VNC 无状态残留或回归。
+- [x] 桌面、平板、390px、暗色和键盘焦点通过。
+- [x] 现有聊天、工具、Trace、输入、分支、审批和 HITL 回归通过。
+- [x] 无意外后端、迁移、依赖或用户工作区文件变化。
+- [x] 自动化、类型、构建、静态、审查和页面验收有最新证据。
 
 ### 未通过项目
 
-当前尚未开始实施，所有验证待 Task 1–5 执行。
+无未通过项目。
+
+限制：内置浏览器插件连接不可用，已使用本机 Chrome 替代；未重新生成登录态真实 SSE Agent 回复。同一 Agent 完成实现与自审，独立安全复核仍更可靠。
 
 ### 最终状态
 
-待评定。实施完成后只能填写 `READY_TO_MERGE / BLOCKED / FAILED`；当前是 `PLAN_READY`，等待用户确认开始实施后创建 `feature/chat-artifact-preview` 并进入 Task 1。
+`READY_TO_MERGE`。自动化、类型、生产构建、静态、安全浏览器和代码审查门禁均通过，等待用户明确提交、推送或合并。

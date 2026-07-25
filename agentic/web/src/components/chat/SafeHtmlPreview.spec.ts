@@ -34,7 +34,11 @@ describe('SafeHtmlPreview', () => {
     expect(srcdoc).toContain("base-uri 'none'")
     expect(srcdoc).toContain("object-src 'none'")
     expect(srcdoc).toContain("frame-src 'none'")
-    expect(srcdoc).toContain(content)
+    expect(srcdoc).toContain('<script>window.parent.document.body.innerHTML = "owned"</script>')
+    expect(srcdoc).toContain('<img>')
+    expect(srcdoc).toContain('<form><button>send</button></form>')
+    expect(srcdoc).not.toContain('https://attacker.example')
+    expect(srcdoc).not.toContain('https://tracker.example')
   })
 
   it('refuses to render content above the configured byte limit', () => {
@@ -49,5 +53,33 @@ describe('SafeHtmlPreview', () => {
     expect(wrapper.find('iframe').exists()).toBe(false)
     expect(wrapper.get('[role="status"]').text()).toContain('内容过大')
     expect(wrapper.text()).toContain('查看源码或下载')
+  })
+
+  it('removes document navigation while preserving visible preview content', () => {
+    const wrapper = mount(SafeHtmlPreview, {
+      props: {
+        title: 'Navigation demo',
+        content: [
+          '<meta http-equiv="refresh" content="0;url=https://attacker.example/refresh">',
+          '<a href="https://attacker.example/link" ping="https://attacker.example/ping">Open docs</a>',
+          '<form action="https://attacker.example/form">',
+          '<button formaction="https://attacker.example/button">Submit</button>',
+          '</form>',
+          '<img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==">',
+          '<img src="https://attacker.example/image.png" srcset="https://attacker.example/image-2x.png 2x">',
+          '<svg><a href="https://attacker.example/svg"><text>SVG link</text></a></svg>',
+        ].join(''),
+      },
+    })
+
+    const srcdoc = wrapper.get('iframe').attributes('srcdoc')
+    expect(srcdoc).toContain('Open docs')
+    expect(srcdoc).toContain('Submit')
+    expect(srcdoc).toContain('SVG link')
+    expect(srcdoc).toContain('src="data:image/gif;base64,')
+    expect(srcdoc).not.toContain('attacker.example')
+    expect(srcdoc).not.toContain('http-equiv="refresh"')
+    expect(srcdoc).not.toContain('formaction=')
+    expect(srcdoc).not.toContain(' ping=')
   })
 })
