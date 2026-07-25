@@ -8,6 +8,7 @@ import './styles/ui.css'
 import './style.css'
 import './components/chat/chat.css'
 import './components/chat/tool-preview.css'
+import './components/chat/artifact-preview.css'
 import { initializeTheme } from './lib/theme'
 
 initializeTheme()

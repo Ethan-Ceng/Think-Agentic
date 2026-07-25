@@ -132,6 +132,40 @@ export function getArtifactMimeType(language: string): string {
   return LANGUAGE_MIME_TYPES[language] ?? 'text/plain;charset=utf-8'
 }
 
+export async function copyArtifactText(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text)
+      return
+    } catch {
+      // Fall through when clipboard permissions are denied.
+    }
+  }
+
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.setAttribute('readonly', '')
+  textarea.style.position = 'fixed'
+  textarea.style.left = '-9999px'
+  document.body.appendChild(textarea)
+  textarea.select()
+
+  try {
+    if (typeof document.execCommand !== 'function' || !document.execCommand('copy')) {
+      throw new Error('Clipboard is unavailable')
+    }
+  } finally {
+    document.body.removeChild(textarea)
+  }
+}
+
+export function downloadInlineArtifact(artifact: InlineChatArtifact): void {
+  downloadBlob(
+    new Blob([artifact.content], { type: getArtifactMimeType(artifact.language) }),
+    artifact.title,
+  )
+}
+
 export function sanitizeArtifactFilename(filename: string, fallback: string): string {
   const safeFallback = fallback.trim() || 'artifact.txt'
   let sanitized = filename
@@ -191,3 +225,4 @@ export function isClosedMarkdownFence(
   const closingPattern = new RegExp(`^ {0,3}${escapedMarker}{${markup.length},}\\s*$`)
   return closingPattern.test(closingLine)
 }
+import { downloadBlob } from './utils'

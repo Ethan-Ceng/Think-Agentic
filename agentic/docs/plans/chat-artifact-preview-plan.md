@@ -9,8 +9,8 @@
 
 - 整体状态：`IN_PROGRESS`
 - 当前阶段：implementation
-- 当前任务：Task 2：实现源码/安全预览 Artifact 侧栏（pending）
-- 已完成：1 / 5
+- 当前任务：Task 3：统一 Session 侧栏选择与手工固定规则（pending）
+- 已完成：2 / 5
 - 阻塞问题：无
 - 最近更新时间：2026-07-25（Asia/Shanghai）
 
@@ -35,6 +35,8 @@
 | 2026-07-25 | `PLAN_READY` | 无 | 设计确认并完成五项实施拆分 |
 | 2026-07-25 | `IN_PROGRESS` | Task 1 | 用户确认继续，已创建 `feature/chat-artifact-preview` 并开始实施 |
 | 2026-07-25 18:43 | `IN_PROGRESS` | Task 2（pending） | Task 1 定向测试、回归和类型检查通过 |
+| 2026-07-25 | `IN_PROGRESS` | Task 2 | 用户确认继续，开始实现安全预览侧栏 |
+| 2026-07-25 20:09 | `IN_PROGRESS` | Task 3（pending） | Task 2 安全面板、定向回归和类型检查通过 |
 
 ## Task 1：建立只读 Inline Artifact 模型与代码块动作
 
@@ -114,7 +116,7 @@
 
 ## Task 2：实现源码/安全预览 Artifact 侧栏
 
-状态：pending
+状态：completed
 
 ### 目标
 
@@ -126,6 +128,8 @@
 - `agentic/web/src/components/chat/ChatArtifactPreviewPanel.spec.ts`（新建）
 - `agentic/web/src/components/chat/SafeHtmlPreview.vue`（新建）
 - `agentic/web/src/components/chat/SafeHtmlPreview.spec.ts`（新建）
+- `agentic/web/src/lib/chat-artifacts.ts`
+- `agentic/web/src/components/MarkdownContent.vue`
 - `agentic/web/src/components/chat/artifact-preview.css`（新建）
 - `agentic/web/src/main.ts`
 
@@ -157,15 +161,31 @@
 
 ### 执行结果
 
-待执行。
+新增 `ChatArtifactPreviewPanel`：可预览 Artifact 默认进入预览，source-only 类型直接显示源码；双视图使用可访问 tablist，支持点击和左右方向键，Artifact ID 变化时重置到该类型默认视图。标题、语言、源码、复制、下载和关闭均有明确语义，Markdown 预览继续使用 `html: false` 且不会递归生成 Artifact。
+
+新增 `SafeHtmlPreview`：把用户 HTML 包入独立 `srcdoc`，在用户内容之前写入严格 CSP；iframe 使用空 sandbox 和 `no-referrer`，禁止脚本、连接、Worker、子 frame、表单、base、object 和导航，并只允许 data/blob 图片、字体和媒体及内联样式。UTF-8 内容超过 500 KB 时不创建 iframe，提示查看源码或下载。
+
+Task 1 的 Clipboard fallback、MIME 和 Blob 下载已提取到 `chat-artifacts.ts`，代码块与侧栏共用同一实现。新增样式已由 `main.ts` 引入。类型检查自动扫描生成的 `components.d.ts` 条目在验证后被移除，文件精确保持当前分支既有内容，本批组件继续使用显式 import。
+
+测试先行首次运行按预期因两个组件尚不存在而失败；实现后曾出现一项超限提示文案断言和一项测试可空类型问题，均已修正并完成重跑。
 
 ### 验证证据
 
 ```text
-命令：待执行
-退出状态：待执行
-关键结果：待执行
-执行时间：待执行
+命令：pnpm test:run -- src/components/chat/ChatArtifactPreviewPanel.spec.ts src/components/chat/SafeHtmlPreview.spec.ts src/lib/chat-artifacts.spec.ts src/components/MarkdownContent.spec.ts
+退出状态：0
+关键结果：4 个测试文件、17 项测试全部通过；覆盖 tab 约束/键盘、Artifact 切换、Markdown 非递归、复制下载关闭、sandbox、CSP 和超限降级
+执行时间：2026-07-25 20:09（Asia/Shanghai）
+
+命令：pnpm type-check
+退出状态：0
+关键结果：vue-tsc -b 通过
+执行时间：2026-07-25 20:09（Asia/Shanghai）
+
+命令：git diff --check
+退出状态：0
+关键结果：无空白错误；仅显示仓库既有 LF/CRLF 转换提示
+执行时间：2026-07-25 20:08（Asia/Shanghai）
 ```
 
 ## Task 3：统一 Session 侧栏选择与手工固定规则
@@ -348,6 +368,7 @@
 | --- | --- | --- | --- | --- |
 | 2026-07-25 | 初始计划 | 将只读 Artifact、面板、统一选择、生成文件和最终门禁拆为五个可独立验收任务 | Task 1–5 | 否 |
 | 2026-07-25 | Task 1 补充 `markdown-it` 局部类型声明 | 现有声明只有 `render(src)`，无法表达本任务使用的 fence renderer、utils 和 render env；补充运行库现有 API，不新增依赖 | Task 1 | 否 |
+| 2026-07-25 | Task 2 复用浏览器复制/下载函数 | Artifact 面板与 Markdown 代码块必须共享同一 Clipboard fallback、MIME 和 Blob 下载规则，避免两套行为漂移 | Task 2 | 否 |
 
 ## 最终验证
 

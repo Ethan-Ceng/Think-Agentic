@@ -4,11 +4,11 @@ import { computed } from 'vue'
 import { useToast } from '@/composables/useToast'
 import {
   buildInlineChatArtifact,
-  getArtifactMimeType,
+  copyArtifactText,
+  downloadInlineArtifact,
   isClosedMarkdownFence,
   type InlineChatArtifact,
 } from '@/lib/chat-artifacts'
-import { downloadBlob } from '@/lib/utils'
 
 const props = withDefaults(defineProps<{
   content: string
@@ -153,33 +153,6 @@ const html = computed(() => {
   return output
 })
 
-async function copyText(text: string): Promise<void> {
-  if (navigator.clipboard?.writeText) {
-    try {
-      await navigator.clipboard.writeText(text)
-      return
-    } catch {
-      // Fall through when clipboard permissions are denied.
-    }
-  }
-
-  const textarea = document.createElement('textarea')
-  textarea.value = text
-  textarea.setAttribute('readonly', '')
-  textarea.style.position = 'fixed'
-  textarea.style.left = '-9999px'
-  document.body.appendChild(textarea)
-  textarea.select()
-
-  try {
-    if (typeof document.execCommand !== 'function' || !document.execCommand('copy')) {
-      throw new Error('Clipboard is unavailable')
-    }
-  } finally {
-    document.body.removeChild(textarea)
-  }
-}
-
 async function handleArtifactAction(event: MouseEvent) {
   const target = event.target
   if (!(target instanceof Element)) return
@@ -202,7 +175,7 @@ async function handleArtifactAction(event: MouseEvent) {
 
   if (action === 'copy') {
     try {
-      await copyText(artifact.content)
+      await copyArtifactText(artifact.content)
       toast.success('代码已复制')
     } catch {
       toast.error('复制失败')
@@ -212,10 +185,7 @@ async function handleArtifactAction(event: MouseEvent) {
 
   if (action === 'download') {
     try {
-      downloadBlob(
-        new Blob([artifact.content], { type: getArtifactMimeType(artifact.language) }),
-        artifact.title,
-      )
+      downloadInlineArtifact(artifact)
       toast.success(`已下载 ${artifact.title}`)
     } catch {
       toast.error('下载失败')

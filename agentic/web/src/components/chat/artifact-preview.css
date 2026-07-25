@@ -1,0 +1,168 @@
+.artifact-preview-panel {
+  min-width: 0;
+}
+
+.artifact-preview-header .preview-title {
+  flex: 1 1 auto;
+}
+
+.artifact-preview-header .preview-title > div {
+  min-width: 0;
+}
+
+.artifact-preview-header .preview-title p,
+.artifact-preview-header .preview-title span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.artifact-preview-header .preview-title p {
+  max-width: min(310px, 24vw);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.artifact-preview-header .preview-title span {
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.artifact-preview-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  background: var(--accent-soft);
+  color: var(--accent-primary);
+}
+
+.artifact-preview-tabs {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border-light);
+  background: var(--surface-secondary);
+}
+
+.artifact-preview-tabs button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.artifact-preview-tabs button[aria-selected="true"] {
+  border-color: var(--border-light);
+  background: var(--surface-primary);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-sm);
+}
+
+.artifact-preview-tabs button:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.artifact-preview-body {
+  min-height: 0;
+  padding: 0;
+  background: var(--surface-secondary);
+}
+
+.artifact-source-code {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 100%;
+  margin: 0;
+  overflow: auto;
+  padding: 18px;
+  background: #111827;
+  color: #e5e7eb;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.65;
+  tab-size: 2;
+  white-space: pre;
+}
+
+.artifact-source-code code {
+  font: inherit;
+}
+
+.artifact-markdown-preview {
+  min-height: 100%;
+  overflow: auto;
+  padding: 20px;
+  background: var(--surface-primary);
+}
+
+.safe-html-preview {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  background: #ffffff;
+}
+
+.safe-html-preview iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #ffffff;
+}
+
+.artifact-preview-limit {
+  display: grid;
+  place-content: center;
+  gap: 6px;
+  min-height: 100%;
+  padding: 24px;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.artifact-preview-limit strong {
+  color: var(--text-primary);
+  font-size: 14px;
+}
+
+.artifact-preview-limit span {
+  font-size: 13px;
+}
+
+@media (max-width: 640px) {
+  .artifact-preview-header {
+    min-height: 58px;
+    padding: 10px 12px;
+  }
+
+  .artifact-preview-header .preview-title p {
+    max-width: min(42vw, 220px);
+  }
+
+  .artifact-preview-tabs button {
+    flex: 1 1 0;
+  }
+
+  .artifact-markdown-preview {
+    padding: 14px;
+  }
+}
