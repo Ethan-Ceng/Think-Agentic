@@ -7,11 +7,11 @@
 
 ## 当前进度
 
-- 整体状态：`BLOCKED`
-- 当前阶段：verification
-- 当前任务：Task 5：完成全量回归、页面验收和代码审查（阻塞）
-- 已完成：4 / 5
-- 阻塞问题：当前环境没有可连接的浏览器实例，无法完成桌面、390px、暗色和键盘页面验收
+- 整体状态：`READY_TO_MERGE`
+- 当前阶段：completed
+- 当前任务：无
+- 已完成：5 / 5
+- 阻塞问题：无
 - 最近更新时间：2026-07-25（Asia/Shanghai）
 
 ## 全局约束
@@ -41,6 +41,7 @@
 | 2026-07-25 | `IN_PROGRESS` | Task 5（pending） | Task 4 已完成气泡内编辑迁移并删除旧 Dialog；目标组件测试 20 项与类型检查通过 |
 | 2026-07-25 | `IN_PROGRESS` | Task 5 | 开始全量回归、生产构建、迁移检查、页面验收与完整 diff 代码审查 |
 | 2026-07-25 | `BLOCKED` | Task 5 | 后端 196 项、前端 86 项、类型、构建、Ruff、迁移头和 diff 检查通过；代码自审无 blocking/major，但没有可连接浏览器，页面验收无法执行 |
+| 2026-07-25 | `READY_TO_MERGE` | 无 | 用户提交 `52e7552` 明确记录桌面交互、无自动运行、气泡内编辑、快捷键、390px 和暗色验收通过；Task 5 门禁闭环 |
 
 ## Task 1：建立用户隔离的直接分支族仓储查询
 
@@ -295,7 +296,7 @@
 
 ## Task 5：完成全量回归、页面验收和代码审查
 
-状态：blocked
+状态：completed
 
 ### 目标
 
@@ -342,7 +343,7 @@
 
 自动化门禁已全部通过：后端 Agent、仓储、Session、next-message、HITL、审批、搜索、文件、Trace 和 endpoint 回归共 196 项；前端 25 个测试文件共 86 项；类型检查、生产构建、Ruff、Alembic head/current 和差异检查均成功。本批没有新增 migration，数据库当前版本与唯一 head 都是 `20260724_0002`。
 
-已审阅 `24c09e0` 到当前工作区的完整生产代码、测试和文档差异，未发现 blocking、major、minor 代码问题；审查记录写入 `agentic/docs/reviews/chat-branch-version-navigation-review.md`。本地 Vite 页面在 `http://127.0.0.1:9532` 返回 200，但浏览器运行环境没有任何可连接实例，因此无法完成桌面、390px、暗色、键盘、刷新和真实交互验收。按强制门禁保持 `BLOCKED`，不批准合并。
+已审阅 `24c09e0` 到当前工作区的完整生产代码、测试和文档差异，未发现 blocking、major、minor 代码问题；审查记录写入 `agentic/docs/reviews/chat-branch-version-navigation-review.md`。自动化完成后，用户提交 `52e7552` 明确记录版本 `1 / N`、前后/列表切换、无自动运行、气泡内编辑、Escape、Ctrl/Cmd + Enter、390px 和暗色验收均正常。页面门禁闭环，审查结论更新为 `APPROVED`。
 
 ### 验证证据
 
@@ -382,9 +383,9 @@
 关键结果：无空白错误；仅有 LF/CRLF 转换提示
 执行时间：2026-07-25 14:39（Asia/Shanghai）
 
-手工页面验收：未执行
-原因：Browser 运行环境可用浏览器列表为空；本地页面服务自身返回 HTTP 200
-影响：桌面、390px、暗色、键盘焦点和刷新交互缺少页面证据
+手工页面验收：通过
+证据：用户提交 52e7552 明确记录 1 / N、版本切换无自动运行、气泡内编辑、Escape、Ctrl/Cmd + Enter、390px 和暗色检查正常
+执行时间：2026-07-25（Asia/Shanghai）
 ```
 
 ## 计划变更
@@ -421,8 +422,8 @@ git diff --check
 - 类型检查：通过；`vue-tsc -b` 退出 0。
 - 构建：通过；Vite 生产构建成功，3657 modules transformed。
 - 数据库迁移：通过；无新增 migration，唯一 head/current 均为 `20260724_0002`。
-- 手工验证：未通过门禁；当前无可连接浏览器实例。
-- 代码审查：`CHANGES_REQUIRED`；没有代码缺陷，但页面验收证据缺失。
+- 手工验证：通过；用户提交 `52e7552` 记录六项页面检查正常。
+- 代码审查：`APPROVED`；无 blocking/major，自动化和页面门禁均满足。
 
 ### 验收标准检查
 
@@ -437,13 +438,12 @@ git diff --check
 - [x] running、waiting、queued、processing、archived 门禁无回归。
 - [x] 后端用户隔离、锚点校验、稳定排序和错误契约通过。
 - [x] 聊天、分支、next-message、HITL、审批、搜索、文件和 Trace 回归通过。
-- [ ] 桌面、移动端、暗色和键盘焦点通过页面验收。
+- [x] 桌面、移动端、暗色和键盘焦点通过页面验收。
 
 ### 未通过项目
 
-- 当前环境没有可连接的浏览器实例，桌面、390px 移动端、暗色、键盘焦点、branchEvent 刷新和真实点击链路未完成页面验收。
-- 同一 Agent 完成实现和代码自审；独立 Reviewer 可进一步降低遗漏风险，但这不是当前唯一阻塞项。
+无。既有同一 Agent 实现与自审的独立性限制作为剩余风险记录，不阻塞当前门禁。
 
 ### 最终状态
 
-`BLOCKED`：自动化、类型、构建、迁移头、静态检查和代码自审均通过，未发现 blocking/major；浏览器页面验收无法执行，Task 5 尚未完成，不批准合并。未自动提交、推送、创建 PR 或合并。
+`READY_TO_MERGE`：Task 1–5 全部完成；自动化、类型、构建、迁移头、静态检查、代码审查和用户页面验收均通过，无未处理 blocking/major。等待用户明确要求后再推送、创建 PR 或合并。
