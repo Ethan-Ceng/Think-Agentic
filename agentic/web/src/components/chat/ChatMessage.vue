@@ -23,6 +23,7 @@ import type {
   ResumeMode,
   ToolEvent,
 } from '@/lib/api/types'
+import type { InlineChatArtifact } from '@/lib/chat-artifacts'
 import type { AttachmentFile, TimelineItem, UserMessageStatus } from '@/lib/session-events'
 import { getFriendlyToolLabel, getToolKind } from '@/lib/tool-utils'
 
@@ -50,6 +51,7 @@ const emit = defineEmits<{
   branchAction: [operation: BranchOperation, item: TimelineItem]
   editSubmit: [message: string]
   editCancel: []
+  artifactOpen: [artifact: InlineChatArtifact]
 }>()
 
 const statusIconMap: Record<UserMessageStatus, Component> = {
@@ -165,7 +167,13 @@ function handleResolveInteraction(actionId: string, params: ResolveInteractionPa
         <strong>MoocManus</strong>
         <span>{{ item.timeLabel || 'AI Assistant' }}</span>
       </div>
-      <MarkdownContent v-if="!isAssistantEmpty(item)" :content="item.data.message ?? ''" />
+      <MarkdownContent
+        v-if="!isAssistantEmpty(item)"
+        :content="item.data.message ?? ''"
+        :artifact-scope="item.sourceEventId ?? item.id"
+        enable-artifacts
+        @artifact-open="emit('artifactOpen', $event)"
+      />
       <div v-else class="assistant-status-card assistant-empty-card">
         <MessageSquareOff :size="16" />
         <div>

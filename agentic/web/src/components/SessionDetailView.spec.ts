@@ -57,7 +57,21 @@ const ChatMessageStub = defineComponent({
     editing: Boolean,
     editBusy: Boolean,
   },
-  emits: ['branchAction', 'editSubmit', 'editCancel'],
+  emits: ['branchAction', 'editSubmit', 'editCancel', 'artifactOpen'],
+  setup(_, { emit }) {
+    return {
+      openArtifact: () => emit('artifactOpen', {
+        id: 'event-assistant-1:fence:0',
+        scope: 'event-assistant-1',
+        index: 0,
+        title: 'artifact-1.html',
+        language: 'html',
+        content: '<main>demo</main>\n',
+        kind: 'html',
+        availableViews: ['source', 'preview'],
+      }),
+    }
+  },
   template: `
     <article
       class="stub-chat-message"
@@ -83,8 +97,43 @@ const ChatMessageStub = defineComponent({
         type="button"
         @click="$emit('editCancel')"
       />
+      <button
+        v-if="item.kind === 'assistant'"
+        class="open-inline-artifact"
+        type="button"
+        @click="openArtifact"
+      />
     </article>
   `,
+})
+
+const ArtifactPreviewStub = defineComponent({
+  name: 'ChatArtifactPreviewPanel',
+  props: { artifact: { type: Object, required: true } },
+  emits: ['close'],
+  template:
+    '<aside class="stub-artifact-preview" :data-artifact-id="artifact.id"><button class="close-artifact-preview" @click="$emit(\'close\')" /></aside>',
+})
+
+const ToolPreviewStub = defineComponent({
+  name: 'ToolPreviewPanel',
+  props: { tool: { type: Object, required: true } },
+  emits: ['close', 'jumpToLatest', 'openVnc'],
+  template:
+    '<aside class="stub-tool-preview" :data-tool-id="tool.tool_call_id"><button class="close-tool-preview" @click="$emit(\'close\')" /></aside>',
+})
+
+const FilePreviewStub = defineComponent({
+  name: 'FilePreviewPanel',
+  props: { file: { type: Object, required: true } },
+  emits: ['close'],
+  template: '<aside class="stub-file-preview" />',
+})
+
+const TracePanelStub = defineComponent({
+  name: 'TracePanel',
+  emits: ['close'],
+  template: '<aside class="stub-trace-preview" />',
 })
 
 function makeDetail(session: Partial<SessionDetail> = {}) {
@@ -207,11 +256,15 @@ async function mountView(
       plugins: [router],
       stubs: {
         ArchivedSessionsDialog: ArchivedDialogStub,
+        ChatArtifactPreviewPanel: ArtifactPreviewStub,
         ChatInput: ChatInputStub,
         ChatMessage: ChatMessageStub,
+        FilePreviewPanel: FilePreviewStub,
         PlanPanel: true,
         SessionHeader: true,
         ThinkingIndicator: true,
+        ToolPreviewPanel: ToolPreviewStub,
+        TracePanel: TracePanelStub,
         UiButton: true,
         UiState: true,
       },
@@ -248,11 +301,15 @@ describe('SessionDetailView archived state', () => {
         plugins: [router],
         stubs: {
           ArchivedSessionsDialog: ArchivedDialogStub,
+          ChatArtifactPreviewPanel: ArtifactPreviewStub,
           ChatInput: ChatInputStub,
           ChatMessage: ChatMessageStub,
+          FilePreviewPanel: FilePreviewStub,
           PlanPanel: true,
           SessionHeader: true,
           ThinkingIndicator: true,
+          ToolPreviewPanel: ToolPreviewStub,
+          TracePanel: TracePanelStub,
           UiButton: true,
           UiState: true,
         },
@@ -500,5 +557,91 @@ describe('SessionDetailView inline branch editing', () => {
 
     expect(createQueuedRunIntent('branch-1')).toBe('')
     setItem.mockRestore()
+  })
+})
+
+describe('SessionDetailView preview selection', () => {
+  beforeEach(() => {
+    mocks.toastInfo.mockReset()
+    mocks.getBranchFamily.mockReset()
+    mocks.createBranch.mockReset()
+    mocks.stopSession.mockReset()
+    mocks.detail = makeDetail({
+      status: 'running',
+      events: [
+        {
+          type: 'message',
+          data: {
+            role: 'assistant',
+            message: 'artifact response',
+            event_id: 'event-assistant-1',
+          },
+        },
+      ] as SessionDetail['events'],
+    })
+  })
+
+  it('pins a user artifact, ignores new auto tools, and resumes following after close', async () => {
+    const detail = mocks.detail as ReturnType<typeof makeDetail>
+    const { wrapper } = await mountView('/sessions/session-1', 'session-1')
+
+    await wrapper.get('.open-inline-artifact').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('.stub-artifact-preview').attributes('data-artifact-id')).toBe(
+      'event-assistant-1:fence:0',
+    )
+
+    detail.events.value = [
+      ...(detail.events.value ?? []),
+      {
+        type: 'tool',
+        data: {
+          tool_call_id: 'tool-1',
+          name: 'shell_execute',
+          function: 'shell_execute',
+          status: 'completed',
+          args: {},
+          content: { result: 'first' },
+        },
+      },
+    ] as SessionDetail['events']
+    await nextTick()
+    await flushPromises()
+
+    expect(wrapper.find('.stub-artifact-preview').exists()).toBe(true)
+    expect(wrapper.find('.stub-tool-preview').exists()).toBe(false)
+
+    await wrapper.get('.close-artifact-preview').trigger('click')
+    detail.events.value = [
+      ...(detail.events.value ?? []),
+      {
+        type: 'tool',
+        data: {
+          tool_call_id: 'tool-2',
+          name: 'shell_execute',
+          function: 'shell_execute',
+          status: 'completed',
+          args: {},
+          content: { result: 'second' },
+        },
+      },
+    ] as SessionDetail['events']
+    await nextTick()
+    await flushPromises()
+
+    expect(wrapper.find('.stub-artifact-preview').exists()).toBe(false)
+    expect(wrapper.get('.stub-tool-preview').attributes('data-tool-id')).toBe('tool-2')
+  })
+
+  it('clears a pinned preview when the Session changes', async () => {
+    const { wrapper } = await mountView('/sessions/session-1', 'session-1')
+    await wrapper.get('.open-inline-artifact').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.stub-artifact-preview').exists()).toBe(true)
+
+    await wrapper.setProps({ sessionId: 'session-2' })
+    await nextTick()
+
+    expect(wrapper.find('.stub-artifact-preview').exists()).toBe(false)
   })
 })

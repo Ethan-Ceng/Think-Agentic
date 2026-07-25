@@ -35,8 +35,14 @@ vi.mock('@/components/skills/SkillChip.vue', () => ({
 vi.mock('@/components/MarkdownContent.vue', () => ({
   default: {
     name: 'MarkdownContent',
-    props: { content: { type: String, default: '' } },
-    template: '<div data-testid="markdown-content">{{ content }}</div>',
+    props: {
+      content: { type: String, default: '' },
+      artifactScope: { type: String, default: '' },
+      enableArtifacts: Boolean,
+    },
+    emits: ['artifactOpen'],
+    template:
+      '<div data-testid="markdown-content">{{ content }}<button class="stub-open-artifact" @click="$emit(\'artifactOpen\', { id: artifactScope + \':fence:0\', scope: artifactScope, index: 0, title: \'artifact-1.html\', language: \'html\', content: \'<main>demo</main>\\n\', kind: \'html\', availableViews: [\'source\', \'preview\'] })" /></div>',
   },
 }))
 
@@ -167,5 +173,66 @@ describe('ChatMessage inline branch editing', () => {
     })
     expect(normal.find('.user-bubble').exists()).toBe(true)
     expect(normal.findComponent({ name: 'MessageActions' }).exists()).toBe(true)
+  })
+})
+
+describe('ChatMessage inline artifacts', () => {
+  it('enables artifacts only for assistant content and forwards the selected block', async () => {
+    const assistantItem = {
+      kind: 'assistant',
+      id: 'assistant-1',
+      sourceEventId: 'event-assistant-1',
+      data: {
+        role: 'assistant',
+        message: '```html\n<main>demo</main>\n```',
+      },
+    } as TimelineItem
+    const wrapper = shallowMount(ChatMessage, {
+      props: { item: assistantItem },
+    })
+
+    const markdown = wrapper.getComponent(MarkdownContent)
+    expect(markdown.props('enableArtifacts')).toBe(true)
+    expect(markdown.props('artifactScope')).toBe('event-assistant-1')
+    markdown.vm.$emit('artifactOpen', {
+      id: 'event-assistant-1:fence:0',
+      scope: 'event-assistant-1',
+      index: 0,
+      title: 'artifact-1.html',
+      language: 'html',
+      content: '<main>demo</main>\n',
+      kind: 'html',
+      availableViews: ['source', 'preview'],
+    })
+    expect(wrapper.emitted('artifactOpen')).toEqual([[
+      expect.objectContaining({
+        id: 'event-assistant-1:fence:0',
+        content: '<main>demo</main>\n',
+      }),
+    ]])
+
+    const error = shallowMount(ChatMessage, {
+      props: {
+        item: errorItem,
+        showRecoveryActions: true,
+      },
+    })
+    expect(error.getComponent(MarkdownContent).props('enableArtifacts')).toBe(false)
+  })
+
+  it('falls back to the timeline item id when an assistant event id is unavailable', () => {
+    const wrapper = shallowMount(ChatMessage, {
+      props: {
+        item: {
+          kind: 'assistant',
+          id: 'assistant-local-1',
+          data: { role: 'assistant', message: 'answer' },
+        } as TimelineItem,
+      },
+    })
+
+    expect(wrapper.getComponent(MarkdownContent).props('artifactScope')).toBe(
+      'assistant-local-1',
+    )
   })
 })

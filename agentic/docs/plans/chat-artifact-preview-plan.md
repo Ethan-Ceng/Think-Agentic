@@ -9,8 +9,8 @@
 
 - 整体状态：`IN_PROGRESS`
 - 当前阶段：implementation
-- 当前任务：Task 3：统一 Session 侧栏选择与手工固定规则（pending）
-- 已完成：2 / 5
+- 当前任务：Task 4：将生成文件纳入源码/预览/下载体验（pending）
+- 已完成：3 / 5
 - 阻塞问题：无
 - 最近更新时间：2026-07-25（Asia/Shanghai）
 
@@ -37,6 +37,8 @@
 | 2026-07-25 18:43 | `IN_PROGRESS` | Task 2（pending） | Task 1 定向测试、回归和类型检查通过 |
 | 2026-07-25 | `IN_PROGRESS` | Task 2 | 用户确认继续，开始实现安全预览侧栏 |
 | 2026-07-25 20:09 | `IN_PROGRESS` | Task 3（pending） | Task 2 安全面板、定向回归和类型检查通过 |
+| 2026-07-25 | `IN_PROGRESS` | Task 3 | 用户确认继续，开始统一 Session 预览选择 |
+| 2026-07-25 20:22 | `IN_PROGRESS` | Task 4（pending） | Task 3 消息接入、固定选择、自动跟随和类型检查通过 |
 
 ## Task 1：建立只读 Inline Artifact 模型与代码块动作
 
@@ -190,7 +192,7 @@ Task 1 的 Clipboard fallback、MIME 和 Blob 下载已提取到 `chat-artifacts
 
 ## Task 3：统一 Session 侧栏选择与手工固定规则
 
-状态：pending
+状态：completed
 
 ### 目标
 
@@ -199,6 +201,7 @@ Task 1 的 Clipboard fallback、MIME 和 Blob 下载已提取到 `chat-artifacts
 ### 涉及文件
 
 - `agentic/web/src/lib/chat-preview.ts`（新建，若类型未放入现有模块）
+- `agentic/web/src/lib/chat-preview.spec.ts`（新建）
 - `agentic/web/src/components/chat/ChatMessage.vue`
 - `agentic/web/src/components/chat/ChatMessage.spec.ts`
 - `agentic/web/src/components/SessionDetailView.vue`
@@ -233,15 +236,31 @@ Task 1 的 Clipboard fallback、MIME 和 Blob 下载已提取到 `chat-artifacts
 
 ### 执行结果
 
-待执行。
+新增 `ChatPreviewSelection` 可判别 union，统一描述 file、tool、artifact、trace 及 `user/auto` 来源；`canAutoFollowTool` 明确规定只有空选择或既有 auto-tool 才能被新工具更新，file、手工 tool、artifact 和 trace 均保持固定。
+
+Assistant 正文现在使用事件 ID（缺失时使用 timeline item ID）启用 Markdown Artifact，并把选中结构透传给 SessionDetail。SessionDetail 用单一 selection 替代 `previewFile`、`previewTool`、`traceOpen` 的互斥布尔组合，正式渲染 Artifact 侧栏；文件、工具、Artifact、Trace 点击均写入 user selection。
+
+运行时新工具继续实时更新 auto-tool；用户固定内容不会被抢占。关闭固定面板后，后续新工具恢复自动跟随；工具面板的“跳转实时”显式进入 auto 模式。VNC 关闭只在允许自动跟随时恢复最新工具，Session ID 变化会清空预览、VNC 和工具计数，避免跨会话残留。
+
+测试先行首次运行按预期因消息尚未启用 Artifact、Session 尚未处理事件而失败。实现后修正 shallowMount 的事件触发方式及两处测试可空/字面量类型，最终定向与相邻面板回归通过。类型检查自动生成的全局组件条目已再次移除，`components.d.ts` 无本批差异。
 
 ### 验证证据
 
 ```text
-命令：待执行
-退出状态：待执行
-关键结果：待执行
-执行时间：待执行
+命令：pnpm test:run -- src/lib/chat-preview.spec.ts src/components/chat/ChatMessage.spec.ts src/components/SessionDetailView.spec.ts src/components/chat/ChatArtifactPreviewPanel.spec.ts
+退出状态：0
+关键结果：4 个测试文件、24 项测试全部通过；覆盖 Assistant 事件、scope fallback、四类 pinned 规则、Artifact 防抢占、关闭恢复自动工具、Session 清理和面板回归
+执行时间：2026-07-25 20:21（Asia/Shanghai）
+
+命令：pnpm type-check
+退出状态：0
+关键结果：vue-tsc -b 通过
+执行时间：2026-07-25 20:21（Asia/Shanghai）
+
+命令：git diff --check
+退出状态：0
+关键结果：无空白错误；仅显示仓库既有 LF/CRLF 转换提示
+执行时间：2026-07-25 20:22（Asia/Shanghai）
 ```
 
 ## Task 4：将生成文件纳入源码/预览/下载体验

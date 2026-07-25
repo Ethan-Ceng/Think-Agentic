@@ -24,6 +24,11 @@ import type {
   ResumeMode,
   ToolEvent,
 } from '@/lib/api/types'
+import type { InlineChatArtifact } from '@/lib/chat-artifacts'
+import {
+  canAutoFollowTool,
+  type ChatPreviewSelection,
+} from '@/lib/chat-preview'
 import type { AttachmentFile, TimelineItem, UserMessageStatus } from '@/lib/session-events'
 import type { SendMessageInput, SkillRef } from '@/types/skill'
 import { eventsToTimeline, formatMessageTimeLabel, getLatestPlanFromEvents } from '@/lib/session-events'
@@ -60,13 +65,24 @@ const router = useRouter()
 const route = useRoute()
 const toast = useToast()
 const FilePreviewPanel = defineAsyncComponent(() => import('@/components/FilePreviewPanel.vue'))
+const ChatArtifactPreviewPanel = defineAsyncComponent(
+  () => import('@/components/chat/ChatArtifactPreviewPanel.vue'),
+)
 const TracePanel = defineAsyncComponent(() => import('@/components/TracePanel.vue'))
 const ToolPreviewPanel = defineAsyncComponent(() => import('@/components/chat/ToolPreviewPanel.vue'))
 const VNCOverlay = defineAsyncComponent(() => import('@/components/VNCOverlay.vue'))
 const fileListOpen = ref(false)
-const previewFile = ref<AttachmentFile | null>(null)
-const previewTool = ref<ToolEvent | null>(null)
-const traceOpen = ref(false)
+const previewSelection = ref<ChatPreviewSelection | null>(null)
+const previewFile = computed(() =>
+  previewSelection.value?.kind === 'file' ? previewSelection.value.file : null,
+)
+const previewTool = computed(() =>
+  previewSelection.value?.kind === 'tool' ? previewSelection.value.tool : null,
+)
+const previewArtifact = computed(() =>
+  previewSelection.value?.kind === 'artifact' ? previewSelection.value.artifact : null,
+)
+const traceOpen = computed(() => previewSelection.value?.kind === 'trace')
 const vncOpen = ref(false)
 const archivedDialogOpen = ref(false)
 const initialMessageSent = ref(false)
@@ -153,7 +169,7 @@ const latestRecoverableErrorId = computed(() => {
   }
   return null
 })
-const hasPreview = computed(() => previewFile.value !== null || resolvedPreviewTool.value !== null || traceOpen.value)
+const hasPreview = computed(() => previewSelection.value !== null)
 const showJumpToBottom = computed(
   () =>
     !isNearBottom.value &&
@@ -369,11 +385,17 @@ watch(
       return count
     }, 0)
 
-    if (toolCount > prevToolCount.value && latestTool) {
+    if (
+      toolCount > prevToolCount.value &&
+      latestTool &&
+      canAutoFollowTool(previewSelection.value)
+    ) {
       const shouldFollow = isNearBottom.value
-      previewTool.value = latestTool
-      previewFile.value = null
-      traceOpen.value = false
+      previewSelection.value = {
+        kind: 'tool',
+        source: 'auto',
+        tool: latestTool,
+      }
       if (shouldFollow) scrollToConversationBottom('smooth')
     }
     prevToolCount.value = toolCount
@@ -623,9 +645,11 @@ function handleViewAllFiles() {
 }
 
 function handleFileClick(file: AttachmentFile) {
-  previewFile.value = file
-  previewTool.value = null
-  traceOpen.value = false
+  previewSelection.value = {
+    kind: 'file',
+    source: 'user',
+    file,
+  }
 }
 
 async function handleRecoverTask(mode: ResumeMode) {
@@ -838,28 +862,40 @@ async function handleResolveInteraction(actionId: string, params: ResolveInterac
 
 function handleToolClick(tool: ToolEvent) {
   if (getToolKind(tool) === 'message') return
-  previewTool.value = tool
-  previewFile.value = null
-  traceOpen.value = false
+  previewSelection.value = {
+    kind: 'tool',
+    source: 'user',
+    tool,
+  }
+}
+
+function handleArtifactOpen(artifact: InlineChatArtifact) {
+  previewSelection.value = {
+    kind: 'artifact',
+    source: 'user',
+    artifact,
+  }
 }
 
 function closePreview() {
-  previewFile.value = null
-  previewTool.value = null
+  previewSelection.value = null
 }
 
 function openTracePanel() {
-  traceOpen.value = true
-  previewFile.value = null
-  previewTool.value = null
+  previewSelection.value = {
+    kind: 'trace',
+    source: 'user',
+  }
 }
 
 function jumpToLatest() {
   const latest = findLatestTool(timeline.value)
   if (latest) {
-    previewTool.value = latest
-    previewFile.value = null
-    traceOpen.value = false
+    previewSelection.value = {
+      kind: 'tool',
+      source: 'auto',
+      tool: latest,
+    }
   }
   scrollContainerRef.value?.scrollTo({
     top: scrollContainerRef.value.scrollHeight,
@@ -871,10 +907,16 @@ function jumpToLatest() {
 function closeVNC() {
   vncOpen.value = false
   const latest = findLatestTool(timeline.value)
-  if (latest && detail.session.value?.status === 'running') {
-    previewTool.value = latest
-    previewFile.value = null
-    traceOpen.value = false
+  if (
+    latest &&
+    detail.session.value?.status === 'running' &&
+    canAutoFollowTool(previewSelection.value)
+  ) {
+    previewSelection.value = {
+      kind: 'tool',
+      source: 'auto',
+      tool: latest,
+    }
     window.setTimeout(() => {
       scrollContainerRef.value?.scrollTo({
         top: scrollContainerRef.value.scrollHeight,
@@ -883,6 +925,16 @@ function closeVNC() {
     }, 100)
   }
 }
+
+watch(
+  () => props.sessionId,
+  (sessionId, previousSessionId) => {
+    if (!previousSessionId || sessionId === previousSessionId) return
+    previewSelection.value = null
+    vncOpen.value = false
+    prevToolCount.value = 0
+  },
+)
 
 async function handleStop() {
   if (!detail.session.value) return
@@ -1008,6 +1060,7 @@ async function handleStop() {
                 @view-all-files="handleViewAllFiles"
                 @file-click="handleFileClick"
                 @tool-click="handleToolClick"
+                @artifact-open="handleArtifactOpen"
                 @retry-message="handleRetryMessage"
                 @recover-task="handleRecoverTask"
                 @resolve-interaction="handleResolveInteraction"
@@ -1110,6 +1163,13 @@ async function handleStop() {
         @close="closePreview"
       />
 
+      <ChatArtifactPreviewPanel
+        v-if="previewArtifact"
+        class="side-preview"
+        :artifact="previewArtifact"
+        @close="closePreview"
+      />
+
       <ToolPreviewPanel
         v-if="resolvedPreviewTool"
         class="side-preview padded-preview"
@@ -1123,7 +1183,7 @@ async function handleStop() {
         v-if="traceOpen"
         class="side-preview"
         :session-id="sessionId"
-        @close="traceOpen = false"
+        @close="closePreview"
       />
     </div>
 
