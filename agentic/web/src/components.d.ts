@@ -16,6 +16,7 @@ declare module 'vue' {
     AttachmentsMessage: typeof import('./components/chat/AttachmentsMessage.vue')['default']
     BranchVersionNavigator: typeof import('./components/chat/BranchVersionNavigator.vue')['default']
     ChatComposer: typeof import('./components/chat/ChatComposer.vue')['default']
+    ChatEditBranchDialog: typeof import('./components/chat/ChatEditBranchDialog.vue')['default']
     ChatHeader: typeof import('./components/ChatHeader.vue')['default']
     ChatInlineBranchEditor: typeof import('./components/chat/ChatInlineBranchEditor.vue')['default']
     ChatInput: typeof import('./components/chat/ChatInput.vue')['default']
