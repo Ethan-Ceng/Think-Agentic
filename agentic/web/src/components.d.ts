@@ -14,6 +14,7 @@ declare module 'vue' {
     ArchivedSessionsDialog: typeof import('./components/ArchivedSessionsDialog.vue')['default']
     AssistantAvatar: typeof import('./components/chat/AssistantAvatar.vue')['default']
     AttachmentsMessage: typeof import('./components/chat/AttachmentsMessage.vue')['default']
+    BranchVersionNavigator: typeof import('./components/chat/BranchVersionNavigator.vue')['default']
     ChatComposer: typeof import('./components/chat/ChatComposer.vue')['default']
     ChatEditBranchDialog: typeof import('./components/chat/ChatEditBranchDialog.vue')['default']
     ChatHeader: typeof import('./components/ChatHeader.vue')['default']

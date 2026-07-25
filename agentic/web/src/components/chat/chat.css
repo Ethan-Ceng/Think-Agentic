@@ -486,6 +486,114 @@
   text-decoration: underline;
 }
 
+.branch-version-navigator {
+  min-width: 0;
+}
+
+.branch-version-state,
+.branch-version-summary {
+  min-width: 0;
+  flex: 1;
+}
+
+.branch-version-state {
+  display: grid;
+  gap: 2px;
+}
+
+.branch-version-state small {
+  overflow: hidden;
+  color: var(--text-tertiary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.branch-version-state.is-error {
+  color: var(--status-danger);
+}
+
+.branch-version-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.branch-version-operation {
+  flex: 0 0 auto;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.branch-version-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.branch-version-archive {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--status-warning) 12%, transparent);
+  color: var(--status-warning);
+  font-size: 11px;
+}
+
+.branch-version-controls,
+.branch-version-recovery {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+}
+
+.branch-version-controls button,
+.branch-version-recovery button {
+  justify-content: center;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+}
+
+.branch-version-controls button:hover,
+.branch-version-recovery button:hover {
+  background: var(--surface-hover);
+  text-decoration: none;
+}
+
+.branch-version-controls button:focus-visible,
+.branch-version-recovery button:focus-visible,
+.branch-version-controls select:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.branch-version-controls button:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.branch-version-count {
+  min-width: 48px;
+  color: var(--text-secondary);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.branch-version-controls select {
+  max-width: min(240px, 28vw);
+  min-height: 30px;
+  padding: 4px 26px 4px 8px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  background: var(--surface-canvas);
+  color: var(--text-primary);
+  font: inherit;
+}
+
 .branch-edit-dialog {
   display: grid;
   gap: 18px;
@@ -1359,6 +1467,32 @@
 
   .archived-session-banner button {
     margin-left: 24px;
+  }
+
+  .branch-version-navigator {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .branch-version-navigator > svg {
+    margin-top: 7px;
+  }
+
+  .branch-version-summary,
+  .branch-version-state {
+    flex-basis: calc(100% - 28px);
+  }
+
+  .branch-version-controls,
+  .branch-version-recovery {
+    width: 100%;
+    padding-left: 23px;
+  }
+
+  .branch-version-controls select {
+    min-width: 0;
+    max-width: none;
+    flex: 1;
   }
 
   .timeline {

@@ -1,5 +1,6 @@
 import { createSSEStream, del, get, parseSSEStream, patch, post, put } from './fetch'
 import type {
+  BranchFamilyResponse,
   ChatParams,
   CreateSessionBranchParams,
   CreateSessionBranchResult,
@@ -53,6 +54,16 @@ export const sessionApi = {
     params: CreateSessionBranchParams,
   ): Promise<CreateSessionBranchResult> => {
     return post<CreateSessionBranchResult>(`/sessions/${sessionId}/branches`, params)
+  },
+
+  getBranchFamily: (
+    sessionId: string,
+    targetEventId?: string,
+  ): Promise<BranchFamilyResponse> => {
+    return get<BranchFamilyResponse>(
+      `/sessions/${sessionId}/branch-family`,
+      targetEventId ? { target_event_id: targetEventId } : undefined,
+    )
   },
 
   updateOrganization: (

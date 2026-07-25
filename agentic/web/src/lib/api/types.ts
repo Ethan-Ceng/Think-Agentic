@@ -563,6 +563,7 @@ export type ChatParams = {
 
 export type ResumeMode = 'continue' | 'restart'
 export type BranchOperation = 'fork' | 'edit' | 'regenerate'
+export type BranchVersionOperation = 'original' | BranchOperation
 
 export type CreateSessionBranchParams = {
   operation: BranchOperation
@@ -577,6 +578,23 @@ export type CreateSessionBranchResult = {
   forked_from_event_id: string
   operation: BranchOperation
   queued: boolean
+}
+
+export type BranchFamilyVariant = {
+  session_id: string
+  title: string
+  operation: BranchVersionOperation
+  status: SessionStatus
+  archived_at: string | null
+  created_at: string
+  is_current: boolean
+}
+
+export type BranchFamilyResponse = {
+  source_session_id: string | null
+  target_event_id: string
+  current_session_id: string
+  variants: BranchFamilyVariant[]
 }
 
 export type ResumeSessionParams = {

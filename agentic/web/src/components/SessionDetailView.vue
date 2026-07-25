@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Archive, ArrowDown, ArrowLeft, GitFork } from 'lucide-vue-next'
+import { Archive, ArrowDown } from 'lucide-vue-next'
 import { ElMessageBox } from 'element-plus'
 import ArchivedSessionsDialog from '@/components/ArchivedSessionsDialog.vue'
+import BranchVersionNavigator from '@/components/chat/BranchVersionNavigator.vue'
 import ChatInput from '@/components/chat/ChatInput.vue'
 import ChatEditBranchDialog from '@/components/chat/ChatEditBranchDialog.vue'
 import ChatMessage from '@/components/chat/ChatMessage.vue'
@@ -17,6 +18,7 @@ import { useToast } from '@/composables/useToast'
 import { sessionApi } from '@/lib/api/session'
 import { ApiError } from '@/lib/api/fetch'
 import type {
+  BranchFamilyResponse,
   BranchOperation,
   FileInfo,
   ResolveInteractionParams,
@@ -81,8 +83,12 @@ const queuedRunIntentHandled = ref(false)
 const branchBusyEventId = ref<string | null>(null)
 const editBranchItem = ref<Extract<TimelineItem, { kind: 'user' }> | null>(null)
 const pendingBranchRequest = ref<{ signature: string; requestId: string } | null>(null)
+const branchFamily = ref<BranchFamilyResponse | null>(null)
+const branchFamilyLoading = ref(false)
+const branchFamilyError = ref('')
 const lastFocusedEvent = ref('')
 let focusTimer = 0
+let branchFamilyRequestVersion = 0
 
 const detail = useSessionDetail(
   computed(() => props.sessionId),
@@ -91,6 +97,15 @@ const detail = useSessionDetail(
 
 const baseTimeline = computed(() => eventsToTimeline(detail.events.value))
 const isArchived = computed(() => Boolean(detail.session.value?.archived_at))
+const branchEventQuery = computed(() => {
+  const value = route.query.branchEvent
+  return typeof value === 'string' ? value.trim() : ''
+})
+const showBranchVersionNavigator = computed(
+  () =>
+    Boolean(branchEventQuery.value) ||
+    Boolean(detail.session.value?.branch_operation),
+)
 const timeline = computed<TimelineItem[]>(() => {
   const items = [...baseTimeline.value]
   const pending = pendingUserMessage.value
@@ -440,6 +455,10 @@ watch(
 watch(
   () => props.sessionId,
   () => {
+    branchFamilyRequestVersion += 1
+    branchFamily.value = null
+    branchFamilyLoading.value = false
+    branchFamilyError.value = ''
     pendingUserMessage.value = null
     resolvingActionId.value = null
     interactionErrors.value = {}
@@ -452,6 +471,54 @@ watch(
     pendingBranchRequest.value = null
     scrollToConversationBottom('auto')
   },
+)
+
+async function loadBranchFamily(targetEventId?: string) {
+  const requestVersion = ++branchFamilyRequestVersion
+  branchFamilyLoading.value = true
+  branchFamilyError.value = ''
+  try {
+    const family = await sessionApi.getBranchFamily(
+      props.sessionId,
+      targetEventId,
+    )
+    if (requestVersion !== branchFamilyRequestVersion) return
+    branchFamily.value = family
+  } catch (error) {
+    if (requestVersion !== branchFamilyRequestVersion) return
+    branchFamily.value = null
+    branchFamilyError.value =
+      error instanceof Error ? error.message : '暂时无法加载对话版本'
+  } finally {
+    if (requestVersion === branchFamilyRequestVersion) {
+      branchFamilyLoading.value = false
+    }
+  }
+}
+
+function retryBranchFamily() {
+  void loadBranchFamily(branchEventQuery.value || undefined)
+}
+
+watch(
+  () => [
+    props.sessionId,
+    branchEventQuery.value,
+    detail.session.value?.branch_operation,
+    detail.loading.value,
+  ] as const,
+  ([, targetEventId, operation, loading]) => {
+    if (loading || !detail.session.value) return
+    if (!targetEventId && !operation) {
+      branchFamilyRequestVersion += 1
+      branchFamily.value = null
+      branchFamilyLoading.value = false
+      branchFamilyError.value = ''
+      return
+    }
+    void loadBranchFamily(targetEventId || undefined)
+  },
+  { immediate: true },
 )
 
 watch(
@@ -473,7 +540,10 @@ watch(
   { immediate: true },
 )
 
-onBeforeUnmount(() => window.clearTimeout(focusTimer))
+onBeforeUnmount(() => {
+  branchFamilyRequestVersion += 1
+  window.clearTimeout(focusTimer)
+})
 
 async function handleSend(input: SendMessageInput, uploadedFiles: FileInfo[]) {
   if (isArchived.value) {
@@ -645,7 +715,10 @@ async function createBranch(
     const queuedIntent = result.queued
       ? createQueuedRunIntent(result.session_id)
       : ''
-    const query = queuedIntent ? { runQueued: queuedIntent } : undefined
+    const query: Record<string, string> = {
+      branchEvent: result.forked_from_event_id,
+    }
+    if (queuedIntent) query.runQueued = queuedIntent
     await router.push({
       path: `/sessions/${result.session_id}`,
       query,
@@ -682,9 +755,35 @@ function clearRunQueuedQuery() {
   void router.replace({ path: route.path, query })
 }
 
+function navigateToBranchVersion(sessionId: string) {
+  const family = branchFamily.value
+  if (!family || sessionId === props.sessionId) return
+  const query =
+    sessionId === family.source_session_id
+      ? { branchEvent: family.target_event_id }
+      : undefined
+  void router.push({
+    path: `/sessions/${sessionId}`,
+    query,
+  })
+}
+
 function navigateToBranchSource() {
   const sourceSessionId = detail.session.value?.source_session_id
-  if (sourceSessionId) void router.push(`/sessions/${sourceSessionId}`)
+  if (!sourceSessionId) return
+  const targetEventId = detail.session.value?.forked_from_event_id
+  void router.push({
+    path: `/sessions/${sourceSessionId}`,
+    query: targetEventId ? { branchEvent: targetEventId } : undefined,
+  })
+}
+
+function closeBranchVersionContext() {
+  const { branchEvent: _branchEvent, ...query } = route.query
+  void router.replace({
+    path: route.path,
+    query,
+  })
 }
 
 watch(
@@ -831,27 +930,20 @@ async function handleStop() {
               管理已归档任务
             </button>
           </div>
-          <div
-            v-if="detail.session.value.branch_operation"
-            class="branch-lineage-banner"
-            role="status"
-          >
-            <GitFork :size="15" />
-            <span>
-              {{ branchOperationLabel }}
-              <template v-if="detail.session.value.source_session_title">
-                · 来自「{{ detail.session.value.source_session_title }}」
-              </template>
-            </span>
-            <button
-              v-if="detail.session.value.source_session_id"
-              type="button"
-              @click="navigateToBranchSource"
-            >
-              <ArrowLeft :size="14" />
-              返回原对话
-            </button>
-          </div>
+          <BranchVersionNavigator
+            v-if="showBranchVersionNavigator"
+            :family="branchFamily"
+            :loading="branchFamilyLoading"
+            :error="branchFamilyError"
+            :lineage-label="branchOperationLabel"
+            :source-session-id="detail.session.value.source_session_id"
+            :source-session-title="detail.session.value.source_session_title"
+            :closable="Boolean(branchEventQuery)"
+            @navigate="navigateToBranchVersion"
+            @navigate-source="navigateToBranchSource"
+            @retry="retryBranchFamily"
+            @close="closeBranchVersionContext"
+          />
 
           <div
             ref="scrollContainerRef"

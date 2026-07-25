@@ -9,8 +9,8 @@
 
 - 整体状态：`IN_PROGRESS`
 - 当前阶段：implementation
-- 当前任务：Task 3：实现分支版本导航和路由恢复（pending）
-- 已完成：2 / 5
+- 当前任务：Task 4：将用户消息编辑迁移为气泡内分支编辑（pending）
+- 已完成：3 / 5
 - 阻塞问题：无
 - 最近更新时间：2026-07-25（Asia/Shanghai）
 
@@ -35,6 +35,8 @@
 | 2026-07-25 | `IN_PROGRESS` | Task 2（pending） | Task 1 的仓储契约、用户隔离、锚点解析、来源降级和稳定排序已实现并通过 22 项组合测试 |
 | 2026-07-25 | `IN_PROGRESS` | Task 2 | 开始 branch-family 响应投影、只读路由和错误契约的测试先行实施 |
 | 2026-07-25 | `IN_PROGRESS` | Task 3（pending） | Task 2 的轻量响应、只读 API、404/409/422 映射与安全日志已实现并通过 32 项扩大回归 |
+| 2026-07-25 | `IN_PROGRESS` | Task 3 | 开始前端 API 客户端、版本导航组件和 branchEvent 路由恢复的测试先行实施 |
+| 2026-07-25 | `IN_PROGRESS` | Task 4（pending） | Task 3 的 `1 / N` 导航、版本列表、失败降级和 branchEvent 路由恢复已实现，8 项组件测试与类型检查通过 |
 
 ## Task 1：建立用户隔离的直接分支族仓储查询
 
@@ -158,7 +160,7 @@
 
 ## Task 3：实现分支版本导航和路由恢复
 
-状态：pending
+状态：completed
 
 ### 目标
 
@@ -201,15 +203,20 @@
 
 ### 执行结果
 
-待执行。
+已增加与后端一一对应的 branch-family 类型和 GET 客户端，新建 `BranchVersionNavigator` 展示 original/fork/edit/regenerate、归档状态、上一版、下一版、`当前位置 / 总数` 与原生可访问版本列表。SessionDetail 对子分支自动加载 family，对来源页按 branchEvent 恢复；切回来源保留 branchEvent，切换子分支显式清空 query，不携带 runQueued。加载失败时保留对话详情、返回来源、重试和关闭无效来源上下文；分支创建成功路径同时保留 branchEvent 与既有一次性 runQueued 意图。
 
 ### 验证证据
 
 ```text
-命令：待执行
-退出状态：待执行
-关键结果：待执行
-执行时间：待执行
+命令：pnpm test:run -- src/components/chat/BranchVersionNavigator.spec.ts src/components/SessionDetailView.spec.ts
+退出状态：0
+关键结果：2 files passed，8 tests passed；覆盖 50 个版本、边界按钮、版本列表、归档标签、自动加载、branchEvent 刷新恢复、无 runQueued 切换和失败降级
+执行时间：2026-07-25 09:48（Asia/Shanghai）
+
+命令：pnpm type-check
+退出状态：0
+关键结果：vue-tsc -b 通过
+执行时间：2026-07-25 09:48（Asia/Shanghai）
 ```
 
 ## Task 4：将用户消息编辑迁移为气泡内分支编辑
@@ -388,4 +395,4 @@ git diff --check
 
 ### 最终状态
 
-`IN_PROGRESS`：Task 1–2 已完成并有局部验证证据，等待开始 Task 3。
+`IN_PROGRESS`：Task 1–3 已完成并有局部验证证据，等待开始 Task 4。
