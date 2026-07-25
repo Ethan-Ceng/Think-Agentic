@@ -7,11 +7,11 @@
 
 ## 当前进度
 
-- 整体状态：`IN_PROGRESS`
-- 当前阶段：implementation
-- 当前任务：Task 5：完成全量回归、页面验收和代码审查
+- 整体状态：`BLOCKED`
+- 当前阶段：verification
+- 当前任务：Task 5：完成全量回归、页面验收和代码审查（阻塞）
 - 已完成：4 / 5
-- 阻塞问题：无
+- 阻塞问题：当前环境没有可连接的浏览器实例，无法完成桌面、390px、暗色和键盘页面验收
 - 最近更新时间：2026-07-25（Asia/Shanghai）
 
 ## 全局约束
@@ -39,6 +39,8 @@
 | 2026-07-25 | `IN_PROGRESS` | Task 4（pending） | Task 3 的 `1 / N` 导航、版本列表、失败降级和 branchEvent 路由恢复已实现，8 项组件测试与类型检查通过 |
 | 2026-07-25 | `IN_PROGRESS` | Task 4 | 开始气泡内编辑组件、单编辑态与现有 edit 分支提交链路的测试先行迁移 |
 | 2026-07-25 | `IN_PROGRESS` | Task 5（pending） | Task 4 已完成气泡内编辑迁移并删除旧 Dialog；目标组件测试 20 项与类型检查通过 |
+| 2026-07-25 | `IN_PROGRESS` | Task 5 | 开始全量回归、生产构建、迁移检查、页面验收与完整 diff 代码审查 |
+| 2026-07-25 | `BLOCKED` | Task 5 | 后端 196 项、前端 86 项、类型、构建、Ruff、迁移头和 diff 检查通过；代码自审无 blocking/major，但没有可连接浏览器，页面验收无法执行 |
 
 ## Task 1：建立用户隔离的直接分支族仓储查询
 
@@ -293,7 +295,7 @@
 
 ## Task 5：完成全量回归、页面验收和代码审查
 
-状态：pending
+状态：blocked
 
 ### 目标
 
@@ -338,15 +340,51 @@
 
 ### 执行结果
 
-待执行。
+自动化门禁已全部通过：后端 Agent、仓储、Session、next-message、HITL、审批、搜索、文件、Trace 和 endpoint 回归共 196 项；前端 25 个测试文件共 86 项；类型检查、生产构建、Ruff、Alembic head/current 和差异检查均成功。本批没有新增 migration，数据库当前版本与唯一 head 都是 `20260724_0002`。
+
+已审阅 `24c09e0` 到当前工作区的完整生产代码、测试和文档差异，未发现 blocking、major、minor 代码问题；审查记录写入 `agentic/docs/reviews/chat-branch-version-navigation-review.md`。本地 Vite 页面在 `http://127.0.0.1:9532` 返回 200，但浏览器运行环境没有任何可连接实例，因此无法完成桌面、390px、暗色、键盘、刷新和真实交互验收。按强制门禁保持 `BLOCKED`，不批准合并。
 
 ### 验证证据
 
 ```text
-命令：待执行
-退出状态：待执行
-关键结果：待执行
-执行时间：待执行
+命令：uv run pytest tests/app/core/agent tests/app/repositories tests/app/services tests/app/interfaces/endpoints -q
+退出状态：0
+关键结果：196 项通过
+执行时间：2026-07-25 13:36（Asia/Shanghai）
+
+命令：pnpm test:run
+退出状态：0
+关键结果：25 个测试文件、86 项测试全部通过
+执行时间：2026-07-25 13:36（Asia/Shanghai）
+
+命令：pnpm type-check
+退出状态：0
+关键结果：vue-tsc -b 通过
+执行时间：2026-07-25 13:38（Asia/Shanghai）
+
+命令：pnpm build
+退出状态：0
+关键结果：生产构建成功，3657 modules transformed
+执行时间：2026-07-25 13:38（Asia/Shanghai）
+
+命令：uv run alembic heads；uv run alembic current
+退出状态：0
+关键结果：唯一 head/current 均为 20260724_0002；无新增迁移文件
+执行时间：2026-07-25 13:38（Asia/Shanghai）
+
+命令：uv run ruff check <本批后端生产文件与测试>
+退出状态：0
+关键结果：All checks passed
+执行时间：2026-07-25 14:39（Asia/Shanghai）
+
+命令：git diff --check 24c09e0 -- agentic
+退出状态：0
+关键结果：无空白错误；仅有 LF/CRLF 转换提示
+执行时间：2026-07-25 14:39（Asia/Shanghai）
+
+手工页面验收：未执行
+原因：Browser 运行环境可用浏览器列表为空；本地页面服务自身返回 HTTP 200
+影响：桌面、390px、暗色、键盘焦点和刷新交互缺少页面证据
 ```
 
 ## 计划变更
@@ -377,34 +415,35 @@ git diff --check
 
 ### 执行结果
 
-- 单元测试：待执行。
-- 集成测试：待执行。
-- 静态检查：待执行。
-- 类型检查：待执行。
-- 构建：待执行。
-- 数据库迁移：不适用；仍需确认没有新增 migration 且 head/current 不变。
-- 手工验证：待执行。
-- 代码审查：待执行。
+- 单元测试：通过；后端 196 项、前端 86 项。
+- 集成测试：通过；后端 endpoint、PostgreSQL 和 Redis 相关测试在全量命令中通过。
+- 静态检查：通过；Ruff 和 `git diff --check` 退出 0。
+- 类型检查：通过；`vue-tsc -b` 退出 0。
+- 构建：通过；Vite 生产构建成功，3657 modules transformed。
+- 数据库迁移：通过；无新增 migration，唯一 head/current 均为 `20260724_0002`。
+- 手工验证：未通过门禁；当前无可连接浏览器实例。
+- 代码审查：`CHANGES_REQUIRED`；没有代码缺陷，但页面验收证据缺失。
 
 ### 验收标准检查
 
-- [ ] 已有分支显示稳定版本位置和总数。
-- [ ] 来源与同锚点直接子分支可以前后切换和列表跳转。
-- [ ] branchEvent 刷新恢复正确，不合并错误分支族。
-- [ ] 版本导航不启动 Run、不恢复归档任务。
-- [ ] 来源删除或越权不泄露信息。
-- [ ] 用户消息气泡内编辑、取消和快捷键正确。
-- [ ] 编辑仍创建新 Session，附件/Skills、request ID 和 queued 恢复正确。
-- [ ] regenerate 新版本可与原始回复比较。
-- [ ] running、waiting、queued、processing、archived 门禁无回归。
-- [ ] 后端用户隔离、锚点校验、稳定排序和错误契约通过。
-- [ ] 聊天、分支、next-message、HITL、审批、搜索、文件和 Trace 回归通过。
+- [x] 已有分支显示稳定版本位置和总数。
+- [x] 来源与同锚点直接子分支可以前后切换和列表跳转。
+- [x] branchEvent 刷新恢复正确，不合并错误分支族。
+- [x] 版本导航不启动 Run、不恢复归档任务。
+- [x] 来源删除或越权不泄露信息。
+- [x] 用户消息气泡内编辑、取消和快捷键正确。
+- [x] 编辑仍创建新 Session，附件/Skills、request ID 和 queued 恢复正确。
+- [x] regenerate 新版本可与原始回复比较。
+- [x] running、waiting、queued、processing、archived 门禁无回归。
+- [x] 后端用户隔离、锚点校验、稳定排序和错误契约通过。
+- [x] 聊天、分支、next-message、HITL、审批、搜索、文件和 Trace 回归通过。
 - [ ] 桌面、移动端、暗色和键盘焦点通过页面验收。
 
 ### 未通过项目
 
-待执行。
+- 当前环境没有可连接的浏览器实例，桌面、390px 移动端、暗色、键盘焦点、branchEvent 刷新和真实点击链路未完成页面验收。
+- 同一 Agent 完成实现和代码自审；独立 Reviewer 可进一步降低遗漏风险，但这不是当前唯一阻塞项。
 
 ### 最终状态
 
-`IN_PROGRESS`：Task 1–4 已完成并有局部验证证据，等待开始 Task 5。
+`BLOCKED`：自动化、类型、构建、迁移头、静态检查和代码自审均通过，未发现 blocking/major；浏览器页面验收无法执行，Task 5 尚未完成，不批准合并。未自动提交、推送、创建 PR 或合并。

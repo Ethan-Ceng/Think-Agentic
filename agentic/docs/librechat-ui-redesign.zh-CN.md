@@ -17,6 +17,14 @@
 - 实际落地集中在 `api/app/{models,repositories,services,controllers}`、`web/src/components/{SessionListItem,SessionList,ArchivedSessionsDialog}.vue`、`web/src/stores/sessions.ts` 及对应迁移和测试。
 - 本批明确不包含 LibreChat 的 Project、标签、批量操作、拖拽排序、分享、导出或导入；这些能力需要独立设计，不能作为空壳入口加入。
 
+## 2026-07-25：消息编辑、重新生成与直接分支版本已落地
+
+- 继续学习 LibreChat 的 sibling 版本导航和原消息位置编辑体验，但保持 Agentic 的不可变 Session 边界，没有迁移 `parentMessageId` 消息树。
+- 新增用户隔离的 branch-family 只读接口，展示来源 Session 与同一消息锚点下的直接 edit、regenerate、fork 版本，支持 `1 / N`、前后切换和版本列表。
+- 从子分支返回来源时使用 `branchEvent` 恢复版本上下文；普通版本切换不会携带 `runQueued`、启动 Run、恢复归档任务或修改任何既有分支。
+- 用户消息编辑已迁移到原气泡位置，支持 Escape、取消、Ctrl/Cmd + Enter、附件/Skills 只读沿用和失败重试；提交仍创建独立新 Session。
+- 后端 196 项、前端 86 项、类型检查、生产构建、Ruff 和 Alembic head/current 检查通过。当前环境没有可连接的浏览器实例，桌面、390px、暗色和键盘页面验收仍待补证据。
+
 整理日期：2026-07-15
 
 状态：持续演进；Skills、Creator 与 Marketplace 闭环已于 2026-07-16 落地
