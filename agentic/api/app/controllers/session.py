@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import AsyncGenerator, Optional, Dict, Literal
 
 import websockets
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Body, Depends, Query
 from sse_starlette import EventSourceResponse, ServerSentEvent
 from starlette.websockets import WebSocket, WebSocketDisconnect
 from websockets import ConnectionClosed
@@ -19,6 +19,7 @@ from app.schemas.exceptions import NotFoundError
 from app.schemas.event import EventMapper
 from app.schemas.session import (
     CreateSessionResponse,
+    CreateSessionRequest,
     ListSessionItem,
     ListSessionResponse,
     GetSessionResponse,
@@ -44,6 +45,7 @@ from app.dependencies import (
 )
 from app.dependencies.auth import get_user_from_token
 from app.core.entities.user import User
+from app.core.entities.session import Session
 from app.services.session_service import SessionService
 from app.services.agent_service import AgentService
 
@@ -54,15 +56,34 @@ router = APIRouter(prefix="/sessions", tags=["会话管理"])
 SESSION_SLEEP_INTERVAL = 5
 
 
+def _to_list_session_item(session: Session) -> ListSessionItem:
+    return ListSessionItem(
+        session_id=session.id,
+        title=session.title,
+        project_id=session.project_id,
+        latest_message=session.latest_message,
+        latest_message_at=session.latest_message_at,
+        status=session.status,
+        unread_message_count=session.unread_message_count,
+        is_pinned=session.is_pinned,
+        archived_at=session.archived_at,
+        has_next_message=session.next_message is not None,
+    )
+
+
 # ==================== 基础 CRUD ====================
 
 @router.post("", summary="创建新会话")
 async def create_session(
+    request: Optional[CreateSessionRequest] = Body(default=None),
     current_user: User = Depends(get_current_user),
     session_service: SessionService = Depends(get_session_service),
 ) -> Response[CreateSessionResponse]:
     """创建新会话"""
-    session = await session_service.create_session(current_user.id)
+    session = await session_service.create_session(
+        current_user.id,
+        project_id=request.project_id if request is not None else None,
+    )
     return Response.success(
         msg="创建任务会话成功",
         data=CreateSessionResponse(session_id=session.id),
@@ -79,20 +100,7 @@ async def stream_sessions(
     async def event_generator() -> AsyncGenerator[ServerSentEvent, None]:
         while True:
             sessions = await session_service.get_all_sessions(current_user.id)
-            session_items = [
-                ListSessionItem(
-                    session_id=s.id,
-                    title=s.title,
-                    latest_message=s.latest_message,
-                    latest_message_at=s.latest_message_at,
-                    status=s.status,
-                    unread_message_count=s.unread_message_count,
-                    is_pinned=s.is_pinned,
-                    archived_at=s.archived_at,
-                    has_next_message=s.next_message is not None,
-                )
-                for s in sessions
-            ]
+            session_items = [_to_list_session_item(s) for s in sessions]
             yield ServerSentEvent(
                 event="sessions",
                 data=ListSessionResponse(sessions=session_items).model_dump_json(),
@@ -113,20 +121,7 @@ async def get_sessions(
         current_user.id,
         archived=scope == "archived",
     )
-    session_items = [
-        ListSessionItem(
-            session_id=s.id,
-            title=s.title,
-            latest_message=s.latest_message,
-            latest_message_at=s.latest_message_at,
-            status=s.status,
-            unread_message_count=s.unread_message_count,
-            is_pinned=s.is_pinned,
-            archived_at=s.archived_at,
-            has_next_message=s.next_message is not None,
-        )
-        for s in sessions
-    ]
+    session_items = [_to_list_session_item(s) for s in sessions]
     return Response.success(
         msg="获取任务会话列表成功",
         data=ListSessionResponse(sessions=session_items),
@@ -158,6 +153,7 @@ async def get_session(
             data=GetSessionResponse(
                 session_id=session.id,
                 title=session.title,
+                project_id=session.project_id,
                 status=session.status,
                 events=EventMapper.events_to_sse_events(session.events) if session.events else [],
                 next_message=(
@@ -191,26 +187,24 @@ async def update_session_organization(
     current_user: User = Depends(get_current_user),
     session_service: SessionService = Depends(get_session_service),
 ) -> Response[ListSessionItem]:
+    update_kwargs = {
+        "session_id": session_id,
+        "user_id": current_user.id,
+        "title": request.title,
+        "pinned": request.pinned,
+        "archived": request.archived,
+    }
+    if "project_id" in request.model_fields_set:
+        update_kwargs.update(
+            project_id=request.project_id,
+            project_id_provided=True,
+        )
     session = await session_service.update_organization(
-        session_id=session_id,
-        user_id=current_user.id,
-        title=request.title,
-        pinned=request.pinned,
-        archived=request.archived,
+        **update_kwargs,
     )
     return Response.success(
         msg="更新任务会话成功",
-        data=ListSessionItem(
-            session_id=session.id,
-            title=session.title,
-            latest_message=session.latest_message,
-            latest_message_at=session.latest_message_at,
-            status=session.status,
-            unread_message_count=session.unread_message_count,
-            is_pinned=session.is_pinned,
-            archived_at=session.archived_at,
-            has_next_message=session.next_message is not None,
-        ),
+        data=_to_list_session_item(session),
     )
 
 @router.post("/{session_id}/branches", summary="从历史消息创建新会话分支")

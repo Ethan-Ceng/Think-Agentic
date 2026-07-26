@@ -113,6 +113,7 @@ class Session(BaseModel):
     sandbox_id: Optional[str] = None  # 沙箱id
     task_id: Optional[str] = None  # 任务id
     title: str = ""  # 标题
+    project_id: Optional[str] = None
     title_is_manual: bool = False
     is_pinned: bool = False
     archived_at: Optional[datetime] = None

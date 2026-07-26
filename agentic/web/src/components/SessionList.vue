@@ -21,15 +21,29 @@ const archivedDialogOpen = ref(false)
 
 const props = withDefaults(defineProps<{
   query?: string
+  items?: Session[]
+  flat?: boolean
+  showEmpty?: boolean
+  showArchivedEntry?: boolean
 }>(), {
   query: '',
+  items: undefined,
+  flat: false,
+  showEmpty: true,
+  showArchivedEntry: true,
 })
+
+const emit = defineEmits<{
+  move: [session: Session]
+}>()
 
 const activeId = computed(() => String(route.params.id ?? ''))
 const normalizedQuery = computed(() => props.query.trim().toLocaleLowerCase())
+const usesStoreSource = computed(() => props.items === undefined)
+const sourceSessions = computed(() => props.items ?? sessionsStore.sessions)
 const filteredSessions = computed(() => {
-  if (!normalizedQuery.value) return sessionsStore.sessions
-  return sessionsStore.sessions.filter((session) =>
+  if (!normalizedQuery.value) return sourceSessions.value
+  return sourceSessions.value.filter((session) =>
     [session.title, session.latest_message]
       .filter(Boolean)
       .some((value) => String(value).toLocaleLowerCase().includes(normalizedQuery.value)),
@@ -37,6 +51,11 @@ const filteredSessions = computed(() => {
 })
 
 const groupedSessions = computed(() => {
+  if (props.flat) {
+    return filteredSessions.value.length
+      ? [{ label: '', sessions: filteredSessions.value }]
+      : []
+  }
   const pinned = filteredSessions.value.filter((session) => session.is_pinned)
   const regular = filteredSessions.value.filter((session) => !session.is_pinned)
   const groups = new Map<string, Session[]>()
@@ -150,7 +169,7 @@ async function requestDelete(session: Session) {
 
 <template>
   <div class="session-list-shell">
-    <div v-if="sessionsStore.loading" class="session-skeleton-list">
+    <div v-if="usesStoreSource && sessionsStore.loading" class="session-skeleton-list">
       <div v-for="i in 3" :key="i" class="session-skeleton">
         <span />
         <div>
@@ -160,19 +179,22 @@ async function requestDelete(session: Session) {
       </div>
     </div>
 
-    <div v-else-if="sessionsStore.error" class="empty-state">
+    <div v-else-if="usesStoreSource && sessionsStore.error" class="empty-state">
       <p>加载失败</p>
       <button type="button" class="link-button" @click="sessionsStore.refresh">重试</button>
     </div>
 
-    <div v-else-if="filteredSessions.length === 0" class="empty-state sidebar-empty-state">
+    <div
+      v-else-if="showEmpty && filteredSessions.length === 0"
+      class="empty-state sidebar-empty-state"
+    >
       <p>{{ normalizedQuery ? '没有匹配的任务' : '还没有任务' }}</p>
       <span>{{ normalizedQuery ? '试试搜索其他关键词' : '创建任务后会显示在这里' }}</span>
     </div>
 
     <div v-else class="session-list" aria-live="polite">
       <section v-for="group in groupedSessions" :key="group.label" class="session-group">
-        <h3>{{ group.label }}</h3>
+        <h3 v-if="!flat">{{ group.label }}</h3>
         <SessionListItem
           v-for="session in group.sessions"
           :key="session.session_id"
@@ -183,12 +205,14 @@ async function requestDelete(session: Session) {
           @rename="renameSession"
           @toggle-pin="togglePin"
           @archive="archiveSession"
+          @move="emit('move', $event)"
           @delete="requestDelete"
         />
       </section>
     </div>
 
     <button
+      v-if="showArchivedEntry"
       type="button"
       class="archived-sessions-entry"
       @click="archivedDialogOpen = true"
@@ -197,5 +221,8 @@ async function requestDelete(session: Session) {
     </button>
   </div>
 
-  <ArchivedSessionsDialog v-model:open="archivedDialogOpen" />
+  <ArchivedSessionsDialog
+    v-if="showArchivedEntry"
+    v-model:open="archivedDialogOpen"
+  />
 </template>

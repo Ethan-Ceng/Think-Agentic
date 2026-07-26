@@ -53,13 +53,35 @@ class SessionService:
         self._uow = uow_factory()
         self._sandbox_cls = sandbox_cls
 
-    async def create_session(self, user_id: str) -> Session:
+    async def create_session(
+            self,
+            user_id: str,
+            project_id: str | None = None,
+    ) -> Session:
         """创建一个空白的新任务会话"""
         logger.info("创建一个空白新任务会话")
-        session = Session(title="新对话", user_id=user_id)
+        session = Session(
+            title="新对话",
+            user_id=user_id,
+            project_id=project_id,
+        )
         async with self._uow:
+            if project_id is not None:
+                project = await self._uow.project.get_by_id_for_user(
+                    project_id,
+                    user_id,
+                )
+                if project is None:
+                    raise NotFoundError("项目不存在或无权访问")
             await self._uow.session.save(session)
-        logger.info(f"成功创建一个新任务会话: {session.id}")
+        logger.info(
+            "成功创建一个新任务会话",
+            extra={
+                "session_id": session.id,
+                "user_id": user_id,
+                "project_id": project_id,
+            },
+        )
         return session
 
     async def get_all_sessions(
@@ -80,16 +102,33 @@ class SessionService:
             title: str | None = None,
             pinned: bool | None = None,
             archived: bool | None = None,
+            project_id: str | None = None,
+            project_id_provided: bool = False,
     ) -> Session:
         """Update user-owned navigation metadata with stable public errors."""
         try:
             async with self._uow:
+                if project_id_provided and project_id is not None:
+                    project = await self._uow.project.get_by_id_for_user(
+                        project_id,
+                        user_id,
+                    )
+                    if project is None:
+                        raise NotFoundError("项目不存在或无权访问")
+                organization_kwargs = {
+                    "title": title,
+                    "pinned": pinned,
+                    "archived": archived,
+                }
+                if project_id_provided:
+                    organization_kwargs.update(
+                        project_id=project_id,
+                        project_id_provided=True,
+                    )
                 updated = await self._uow.session.update_organization(
                     session_id,
                     user_id,
-                    title=title,
-                    pinned=pinned,
-                    archived=archived,
+                    **organization_kwargs,
                 )
             logger.info(
                 "更新会话整理元数据成功",
@@ -104,7 +143,8 @@ class SessionService:
                             ("archived", archived),
                         )
                         if value is not None
-                    ],
+                    ] + (["project_id"] if project_id_provided else []),
+                    "project_id": project_id if project_id_provided else None,
                 },
             )
             return updated

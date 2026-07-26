@@ -4,6 +4,7 @@
 Models package - ORM 模型
 """
 from .base import Base
+from .project import ProjectModel
 from .session import SessionModel, SessionStatus
 from .file import FileModel
 from .user import UserModel
@@ -13,6 +14,7 @@ from .skill import RunSkillModel, SkillInstallationModel, SkillModel, SkillVersi
 
 __all__ = [
     "Base",
+    "ProjectModel",
     "SessionModel",
     "SessionStatus",
     "FileModel",

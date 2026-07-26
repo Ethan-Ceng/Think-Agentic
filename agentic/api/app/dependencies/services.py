@@ -22,6 +22,7 @@ from app.services.trace_service import TraceService
 from app.services.search_service import SearchService
 from app.services.skill_service import SkillService
 from app.services.user_config_service import UserConfigService
+from app.services.project_service import ProjectService
 
 
 def get_auth_service() -> AuthService:
@@ -42,6 +43,10 @@ def get_trace_service() -> TraceService:
 
 def get_search_service() -> SearchService:
     return SearchService(uow_factory=get_uow)
+
+
+def get_project_service() -> ProjectService:
+    return ProjectService(uow_factory=get_uow)
 
 
 def get_file_service() -> FileService:

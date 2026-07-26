@@ -32,3 +32,15 @@ def test_uow_propagates_commit_failure_after_rollback_and_close() -> None:
     asyncio.run(run())
     assert session.rollback_called
     assert session.close_called
+
+
+def test_uow_exposes_project_repository() -> None:
+    session = FailingCommitSession()
+    uow = DBUnitOfWork(session_factory=lambda: session)  # type: ignore[arg-type]
+
+    async def run() -> None:
+        entered = await uow.__aenter__()
+        assert entered.project.db_session is session
+        await uow.__aexit__(RuntimeError, RuntimeError("abort"), None)
+
+    asyncio.run(run())

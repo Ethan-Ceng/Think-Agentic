@@ -8,6 +8,7 @@ function session(overrides: Partial<Session> = {}): Session {
   return {
     session_id: 'session-1',
     title: 'Original',
+    project_id: null,
     latest_message: 'latest',
     latest_message_at: '2026-07-24T10:00:00',
     status: 'completed',
@@ -108,5 +109,49 @@ describe('sessions store organization', () => {
 
     expect(store.archivedSessions).toEqual([])
     expect(store.sessions.map((item) => item.session_id)).toEqual(['session-1'])
+  })
+
+  it('unassigns a deleted project in active and archived lists without changing metadata', async () => {
+    vi.spyOn(sessionApi, 'getSessions').mockImplementation(async (scope) => ({
+        sessions:
+          scope === 'archived'
+            ? [
+                session({
+                  session_id: 'archived-1',
+                  project_id: 'project-1',
+                  archived_at: '2026-07-25T10:00:00',
+                }),
+                session({
+                  session_id: 'other',
+                  project_id: 'project-2',
+                  archived_at: '2026-07-25T10:00:00',
+                }),
+              ]
+            : [
+                session({
+                  project_id: 'project-1',
+                  status: 'running',
+                  unread_message_count: 3,
+                  is_pinned: true,
+                  has_next_message: true,
+                }),
+              ],
+    }))
+    const store = useSessionsStore()
+    await store.refresh()
+    await store.loadArchivedSessions()
+
+    store.unassignProject('project-1')
+
+    expect(store.sessions[0]).toMatchObject({
+      project_id: null,
+      status: 'running',
+      unread_message_count: 3,
+      is_pinned: true,
+      has_next_message: true,
+      latest_message_at: '2026-07-24T10:00:00',
+    })
+    expect(store.archivedSessions[0].project_id).toBeNull()
+    expect(store.archivedSessions[1].project_id).toBe('project-2')
   })
 })

@@ -2,11 +2,31 @@
 
 ## 2026-07-25：后续学习路线已重新排序
 
-- 第一组按独立批次推进：附件交互增强、统一资源选择、快捷键、对话用量摘要、搜索引用卡片、语音、MCP UI Resource。
-- 推荐顺序为：附件交互增强 → 统一资源选择 → 快捷键 → 用量摘要 → 引用卡片 → 语音 → MCP UI Resource。
-- Project、Prompt、Agent Profile、多 Agent、Knowledge 和长期记忆保留为后续战略能力，每项单独设计与实施。
+- 第一组只保留独立的小中型体验批次：附件交互增强和快捷键；附件已完成，快捷键按后续需求决定是否实施。
+- 统一资源选择的可见提升有限，设计与计划保留但暂缓编码。
+- 对话用量摘要不单独实施，现有 Trace 已记录并展示事件、步骤、工具、模型、Token 和耗时。
+- 搜索引用卡片不单独实施；未来若建设 Web Search 或 Deep Research，再与结构化来源追踪、行内引用和 Sources 面板共同设计。
+- 语音交互与 MCP UI Resource 移入第三组大型能力，与 Project、Agent Profile、多 Agent、Knowledge 和长期记忆一起逐项设计与实施。
+- Prompt 模板库不实施；用户目标、对话上下文、Project、Knowledge、Memory、Skills 和 Planner 状态应动态形成执行上下文，内部 Prompt 作为运行协议在代码中版本化和测试。
 - 消息书签、任务标签/批量管理、回复反馈、临时对话、Artifact 编辑版本和会话级模型预设当前不做。
 - 对话分享、导出和导入暂缓；已完成的导出设计与计划仅作为备选，不进入编码。
+
+## 2026-07-26：附件体验已验收，统一资源选择暂缓
+
+- A1 附件交互增强已完成提交与页面验收，后续能力以该提交作为稳定基线。
+- A2 统一资源选择已完成“文件 + Skills 统一 Dialog”设计和实施计划，但评估后认为当前可见收益有限，暂不进入编码。
+- 统一入口保留“上传本地文件”“从我的文件选择”，新增可发现的“选择 Skill”；`$` Skill 快捷选择继续保留。
+- 本批不提前纳入 MCP、A2A、API Tool、Project、Agent 或 Knowledge，也不修改后端消息协议。
+- 详细边界、方案与验收标准见 `docs/designs/chat-resource-picker.zh-CN.md`。
+
+## 2026-07-26：Project 首期收敛为 Session 单层目录
+
+- Project 首期只解决 Session 分组：创建、重命名、删除一级 Project，以及 Session 移入、移出和项目内新建任务。
+- 不实现子 Project、无限目录、项目详情页、协作、Prompt、记忆、Knowledge 或文件自动注入。
+- Project 删除只把 active/archived Session 移回“未分组”，不删除、停止或修改任何任务内容。
+- 归档保留 Project，分支默认继承来源 Project，运行中 Session 允许移动且不影响当前 Run。
+- 实现、迁移升降级、前后端全量、真实 API 和代码审查已通过；当前只待可用浏览器完成页面视觉/响应式门禁，并处理本批外既有静态检查项。
+- 详细设计见 `docs/designs/session-project-directory.zh-CN.md`。
 
 ## 2026-07-20：Human-in-the-loop 首期已落地
 

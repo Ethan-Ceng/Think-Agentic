@@ -512,6 +512,7 @@ export type StorageConfig = {
 export type Session = {
   session_id: string
   title: string
+  project_id: string | null
   latest_message: string
   latest_message_at: string | null
   status: SessionStatus
@@ -532,11 +533,28 @@ export type UpdateSessionOrganizationParams = {
   title?: string
   pinned?: boolean
   archived?: boolean
+  project_id?: string | null
 }
 
 export type CreateSessionParams = {
   title?: string
+  project_id?: string | null
   [key: string]: unknown
+}
+
+export type Project = {
+  id: string
+  name: string
+  created_at: string
+  updated_at: string
+}
+
+export type ProjectsData = {
+  projects: Project[]
+}
+
+export type ProjectNameParams = {
+  name: string
 }
 
 export type ChatMessage = {

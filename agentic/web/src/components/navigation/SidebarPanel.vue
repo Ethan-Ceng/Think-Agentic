@@ -67,12 +67,7 @@ function submitSearch() {
         </button>
       </form>
 
-      <div class="sidebar-section-heading">
-        <span>任务历史</span>
-        <span class="sidebar-status-dot" title="会话流已连接" />
-      </div>
-
-      <SessionSections />
+      <SessionSections :query="query" />
     </div>
   </div>
 </template>

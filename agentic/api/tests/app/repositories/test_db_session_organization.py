@@ -3,6 +3,7 @@ from datetime import datetime
 
 import pytest
 
+from app.core.entities.event import MessageEvent
 from app.core.entities.session import (
     NextMessage,
     Session,
@@ -53,6 +54,7 @@ def _record(
     title: str = "Generated title",
     title_is_manual: bool = False,
     is_pinned: bool = False,
+    project_id: str | None = None,
     archived_at: datetime | None = None,
     latest_message_at: datetime | None = None,
 ) -> SessionModel:
@@ -60,6 +62,7 @@ def _record(
     return SessionModel(
         id=session_id,
         user_id=user_id,
+        project_id=project_id,
         title=title,
         title_is_manual=title_is_manual,
         is_pinned=is_pinned,
@@ -83,6 +86,7 @@ def test_session_model_round_trips_organization_metadata():
     session = Session(
         user_id="user-1",
         title="Manual title",
+        project_id="project-1",
         title_is_manual=True,
         is_pinned=True,
         archived_at=archived_at,
@@ -94,6 +98,7 @@ def test_session_model_round_trips_organization_metadata():
     restored = record.to_domain()
 
     assert restored.title_is_manual is True
+    assert restored.project_id == "project-1"
     assert restored.is_pinned is True
     assert restored.archived_at == archived_at
 
@@ -336,5 +341,106 @@ def test_organization_patch_explicitly_preserves_business_updated_at():
         assert statement.startswith("UPDATE sessions")
         assert "updated_at=" in statement
         assert updated.updated_at == original_updated_at
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("status", "next_message", "archived"),
+    [
+        (SessionStatus.RUNNING.value, None, False),
+        (SessionStatus.WAITING.value, None, False),
+        (
+            SessionStatus.COMPLETED.value,
+            NextMessage(message="queued").model_dump(mode="json"),
+            False,
+        ),
+        (SessionStatus.COMPLETED.value, None, True),
+    ],
+)
+def test_project_move_preserves_runtime_content_and_archive_state(
+    status,
+    next_message,
+    archived,
+):
+    async def scenario():
+        archived_at = datetime.now() if archived else None
+        record = _record(
+            status=status,
+            next_message=next_message,
+            project_id="project-old",
+            archived_at=archived_at,
+            is_pinned=not archived,
+        )
+        record.unread_message_count = 3
+        event = MessageEvent(
+            id="event-1",
+            role="user",
+            message="keep me",
+        )
+        record.events = [event.model_dump(mode="json")]
+        original = {
+            "updated_at": record.updated_at,
+            "latest_message": record.latest_message,
+            "latest_message_at": record.latest_message_at,
+            "status": record.status,
+            "unread_message_count": record.unread_message_count,
+            "is_pinned": record.is_pinned,
+            "events": [event],
+            "next_message": (
+                NextMessage.model_validate(record.next_message)
+                if record.next_message is not None
+                else None
+            ),
+            "archived_at": record.archived_at,
+        }
+        fake = _FakeDBSession(
+            _Result(scalar=record),
+            _Result(rowcount=1),
+        )
+        repository = DBSessionRepository(fake)
+
+        moved = await repository.update_organization(
+            "session-1",
+            "user-1",
+            project_id="project-new",
+            project_id_provided=True,
+        )
+
+        statement = str(
+            fake.statements[1].compile(compile_kwargs={"literal_binds": True})
+        )
+        assert moved.project_id == "project-new"
+        assert "project_id=" in statement
+        for field_name, value in original.items():
+            assert getattr(moved, field_name) == value
+
+    asyncio.run(scenario())
+
+
+def test_explicit_null_unassigns_project_but_omission_keeps_it():
+    async def scenario():
+        assigned = _record(project_id="project-1")
+        fake = _FakeDBSession(
+            _Result(scalar=assigned),
+            _Result(rowcount=1),
+            _Result(scalar=assigned),
+        )
+        repository = DBSessionRepository(fake)
+
+        unassigned = await repository.update_organization(
+            "session-1",
+            "user-1",
+            project_id=None,
+            project_id_provided=True,
+        )
+        unchanged = await repository.update_organization(
+            "session-1",
+            "user-1",
+        )
+
+        assert unassigned.project_id is None
+        assert unchanged.project_id is None
+        assert len(fake.statements) == 3
 
     asyncio.run(scenario())

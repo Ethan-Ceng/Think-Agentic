@@ -86,6 +86,8 @@ class SessionRepository(Protocol):
             title: Optional[str] = None,
             pinned: Optional[bool] = None,
             archived: Optional[bool] = None,
+            project_id: Optional[str] = None,
+            project_id_provided: bool = False,
     ) -> Session:
         """原子更新所属会话的导航整理元数据"""
         ...

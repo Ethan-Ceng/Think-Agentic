@@ -246,6 +246,7 @@ class DBSessionRepository(SessionRepository):
         title_suffix = " · 分支"
         branch = Session(
             user_id=user_id,
+            project_id=source.project_id,
             title=f"{source.title[: 255 - len(title_suffix)]}{title_suffix}",
             latest_message=latest_message,
             latest_message_at=latest_message_at,
@@ -522,6 +523,8 @@ class DBSessionRepository(SessionRepository):
             title: Optional[str] = None,
             pinned: Optional[bool] = None,
             archived: Optional[bool] = None,
+            project_id: Optional[str] = None,
+            project_id_provided: bool = False,
     ) -> Session:
         """Atomically update user-owned navigation metadata."""
         result = await self.db_session.execute(
@@ -566,6 +569,8 @@ class DBSessionRepository(SessionRepository):
             values["archived_at"] = None
         if pinned is not None:
             values["is_pinned"] = pinned
+        if project_id_provided:
+            values["project_id"] = project_id
 
         if not values:
             return record.to_domain()

@@ -6,6 +6,8 @@ import { defineComponent, ref } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { sessionApi } from '@/lib/api/session'
 import type { Session } from '@/lib/api/types'
+import type { Project } from '@/lib/api/types'
+import { useProjectsStore } from '@/stores/projects'
 import ArchivedSessionsDialog from './ArchivedSessionsDialog.vue'
 
 const toastMocks = vi.hoisted(() => ({
@@ -32,6 +34,7 @@ function session(overrides: Partial<Session> = {}): Session {
   return {
     session_id: 'archived-1',
     title: 'Archived research',
+    project_id: null,
     latest_message: 'Final report',
     latest_message_at: '2026-07-23T10:00:00',
     status: 'completed',
@@ -43,9 +46,10 @@ function session(overrides: Partial<Session> = {}): Session {
   }
 }
 
-async function mountDialog() {
+async function mountDialog(projects: Project[] = []) {
   const pinia = createPinia()
   setActivePinia(pinia)
+  useProjectsStore().$patch({ projects })
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [
@@ -172,5 +176,27 @@ describe('ArchivedSessionsDialog', () => {
 
     expect(document.activeElement).toBe(opener.element)
     wrapper.unmount()
+  })
+
+  it('shows the retained Project name and falls back to ungrouped', async () => {
+    vi.spyOn(sessionApi, 'getSessions').mockResolvedValue({
+      sessions: [
+        session({ project_id: 'project-1' }),
+        session({ session_id: 'orphaned', title: 'Orphaned', project_id: 'gone' }),
+      ],
+    })
+    const wrapper = await mountDialog([
+      {
+        id: 'project-1',
+        name: 'Research',
+        created_at: '2026-07-26T10:00:00',
+        updated_at: '2026-07-26T10:00:00',
+      },
+    ])
+    await flushPromises()
+
+    const rows = wrapper.findAll('.archived-session-row')
+    expect(rows[0].text()).toContain('Research')
+    expect(rows[1].text()).toContain('未分组')
   })
 })

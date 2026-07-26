@@ -31,6 +31,7 @@ function session(overrides: Partial<Session> = {}): Session {
   return {
     session_id: 'session-1',
     title: 'Original title',
+    project_id: null,
     latest_message: 'latest',
     latest_message_at: '2026-07-24T10:00:00',
     status: 'completed',
@@ -104,6 +105,19 @@ describe('SessionListItem', () => {
     expect(wrapper.emitted('togglePin')).toHaveLength(1)
     expect(wrapper.emitted('archive')).toHaveLength(1)
     expect(wrapper.emitted('open')).toBeUndefined()
+  })
+
+  it('allows running, waiting, and queued sessions to open the move dialog', async () => {
+    for (const value of [
+      session({ status: 'running' }),
+      session({ status: 'waiting' }),
+      session({ has_next_message: true }),
+    ]) {
+      const wrapper = mountItem(value)
+      wrapper.findComponent(DropdownStub).vm.$emit('command', 'move')
+      await nextTick()
+      expect(wrapper.emitted('move')).toEqual([[value]])
+    }
   })
 
   it('disables archive while running, waiting, or queued', () => {

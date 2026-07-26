@@ -8,7 +8,7 @@ from app.core.entities.user import User
 from app.dependencies import get_agent_service, get_current_user, get_session_service
 from app.main import app
 from app.schemas.exceptions import ConflictError, NotFoundError
-from app.schemas.session import UpdateSessionOrganizationRequest
+from app.schemas.session import CreateSessionRequest, UpdateSessionOrganizationRequest
 
 
 class RecordingSessionService:
@@ -19,12 +19,23 @@ class RecordingSessionService:
         self.session = Session(
             id="session-1",
             user_id="user-auth",
+            project_id="project-1",
             title="Manual title",
             title_is_manual=True,
             is_pinned=True,
             latest_message="latest",
             latest_message_at=datetime.now(),
             status=SessionStatus.COMPLETED,
+        )
+
+    async def create_session(self, user_id: str, project_id: str | None = None):
+        self.calls.append(("create_session", user_id, project_id))
+        if self.error is not None:
+            raise self.error
+        return Session(
+            id=f"created-{len(self.calls)}",
+            user_id=user_id,
+            project_id=project_id,
         )
 
     async def get_all_sessions(self, user_id: str, archived: bool = False):
@@ -66,12 +77,59 @@ def test_update_request_contract_trims_title_and_rejects_empty_or_conflicting_pa
     assert request.title == "Manual title"
     assert request.model_fields_set == {"title"}
 
-    for payload in ({}, {"title": "  "}, {"archived": True, "pinned": True}):
+    unassign = UpdateSessionOrganizationRequest(project_id=None)
+    assert unassign.model_fields_set == {"project_id"}
+
+    for payload in (
+        {},
+        {"title": "  "},
+        {"title": None},
+        {"pinned": None},
+        {"archived": None},
+        {"archived": True, "pinned": True},
+    ):
         try:
             UpdateSessionOrganizationRequest(**payload)
         except ValidationError:
             continue
         raise AssertionError(f"payload should be rejected: {payload}")
+
+
+def test_create_request_accepts_no_body_empty_null_or_owned_project():
+    assert CreateSessionRequest().project_id is None
+    service = RecordingSessionService()
+    try:
+        with _client(service) as client:
+            no_body = client.post("/api/sessions")
+            empty = client.post("/api/sessions", json={})
+            explicit_null = client.post(
+                "/api/sessions",
+                json={"project_id": None},
+            )
+            assigned = client.post(
+                "/api/sessions",
+                json={"project_id": "project-1"},
+            )
+            invalid = client.post(
+                "/api/sessions",
+                json={"project_id": "project-1", "user_id": "other-user"},
+            )
+
+        assert [response.status_code for response in (
+            no_body,
+            empty,
+            explicit_null,
+            assigned,
+        )] == [200, 200, 200, 200]
+        assert invalid.status_code == 422
+        assert service.calls == [
+            ("create_session", "user-auth", None),
+            ("create_session", "user-auth", None),
+            ("create_session", "user-auth", None),
+            ("create_session", "user-auth", "project-1"),
+        ]
+    finally:
+        app.dependency_overrides.clear()
 
 
 def test_list_scope_defaults_active_and_can_request_archived():
@@ -92,6 +150,7 @@ def test_list_scope_defaults_active_and_can_request_archived():
         assert active.json()["data"]["sessions"][0]["is_pinned"] is True
         assert active.json()["data"]["sessions"][0]["archived_at"] is None
         assert active.json()["data"]["sessions"][0]["has_next_message"] is False
+        assert active.json()["data"]["sessions"][0]["project_id"] == "project-1"
     finally:
         app.dependency_overrides.clear()
 
@@ -108,6 +167,7 @@ def test_patch_route_uses_authenticated_owner_and_returns_list_item_contract():
         assert response.status_code == 200
         assert response.json()["data"]["title"] == "Manual title"
         assert response.json()["data"]["is_pinned"] is True
+        assert response.json()["data"]["project_id"] == "project-1"
         assert service.calls == [
             (
                 "update_organization",
@@ -117,6 +177,34 @@ def test_patch_route_uses_authenticated_owner_and_returns_list_item_contract():
                     "title": "Manual title",
                     "pinned": True,
                     "archived": None,
+                },
+            )
+        ]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_patch_route_distinguishes_project_omission_from_explicit_null():
+    service = RecordingSessionService()
+    try:
+        with _client(service) as client:
+            unassigned = client.patch(
+                "/api/sessions/session-1",
+                json={"project_id": None},
+            )
+
+        assert unassigned.status_code == 200
+        assert service.calls == [
+            (
+                "update_organization",
+                {
+                    "session_id": "session-1",
+                    "user_id": "user-auth",
+                    "title": None,
+                    "pinned": None,
+                    "archived": None,
+                    "project_id": None,
+                    "project_id_provided": True,
                 },
             )
         ]

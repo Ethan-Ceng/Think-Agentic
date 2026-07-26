@@ -123,6 +123,7 @@ def _source_record(
         SessionModel(
             id="source-1",
             user_id="user-1",
+            project_id="project-1",
             task_id="old-task",
             sandbox_id="old-sandbox",
             title="Original conversation",
@@ -180,6 +181,7 @@ def test_fork_copies_only_visible_messages_through_target_without_mutating_sourc
         assert branch.sandbox_id is None
         assert branch.task_id is None
         assert branch.memories == {}
+        assert branch.project_id == "project-1"
         assert branch.source_session_id == source.id
         assert branch.forked_from_event_id == "assistant-2"
         assert branch.branch_operation == BranchOperation.FORK
@@ -237,6 +239,7 @@ def test_edit_queues_replacement_with_original_attachments_and_skills():
         assert queued.skills == messages["user-2"].skills
         assert branch.latest_message == "revised second question"
         assert branch.status == SessionStatus.COMPLETED
+        assert branch.project_id == "project-1"
 
     asyncio.run(scenario())
 
@@ -262,6 +265,7 @@ def test_regenerate_replays_nearest_previous_user_turn():
         assert queued.message == messages["user-2"].message
         assert queued.attachment_ids == ["file-1"]
         assert queued.skills == messages["user-2"].skills
+        assert branch.project_id == "project-1"
 
     asyncio.run(scenario())
 

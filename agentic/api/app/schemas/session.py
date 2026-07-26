@@ -20,6 +20,7 @@ class SessionResponse(BaseModel):
     sandbox_id: Optional[str] = None
     task_id: Optional[str] = None
     title: str
+    project_id: Optional[str] = None
     unread_message_count: int = 0
     latest_message: str = ""
     latest_message_at: Optional[datetime] = None
@@ -31,6 +32,17 @@ class SessionResponse(BaseModel):
         from_attributes = True
 
 
+class CreateSessionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: Optional[str] = Field(default=None, min_length=1, max_length=255)
+
+    @field_validator("project_id", mode="before")
+    @classmethod
+    def trim_project_id(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+
 class CreateSessionResponse(BaseModel):
     """创建会话响应"""
     session_id: str
@@ -40,6 +52,7 @@ class ListSessionItem(BaseModel):
     """会话列表项"""
     session_id: str
     title: str
+    project_id: Optional[str] = None
     latest_message: str = ""
     latest_message_at: Optional[datetime] = None
     status: str
@@ -67,6 +80,7 @@ class GetSessionResponse(BaseModel):
     """获取会话详情响应"""
     session_id: str
     title: str
+    project_id: Optional[str] = None
     events: List[Any] = Field(default_factory=list)  # AgentSSEEvent 列表
     status: str
     unread_message_count: int = 0
@@ -85,6 +99,7 @@ class UpdateSessionOrganizationRequest(BaseModel):
     title: Optional[str] = Field(default=None, max_length=100)
     pinned: Optional[bool] = None
     archived: Optional[bool] = None
+    project_id: Optional[str] = Field(default=None, min_length=1, max_length=255)
 
     @field_validator("title")
     @classmethod
@@ -96,11 +111,18 @@ class UpdateSessionOrganizationRequest(BaseModel):
             raise ValueError("title cannot be blank")
         return value
 
+    @field_validator("project_id", mode="before")
+    @classmethod
+    def trim_organization_project_id(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
     @model_validator(mode="after")
     def validate_patch(self) -> "UpdateSessionOrganizationRequest":
         if not self.model_fields_set:
             raise ValueError("at least one organization field is required")
         for field_name in self.model_fields_set:
+            if field_name == "project_id":
+                continue
             if getattr(self, field_name) is None:
                 raise ValueError(f"{field_name} cannot be null")
         if self.archived is True and self.pinned is True:

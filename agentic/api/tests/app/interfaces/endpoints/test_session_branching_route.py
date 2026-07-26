@@ -24,6 +24,7 @@ class RecordingSessionService:
         self.branch = Session(
             id="branch-1",
             user_id="user-auth",
+            project_id="project-1",
             title="Source · 分支",
             source_session_id="source-1",
             forked_from_event_id="event-1",
@@ -34,6 +35,7 @@ class RecordingSessionService:
         self.source = Session(
             id="source-1",
             user_id="user-auth",
+            project_id="project-1",
             title="Source",
             status=SessionStatus.COMPLETED,
         )
@@ -150,6 +152,7 @@ def test_session_detail_only_returns_navigable_owned_source():
         assert data["source_session_title"] == "Source"
         assert data["forked_from_event_id"] == "event-1"
         assert data["branch_operation"] == "edit"
+        assert data["project_id"] == "project-1"
 
         service.source_available = False
         with TestClient(app) as client:

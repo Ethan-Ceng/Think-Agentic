@@ -213,6 +213,18 @@ export const useSessionsStore = defineStore('sessions', () => {
     return updated
   }
 
+  function unassignProject(projectId: string): void {
+    const unassign = (items: Session[]) =>
+      items.map((session) =>
+        session.project_id === projectId
+          ? { ...session, project_id: null }
+          : session,
+      )
+
+    sessions.value = unassign(sessions.value)
+    archivedSessions.value = unassign(archivedSessions.value)
+  }
+
   return {
     sessions: sortedSessions,
     archivedSessions,
@@ -227,5 +239,6 @@ export const useSessionsStore = defineStore('sessions', () => {
     clear,
     deleteSession,
     updateOrganization,
+    unassignProject,
   }
 })

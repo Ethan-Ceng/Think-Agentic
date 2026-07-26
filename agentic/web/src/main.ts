@@ -10,6 +10,7 @@ import './components/chat/chat.css'
 import './components/chat/tool-preview.css'
 import './components/chat/artifact-preview.css'
 import './components/chat/attachment-experience.css'
+import './components/project-directory.css'
 import { initializeTheme } from './lib/theme'
 
 initializeTheme()

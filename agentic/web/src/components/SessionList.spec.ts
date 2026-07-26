@@ -29,7 +29,9 @@ const SessionItemStub = defineComponent({
     active: Boolean,
     busy: Boolean,
   },
-  template: '<div class="stub-session">{{ session.title }}</div>',
+  emits: ['move'],
+  template:
+    '<button class="stub-session" @click="$emit(\'move\', session)">{{ session.title }}</button>',
 })
 
 const ArchivedDialogStub = defineComponent({
@@ -43,6 +45,7 @@ function session(overrides: Partial<Session>): Session {
   return {
     session_id: 'session-1',
     title: 'Task',
+    project_id: null,
     latest_message: '',
     latest_message_at: '2026-07-24T10:00:00',
     status: 'completed',
@@ -93,5 +96,46 @@ describe('SessionList organization groups', () => {
 
     await wrapper.get('.archived-sessions-entry').trigger('click')
     expect(wrapper.get('.stub-archived-dialog').attributes('data-open')).toBe('true')
+  })
+
+  it('renders supplied sessions flat and forwards move without date headings', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/', component: { template: '<div />' } }],
+    })
+    await router.push('/')
+    await router.isReady()
+    const supplied = [
+      session({ session_id: 'pinned', title: 'Pinned', is_pinned: true }),
+      session({ session_id: 'regular', title: 'Regular' }),
+    ]
+    const wrapper = mount(SessionList, {
+      props: {
+        items: supplied,
+        flat: true,
+        showEmpty: false,
+        showArchivedEntry: false,
+      },
+      global: {
+        plugins: [pinia, router],
+        stubs: {
+          SessionListItem: SessionItemStub,
+          ArchivedSessionsDialog: ArchivedDialogStub,
+        },
+      },
+    })
+
+    expect(wrapper.find('h3').exists()).toBe(false)
+    expect(wrapper.findAll('.stub-session').map((item) => item.text())).toEqual([
+      'Pinned',
+      'Regular',
+    ])
+    await wrapper.get('.stub-session').trigger('click')
+    expect(wrapper.emitted('move')?.[0]?.[0]).toMatchObject({
+      session_id: 'pinned',
+    })
+    expect(wrapper.find('.archived-sessions-entry').exists()).toBe(false)
   })
 })

@@ -6,6 +6,7 @@ import { useSettingsModal } from '@/composables/useSettingsModal'
 import { provideSidebar } from '@/composables/useSidebar'
 import { useAuthStore } from '@/stores/auth'
 import { useSessionsStore } from '@/stores/sessions'
+import { useProjectsStore } from '@/stores/projects'
 import type { SidebarSection } from '@/composables/useSidebar'
 
 const SIDEBAR_STORAGE_KEY = 'agentic.sidebar.expanded'
@@ -17,10 +18,12 @@ const isMobile = ref(window.innerWidth <= MOBILE_BREAKPOINT)
 const route = useRoute()
 const authStore = useAuthStore()
 const sessionsStore = useSessionsStore()
+const projectsStore = useProjectsStore()
 const settingsModal = useSettingsModal()
 const settingsOpen = settingsModal.open
 const SettingsModal = defineAsyncComponent(() => import('@/components/SettingsModal.vue'))
 const authRoute = computed(() => route.name === 'auth')
+let activeStoreUserId: string | null = null
 
 provideSidebar({
   open: sidebarOpen,
@@ -50,9 +53,7 @@ onMounted(async () => {
   window.addEventListener('resize', handleViewportResize)
   window.addEventListener('keydown', handleGlobalKeydown)
   await authStore.initialize()
-  if (authStore.isAuthenticated) {
-    sessionsStore.start()
-  }
+  syncAuthenticatedStores()
 })
 
 onBeforeUnmount(() => {
@@ -75,6 +76,24 @@ function handleGlobalKeydown(event: KeyboardEvent) {
   }
 }
 
+function syncAuthenticatedStores() {
+  if (!authStore.isAuthenticated) {
+    sessionsStore.stop()
+    projectsStore.clear()
+    activeStoreUserId = null
+    return
+  }
+
+  sessionsStore.start()
+  const userId = authStore.user?.id ?? null
+  if (userId && activeStoreUserId === userId) return
+  activeStoreUserId = userId
+  projectsStore.clear()
+  void projectsStore.load().catch(() => {
+    // The sidebar exposes a safe fallback and retry state.
+  })
+}
+
 watch(sidebarOpen, (expanded) => {
   if (!isMobile.value) {
     window.localStorage.setItem(SIDEBAR_STORAGE_KEY, String(expanded))
@@ -82,14 +101,8 @@ watch(sidebarOpen, (expanded) => {
 })
 
 watch(
-  () => authStore.isAuthenticated,
-  (authenticated) => {
-    if (authenticated) {
-      sessionsStore.start()
-    } else {
-      sessionsStore.stop()
-    }
-  },
+  () => [authStore.isAuthenticated, authStore.user?.id] as const,
+  syncAuthenticatedStores,
 )
 </script>
 

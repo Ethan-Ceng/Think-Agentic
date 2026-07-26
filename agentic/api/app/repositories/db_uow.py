@@ -17,6 +17,7 @@ from .db_config_repository import DBConfigRepository
 from .db_trace_repository import DBTraceRepository
 from .db_search_repository import DBSearchRepository
 from .db_skill_repository import DBSkillRepository
+from .db_project_repository import DBProjectRepository
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,7 @@ class DBUnitOfWork(IUnitOfWork):
         self.trace = DBTraceRepository(db_session=self.db_session)
         self.search = DBSearchRepository(db_session=self.db_session)
         self.skill = DBSkillRepository(db_session=self.db_session)
+        self.project = DBProjectRepository(db_session=self.db_session)
         return self
 
     @staticmethod

@@ -14,6 +14,7 @@ from sqlalchemy import (
     DateTime,
     Boolean,
     Text,
+    ForeignKeyConstraint,
     text,
     PrimaryKeyConstraint,
     Index,
@@ -38,7 +39,14 @@ class SessionModel(Base):
     __tablename__ = "sessions"
     __table_args__ = (
         PrimaryKeyConstraint("id", name="pk_sessions_id"),
+        ForeignKeyConstraint(
+            ["project_id"],
+            ["projects.id"],
+            name="fk_sessions_project_id_projects",
+            ondelete="SET NULL",
+        ),
         Index("ix_sessions_source_session_id", "source_session_id"),
+        Index("ix_sessions_user_project_id", "user_id", "project_id"),
         Index("ux_sessions_branch_request_id", "branch_request_id", unique=True),
         Index(
             "ix_sessions_user_archive_pin_latest",
@@ -56,6 +64,7 @@ class SessionModel(Base):
         default=lambda: str(uuid.uuid4()),
     )
     user_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    project_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     sandbox_id: Mapped[str] = mapped_column(String(255), nullable=True)
     task_id: Mapped[str] = mapped_column(String(255), nullable=True)
     title: Mapped[str] = mapped_column(

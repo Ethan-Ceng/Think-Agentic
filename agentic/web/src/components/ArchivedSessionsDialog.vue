@@ -8,6 +8,7 @@ import { useToast } from '@/composables/useToast'
 import type { Session } from '@/lib/api/types'
 import { formatRelativeDate } from '@/lib/utils'
 import { useSessionsStore } from '@/stores/sessions'
+import { useProjectsStore } from '@/stores/projects'
 
 const props = defineProps<{
   open: boolean
@@ -19,6 +20,7 @@ const emit = defineEmits<{
 
 const router = useRouter()
 const sessionsStore = useSessionsStore()
+const projectsStore = useProjectsStore()
 const toast = useToast()
 const query = ref('')
 const busyAction = ref<{ sessionId: string; action: 'restore' | 'delete' } | null>(
@@ -71,6 +73,14 @@ function isBusy(session: Session, action?: 'restore' | 'delete') {
   return (
     busyAction.value?.sessionId === session.session_id &&
     (!action || busyAction.value.action === action)
+  )
+}
+
+function projectName(session: Session): string {
+  if (!session.project_id) return '未分组'
+  return (
+    projectsStore.projects.find((project) => project.id === session.project_id)
+      ?.name ?? '未分组'
   )
 }
 
@@ -204,6 +214,9 @@ async function permanentlyDeleteSession(session: Session) {
             <span class="archived-session-title">{{ session.title || '新任务' }}</span>
             <span class="archived-session-message">
               {{ session.latest_message || '暂无消息' }}
+            </span>
+            <span class="archived-session-project">
+              {{ projectName(session) }}
             </span>
             <span class="archived-session-date">
               归档于 {{ formatRelativeDate(session.archived_at) }}

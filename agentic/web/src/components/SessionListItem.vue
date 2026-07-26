@@ -9,6 +9,7 @@ import {
   Pencil,
   Pin,
   PinOff,
+  FolderInput,
   Trash,
   X,
 } from 'lucide-vue-next'
@@ -28,6 +29,7 @@ const emit = defineEmits<{
   rename: [session: Session, title: string]
   togglePin: [session: Session]
   archive: [session: Session]
+  move: [session: Session]
   delete: [session: Session]
 }>()
 
@@ -92,6 +94,7 @@ function submitRename() {
 function handleCommand(command: string | number | object) {
   if (command === 'rename') void beginRename()
   else if (command === 'pin') emit('togglePin', props.session)
+  else if (command === 'move') emit('move', props.session)
   else if (command === 'archive' && !archiveDisabled.value) emit('archive', props.session)
   else if (command === 'delete') emit('delete', props.session)
 }
@@ -187,6 +190,10 @@ function handleCommand(command: string | number | object) {
               <PinOff v-if="session.is_pinned" :size="14" />
               <Pin v-else :size="14" />
               <span>{{ session.is_pinned ? '取消置顶' : '置顶' }}</span>
+            </ElDropdownItem>
+            <ElDropdownItem command="move" class="session-action-dropdown-item">
+              <FolderInput :size="14" />
+              <span>移动到项目</span>
             </ElDropdownItem>
             <ElDropdownItem
               command="archive"
