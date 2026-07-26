@@ -1,14 +1,17 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import ChatComposer from '@/components/chat/ChatComposer.vue'
+import ChatFilePickerDialog from '@/components/chat/ChatFilePickerDialog.vue'
 import { useToast } from '@/composables/useToast'
 import { fileApi } from '@/lib/api/file'
 import {
   completeComposerUpload,
   createLocalComposerAttachment,
-  toComposerAttachmentMetadata,
+  isPreviewableComposerImage,
+  mergeLibraryComposerAttachments,
   type ComposerAttachmentFile,
   type ComposerAttachmentMetadata,
+  type FilePickerSelection,
 } from '@/lib/composer-attachments'
 import { useSkillsStore } from '@/stores/skills'
 import type { SendMessageInput, SkillRef, SkillSummary } from '@/types/skill'
@@ -60,17 +63,24 @@ const toast = useToast()
 const skillsStore = useSkillsStore()
 type UploadEntry = ComposerAttachmentFile & {
   rawFile?: File
-  fileInfo?: ComposerAttachmentMetadata
 }
 
 const uploadItems = ref<UploadEntry[]>([])
 const uploading = computed(() => uploadItems.value.some((file) => file.uploadStatus === 'uploading'))
+const selectedFileIds = computed(() =>
+  uploadItems.value
+    .filter((file) => file.uploadStatus === 'uploaded')
+    .map((file) => file.id),
+)
 const sending = ref(false)
 const inputValue = ref(readSessionDraft(props.sessionId))
 const selectedSkills = ref<SkillRef[]>([])
+const filePickerOpen = ref(false)
 const fileInputRef = ref<HTMLInputElement | null>(null)
 const composerRef = ref<InstanceType<typeof ChatComposer> | null>(null)
 let uploadEntryId = 0
+let previewRequestVersion = 0
+const previewRequests = new Map<string, number>()
 
 function setInputText(text: string) {
   inputValue.value = text
@@ -85,8 +95,14 @@ function getInputValue() {
 
 function getFiles() {
   return uploadItems.value
-    .filter((file) => file.uploadStatus === 'uploaded' && file.fileInfo)
-    .map((file) => file.fileInfo as ComposerAttachmentMetadata)
+    .filter((file) => file.uploadStatus === 'uploaded')
+    .map((file): ComposerAttachmentMetadata => ({
+      id: file.id,
+      filename: file.filename,
+      extension: file.extension,
+      size: file.size,
+      contentType: file.contentType,
+    }))
 }
 
 function skillKey(skill: SkillRef): string {
@@ -134,10 +150,23 @@ async function handleFileSelect(event: Event) {
 
 function createUploadEntry(file: File): UploadEntry {
   uploadEntryId += 1
-  return {
+  const entry: UploadEntry = {
     ...createLocalComposerAttachment(file, `local-${Date.now()}-${uploadEntryId}`),
     rawFile: file,
   }
+
+  if (
+    isPreviewableComposerImage(entry) &&
+    typeof URL.createObjectURL === 'function'
+  ) {
+    try {
+      entry.previewUrl = URL.createObjectURL(file)
+    } catch {
+      // Preview is optional; upload remains usable when object URLs are unavailable.
+    }
+  }
+
+  return entry
 }
 
 function patchUploadEntry(fileId: string, patch: Partial<UploadEntry>) {
@@ -164,7 +193,7 @@ async function uploadEntry(entry: UploadEntry) {
     const completed = completeComposerUpload(entry, uploadedFile)
     patchUploadEntry(entry.id, {
       ...completed,
-      fileInfo: toComposerAttachmentMetadata(uploadedFile),
+      rawFile: undefined,
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : '上传失败'
@@ -184,7 +213,80 @@ async function uploadFiles(selectedFiles: File[]) {
   await Promise.all(entries.map(uploadEntry))
 }
 
+function revokePreviewUrl(previewUrl?: string): void {
+  if (!previewUrl || typeof URL.revokeObjectURL !== 'function') return
+  URL.revokeObjectURL(previewUrl)
+}
+
+function invalidatePreviewRequest(fileId: string): void {
+  previewRequests.delete(fileId)
+}
+
+function clearAttachments(): void {
+  previewRequests.clear()
+  previewRequestVersion += 1
+  for (const file of uploadItems.value) revokePreviewUrl(file.previewUrl)
+  uploadItems.value = []
+}
+
+async function loadLibraryPreview(entry: UploadEntry): Promise<void> {
+  if (!isPreviewableComposerImage(entry)) return
+
+  const request = ++previewRequestVersion
+  previewRequests.set(entry.id, request)
+
+  try {
+    const blob = await fileApi.previewFile(entry.id)
+    if (
+      previewRequests.get(entry.id) !== request ||
+      !uploadItems.value.some((file) => file.id === entry.id)
+    ) {
+      return
+    }
+
+    const previewUrl = URL.createObjectURL(blob)
+    if (
+      previewRequests.get(entry.id) !== request ||
+      !uploadItems.value.some((file) => file.id === entry.id)
+    ) {
+      revokePreviewUrl(previewUrl)
+      return
+    }
+
+    const current = uploadItems.value.find((file) => file.id === entry.id)
+    if (current?.previewUrl && current.previewUrl !== previewUrl) {
+      revokePreviewUrl(current.previewUrl)
+    }
+    patchUploadEntry(entry.id, { previewUrl })
+  } catch {
+    // Thumbnail loading is non-blocking; the Composer falls back to the file icon.
+  } finally {
+    if (previewRequests.get(entry.id) === request) {
+      previewRequests.delete(entry.id)
+    }
+  }
+}
+
+function openFileLibrary(): void {
+  filePickerOpen.value = true
+}
+
+function addLibraryFiles(selected: FilePickerSelection[]): void {
+  const existingIds = new Set(uploadItems.value.map((file) => file.id))
+  const merged = mergeLibraryComposerAttachments(uploadItems.value, selected) as UploadEntry[]
+  const added = merged.filter(
+    (file) => file.origin === 'library' && !existingIds.has(file.id),
+  )
+
+  uploadItems.value = merged
+  filePickerOpen.value = false
+  for (const file of added) void loadLibraryPreview(file)
+}
+
 function removeFile(fileId: string) {
+  const entry = uploadItems.value.find((file) => file.id === fileId)
+  invalidatePreviewRequest(fileId)
+  revokePreviewUrl(entry?.previewUrl)
   uploadItems.value = uploadItems.value.filter((file) => file.id !== fileId)
 }
 
@@ -228,7 +330,7 @@ async function handleSend() {
     writeSessionDraft(sendingSessionId, '')
     if (props.sessionId === sendingSessionId) {
       inputValue.value = ''
-      uploadItems.value = []
+      clearAttachments()
       selectedSkills.value = []
       emit('inputValueChange', '')
       composerRef.value?.focus()
@@ -249,7 +351,8 @@ watch(
   (nextSessionId, previousSessionId) => {
     writeSessionDraft(previousSessionId, inputValue.value)
     inputValue.value = readSessionDraft(nextSessionId)
-    uploadItems.value = []
+    clearAttachments()
+    filePickerOpen.value = false
     selectedSkills.value = []
     emit('inputValueChange', inputValue.value)
   },
@@ -259,6 +362,10 @@ onMounted(() => {
   if (skillsStore.skills.length === 0) {
     void skillsStore.loadSkills().catch(() => undefined)
   }
+})
+
+onBeforeUnmount(() => {
+  clearAttachments()
 })
 </script>
 
@@ -275,6 +382,7 @@ onMounted(() => {
     :selected-skills="selectedSkills"
     @update:model-value="handleInputChange"
     @attach="fileInputRef?.click()"
+    @open-file-library="openFileLibrary"
     @remove-file="removeFile"
     @retry-file="retryFile"
     @paste-files="uploadFiles"
@@ -282,6 +390,12 @@ onMounted(() => {
     @stop="handleStop"
     @select-skill="selectSkill"
     @remove-skill="removeSkill"
+  />
+
+  <ChatFilePickerDialog
+    v-model="filePickerOpen"
+    :selected-ids="selectedFileIds"
+    @confirm="addLibraryFiles"
   />
 
   <input

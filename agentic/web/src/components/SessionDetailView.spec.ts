@@ -39,8 +39,14 @@ vi.mock('@/lib/api/session', () => ({
 
 const ChatInputStub = defineComponent({
   name: 'ChatInput',
-  props: { disabled: Boolean },
-  template: '<div class="stub-chat-input" :data-disabled="disabled" />',
+  props: {
+    disabled: Boolean,
+    isRunning: Boolean,
+    onSend: Function,
+    sessionId: String,
+  },
+  template:
+    '<div class="stub-chat-input" :data-disabled="disabled" :data-running="isRunning" />',
 })
 
 const ArchivedDialogStub = defineComponent({
@@ -323,6 +329,77 @@ describe('SessionDetailView archived state', () => {
 
     await wrapper.get('.archived-session-banner button').trigger('click')
     expect(wrapper.get('.stub-archived-dialog').attributes('data-open')).toBe('true')
+  })
+})
+
+describe('SessionDetailView attachment sending', () => {
+  beforeEach(() => {
+    mocks.toastInfo.mockReset()
+    mocks.getBranchFamily.mockReset()
+    mocks.createBranch.mockReset()
+    mocks.stopSession.mockReset()
+  })
+
+  it('passes attachment IDs through the normal session send path', async () => {
+    const detail = makeDetail({ status: 'completed' })
+    mocks.detail = detail
+    const { wrapper } = await mountView('/sessions/session-1', 'session-1')
+    const chatInput = wrapper.getComponent(ChatInputStub)
+    const onSend = chatInput.props('onSend') as (
+      input: {
+        message: string
+        attachmentIds: string[]
+        skills: never[]
+      },
+      files: Array<{
+        id: string
+        filename: string
+        extension: string
+        size: number
+        contentType: string
+      }>,
+    ) => Promise<void>
+    const input = {
+      message: 'review the file',
+      attachmentIds: ['library-1'],
+      skills: [] as never[],
+    }
+
+    await onSend(input, [{
+      id: 'library-1',
+      filename: 'notes.pdf',
+      extension: 'pdf',
+      size: 128,
+      contentType: 'application/pdf',
+    }])
+
+    expect(detail.sendMessage).toHaveBeenCalledWith(input)
+    expect(detail.queueNextMessage).not.toHaveBeenCalled()
+  })
+
+  it('passes attachment IDs through the running-session next-message queue', async () => {
+    const detail = makeDetail({ status: 'running' })
+    mocks.detail = detail
+    const { wrapper } = await mountView('/sessions/session-1', 'session-1')
+    const chatInput = wrapper.getComponent(ChatInputStub)
+    const onSend = chatInput.props('onSend') as (
+      input: {
+        message: string
+        attachmentIds: string[]
+        skills: never[]
+      },
+      files: never[],
+    ) => Promise<void>
+    const input = {
+      message: 'use this next',
+      attachmentIds: ['library-queue'],
+      skills: [] as never[],
+    }
+
+    await onSend(input, [])
+
+    expect(detail.queueNextMessage).toHaveBeenCalledWith(input)
+    expect(detail.sendMessage).not.toHaveBeenCalled()
   })
 })
 

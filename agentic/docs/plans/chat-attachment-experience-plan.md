@@ -8,12 +8,12 @@
 
 ## 当前进度
 
-- 整体状态：`IN_PROGRESS`
-- 当前阶段：implementation
-- 当前任务：无（等待开始 Task 3）
-- 已完成：2 / 5
-- 阻塞问题：无
-- 最近更新时间：2026-07-25（Asia/Shanghai）
+- 整体状态：`BLOCKED`
+- 当前阶段：page-acceptance-blocked
+- 当前任务：Task 5：完成全量回归、页面验收和代码审查
+- 已完成：4 / 5
+- 阻塞问题：当前会话无可控制的真实浏览器实例，无法完成桌面、390px、暗色、真实拖放和焦点流页面验收
+- 最近更新时间：2026-07-26 11:01（Asia/Shanghai）
 
 ## 全局约束
 
@@ -37,6 +37,12 @@
 | 2026-07-25 23:30 | `IN_PROGRESS` | 无 | Task 1 定向测试、类型和静态检查通过，等待 Task 2 |
 | 2026-07-26 | `IN_PROGRESS` | Task 2 | 开始实现目录、筛选、分页、跨页选择和请求竞态 |
 | 2026-07-26 05:21 | `IN_PROGRESS` | 无 | Task 2 定向测试、类型和静态检查通过，等待 Task 3 |
+| 2026-07-26 | `IN_PROGRESS` | Task 3 | 开始实现附件来源菜单、文件拖拽状态和图片缩略卡片 |
+| 2026-07-26 05:31 | `IN_PROGRESS` | 无 | Task 3 定向测试、类型、上传衔接回归和静态检查通过，等待 Task 4 |
+| 2026-07-26 | `IN_PROGRESS` | Task 4 | 开始接入文件库选择、统一附件队列、图片预览生命周期和 Session 边界 |
+| 2026-07-26 10:28 | `IN_PROGRESS` | 无 | Task 4 文件库、预览生命周期、首页、Session、运行中队列和静态检查通过，等待 Task 5 |
+| 2026-07-26 | `VERIFYING` | Task 5 | 开始全量测试、生产构建、页面验收、变更边界检查和代码审查 |
+| 2026-07-26 11:01 | `BLOCKED` | Task 5 | 自动化、类型、构建、边界和自检完成；真实浏览器页面验收环境不可用 |
 
 ## Task 1：建立统一 Composer 附件视图模型
 
@@ -190,7 +196,7 @@
 
 ## Task 3：实现附件菜单、拖拽覆盖和图片卡片
 
-状态：pending
+状态：completed
 
 ### 目标
 
@@ -232,20 +238,44 @@
 
 ### 执行结果
 
-待执行。
+- 将回形针入口升级为原生可访问附件菜单，保留现有本地文件 `attach` 事件并新增 `openFileLibrary` 事件；Escape、菜单外点击和选项触发均会关闭菜单，Escape 恢复触发器焦点。
+- 在 Composer 根区域增加只识别 `DataTransfer.types` 中 `Files` 的拖拽状态和覆盖提示，使用进入深度消除子元素 `dragleave` 闪烁；禁用、发送中或上传中不接收投放。
+- 文件投放与剪贴板文件继续发出同一个 `pasteFiles` 事件，因此沿用 `ChatInput.uploadFiles` 上传状态机；非文件拖动不阻止浏览器默认行为。
+- 安全栅格图片在存在 `previewUrl` 时显示缩略图；SVG、非图片、无 URL 或图片加载失败均降级为现有文件状态图标，不影响重试、移除或发送。
+- 在独立附件体验样式中补充菜单、拖拽覆盖层和图片缩略卡样式；Dialog 打开、已有文件合并和 Blob URL 创建/回收仍由 Task 4 接入。
 
 ### 验证证据
 
 ```text
-命令：待执行
-退出状态：待执行
-关键结果：待执行
-执行时间：待执行
+命令：pnpm test:run -- src/components/chat/ChatComposer.attachments.spec.ts
+退出状态：1（预期失败）
+关键结果：5 项新测试全部在旧组件上失败，证明附件菜单、拖拽覆盖与图片缩略图测试先于实现
+执行时间：2026-07-26 05:26（Asia/Shanghai）
+
+命令：pnpm test:run -- src/components/chat/ChatComposer.attachments.spec.ts src/components/chat/ChatComposer.runtime.spec.ts src/components/chat/ChatComposer.skills.spec.ts
+退出状态：0
+关键结果：3 个测试文件、10 项测试全部通过
+执行时间：2026-07-26 05:28（Asia/Shanghai）
+
+命令：pnpm test:run -- src/components/chat/ChatComposer.attachments.spec.ts src/components/chat/ChatComposer.runtime.spec.ts src/components/chat/ChatComposer.skills.spec.ts src/components/chat/ChatInput.spec.ts
+退出状态：0
+关键结果：4 个测试文件、16 项测试全部通过，覆盖 Composer 交互与 ChatInput 上传衔接回归
+执行时间：2026-07-26 05:30（Asia/Shanghai）
+
+命令：pnpm type-check
+退出状态：0
+关键结果：vue-tsc -b 通过
+执行时间：2026-07-26 05:29（Asia/Shanghai）
+
+命令：git diff --check；git diff --exit-code HEAD -- agentic/web/src/components.d.ts agentic/web/src/auto-imports.d.ts
+退出状态：0
+关键结果：静态格式通过；自动组件和自动导入声明均无差异
+执行时间：2026-07-26 05:31（Asia/Shanghai）
 ```
 
 ## Task 4：接入已有文件、预览生命周期与 Session 边界
 
-状态：pending
+状态：completed
 
 ### 目标
 
@@ -293,20 +323,55 @@
 
 ### 执行结果
 
-待执行。
+- `ChatInput` 接入 `ChatFilePickerDialog`，将 Composer 已上传附件 ID 传给 Dialog，并使用统一合并函数稳定去重；文件库选择直接形成 uploaded 附件，不调用 `uploadFile`。
+- `getFiles` 从统一附件集合收窄生成安全消息元数据，因此本地上传和文件库附件沿用同一 `attachmentIds` 发送协议、optimistic message 与运行中下一条消息队列。
+- 本地安全栅格图片在进入上传队列时立即创建对象 URL；文件库图片通过现有鉴权 `previewFile` 懒加载 Blob 后创建对象 URL，预览失败静默降级为文件图标。
+- 用请求版本和附件存在性校验隔离迟到的文件库预览；移除、发送成功、Session 切换、组件卸载和 URL 替换都会精确撤销对象 URL。
+- 上传或发送失败保留附件与预览；旧 Session 发送迟到完成时不会清除新 Session 的草稿或附件，旧上传迟到完成也不会重新插入已清空队列。
+- 新增首页初始化参数、普通 Session 发送和 running Session 下一条消息附件 ID 回归；未修改 `HomeView`、`SessionDetailView` 生产逻辑、后端、数据库、依赖或 lockfile。
 
 ### 验证证据
 
 ```text
-命令：待执行
-退出状态：待执行
-关键结果：待执行
-执行时间：待执行
+命令：pnpm test:run -- src/components/chat/ChatInput.attachments.spec.ts
+退出状态：1（预期失败）
+关键结果：7 项新测试在未接入 Dialog、预览和 URL 生命周期的旧 ChatInput 上全部失败
+执行时间：2026-07-26 10:20（Asia/Shanghai）
+
+命令：pnpm test:run -- src/components/chat/ChatInput.attachments.spec.ts
+退出状态：0
+关键结果：1 个测试文件、7 项附件集成测试全部通过
+执行时间：2026-07-26 10:21（Asia/Shanghai）
+
+命令：pnpm test:run -- src/components/chat/ChatInput.attachments.spec.ts src/components/chat/ChatInput.spec.ts src/components/SessionDetailView.spec.ts src/views/HomeView.spec.ts src/lib/session-init.spec.ts
+退出状态：0
+关键结果：5 个测试文件、29 项测试全部通过，覆盖首页、普通 Session、running queue、快速切换和失败保留
+执行时间：2026-07-26 10:23（Asia/Shanghai）
+
+命令：pnpm type-check
+退出状态：1
+关键结果：新增 SessionDetailView 测试直接访问 unknown mock 导致 4 项 TS18046；生产代码无类型错误
+执行时间：2026-07-26 10:24（Asia/Shanghai）
+
+命令：pnpm type-check
+退出状态：0
+关键结果：测试改为保留具体 detail 引用后 vue-tsc -b 通过
+执行时间：2026-07-26 10:25（Asia/Shanghai）
+
+命令：pnpm test:run -- src/lib/composer-attachments.spec.ts src/components/chat/ChatFilePickerDialog.spec.ts src/components/chat/ChatComposer.attachments.spec.ts src/components/chat/ChatComposer.runtime.spec.ts src/components/chat/ChatComposer.skills.spec.ts src/components/chat/ChatInput.attachments.spec.ts src/components/chat/ChatInput.spec.ts src/components/SessionDetailView.spec.ts src/views/HomeView.spec.ts src/lib/session-init.spec.ts
+退出状态：0
+关键结果：10 个测试文件、51 项附件体验与发送链路测试全部通过
+执行时间：2026-07-26 10:26（Asia/Shanghai）
+
+命令：git diff --check；git diff --exit-code HEAD -- agentic/web/src/components.d.ts agentic/web/src/auto-imports.d.ts
+退出状态：0
+关键结果：静态格式通过；自动组件和自动导入声明均已恢复基线
+执行时间：2026-07-26 10:28（Asia/Shanghai）
 ```
 
 ## Task 5：完成全量回归、页面验收和代码审查
 
-状态：pending
+状态：blocked
 
 ### 目标
 
@@ -354,15 +419,54 @@
 
 ### 执行结果
 
-待执行。
+- 首轮全量测试、类型检查和生产构建通过；相对 `16ccd1e` 的后端、依赖、lockfile、生成组件和自动导入声明均为零差异。
+- 代码自检发现并修复一项 `major`：只有 `Files` 标记但没有实际文件的 drop 会错误拦截默认行为，且类型信息被清空的 `dragleave` 可能留下覆盖层；新增回归后重跑全部门禁。
+- 修复后的最新全量结果为 39 个测试文件、149 项测试通过，`vue-tsc -b` 和 Vite 生产构建通过。
+- 本地 Vite 服务可启动且 `http://127.0.0.1:5173/` 返回 `200 OK`；临时服务已退出。
+- `pnpm format:check` 和 `pnpm lint` 未执行，因为项目未定义这两个脚本；静态门禁使用计划规定的 `git diff --check`、类型检查和生产构建。
+- 已创建 `agentic/docs/reviews/chat-attachment-experience-review.md`；代码层无未处理 blocking/major，但因真实页面验收不可执行，审查未给出 `APPROVED`。
 
 ### 验证证据
 
 ```text
-命令：待执行
-退出状态：待执行
-关键结果：待执行
-执行时间：待执行
+命令：pnpm test:run
+退出状态：0
+关键结果：首轮 39 个测试文件、148 项测试全部通过
+执行时间：2026-07-26 10:49（Asia/Shanghai）
+
+命令：pnpm type-check；pnpm build
+退出状态：0
+关键结果：vue-tsc -b 通过；Vite 生产构建通过，3669 个模块完成转换
+执行时间：2026-07-26 10:51（Asia/Shanghai）
+
+命令：curl.exe -I http://127.0.0.1:5173/
+退出状态：0
+关键结果：本地页面返回 HTTP/1.1 200 OK
+执行时间：2026-07-26 10:54（Asia/Shanghai）
+
+命令：pnpm test:run -- src/components/chat/ChatComposer.attachments.spec.ts src/components/chat/ChatComposer.runtime.spec.ts src/components/chat/ChatComposer.skills.spec.ts
+退出状态：0
+关键结果：审查修复后 3 个测试文件、11 项 Composer 测试通过
+执行时间：2026-07-26 10:57（Asia/Shanghai）
+
+命令：pnpm test:run
+退出状态：0
+关键结果：审查修复后 39 个测试文件、149 项测试全部通过
+执行时间：2026-07-26 10:58（Asia/Shanghai）
+
+命令：pnpm type-check；pnpm build
+退出状态：0
+关键结果：审查修复后类型检查与生产构建再次通过，3669 个模块完成转换
+执行时间：2026-07-26 10:59（Asia/Shanghai）
+
+命令：git diff --check；git diff --exit-code 16ccd1e -- agentic/api agentic/web/package.json agentic/web/pnpm-lock.yaml agentic/web/src/components.d.ts agentic/web/src/auto-imports.d.ts
+退出状态：0
+关键结果：静态格式通过；后端、依赖、lockfile 和生成声明无差异
+执行时间：2026-07-26 11:01（Asia/Shanghai）
+
+手工页面验收：阻塞
+关键结果：浏览器控制返回 No browser is available，故障文档又指向已失效插件版本；未绕过技能约束使用独立自动化
+执行时间：2026-07-26 10:53（Asia/Shanghai）
 ```
 
 ## 计划变更
@@ -390,36 +494,36 @@ git diff 16ccd1e -- agentic/api agentic/web/package.json agentic/web/pnpm-lock.y
 
 ### 执行结果
 
-- 单元测试：未执行。
-- 集成测试：未执行。
-- 静态检查：未执行。
-- 类型检查：未执行。
-- 构建：未执行。
-- 数据库迁移：不适用；设计不允许后端或数据库变化，实施后需确认。
-- 手工验证：未执行。
-- 代码审查：未执行。
+- 单元测试：通过；39 个测试文件、149 项测试。
+- 集成测试：通过；首页、普通 Session、running queue、Dialog、上传与预览生命周期均有定向覆盖。
+- 静态检查：通过；`git diff --check` 退出 0，生成声明恢复基线。
+- 类型检查：通过；`pnpm type-check` 退出 0。
+- 构建：通过；`pnpm build` 退出 0，3669 个模块完成转换。
+- 数据库迁移：不适用；后端与数据库相对基线无差异。
+- 手工验证：部分；本地页面 HTTP 200，真实浏览器页面验收因环境不可用而阻塞。
+- 代码审查：代码自检无未处理 blocking/major；审查过程中发现的拖拽 major 已修复并重验，但最终结论等待页面验收。
 
 ### 验收标准检查
 
-- [ ] 文件拖入 Composer 显示稳定覆盖，释放后进入现有上传队列。
-- [ ] 文本、链接和页面内部拖动不触发上传或阻断默认行为。
-- [ ] 粘贴、点击和拖拽共用上传状态、失败重试和发送规则。
-- [ ] 回形针菜单可上传本地文件或打开“我的文件”。
-- [ ] 文件 Dialog 支持目录、搜索、筛选、分页、多选和完整状态。
-- [ ] 取消不改附件，确认直接复用 ID且不调用上传 API。
-- [ ] 已有文件去重，跨目录/分页选择不丢失。
-- [ ] 图片缩略图正确，失败降级且不阻止发送。
-- [ ] Blob URL 在所有退出路径撤销。
-- [ ] 首页、普通 Session、running queue 和快速 Session 切换正确。
-- [ ] 发送失败保留附件，成功清理不影响其他 Session。
+- [x] 文件拖入 Composer 显示稳定覆盖，释放后进入现有上传队列。
+- [x] 文本、链接、空文件列表和页面内部拖动不触发上传或阻断默认行为。
+- [x] 粘贴、点击和拖拽共用上传状态、失败重试和发送规则。
+- [x] 回形针菜单可上传本地文件或打开“我的文件”。
+- [x] 文件 Dialog 支持目录、搜索、筛选、分页、多选和完整状态。
+- [x] 取消不改附件，确认直接复用 ID且不调用上传 API。
+- [x] 已有文件去重，跨目录/分页选择不丢失。
+- [x] 图片缩略图正确，失败降级且不阻止发送。
+- [x] Blob URL 在所有退出路径撤销。
+- [x] 首页、普通 Session、running queue 和快速 Session 切换正确。
+- [x] 发送失败保留附件，成功清理不影响其他 Session。
 - [ ] 桌面、390px、暗色、键盘、焦点和无横向溢出通过。
-- [ ] 无数据库、后端 API、依赖、lockfile、shell、沙箱写入或工具批准变化。
-- [ ] 现有聊天、文件、Artifact、Tool、Trace、分支、审批、HITL、Skill 和下一条消息回归通过。
+- [x] 无数据库、后端 API、依赖、lockfile、shell、沙箱写入或工具批准变化。
+- [x] 现有聊天、文件、Artifact、Tool、Trace、分支、审批、HITL、Skill 和下一条消息自动化回归通过。
 
 ### 未通过项目
 
-当前尚未开始实施，所有验证等待 Task 1–5 执行。
+真实浏览器页面验收未完成：桌面、390px、暗色模式、真实文件拖放、Dialog 实际布局、Tab/Enter/Escape 和焦点恢复仍需可见页面证据。
 
 ### 最终状态
 
-待评定。实施完成后只能填写 `READY_TO_MERGE / BLOCKED / FAILED`；当前为 `PLAN_READY`。
+`BLOCKED`。代码、测试、类型、构建、静态边界和自检已通过，但缺少真实浏览器页面验收，暂不能标记 `READY_TO_MERGE`。
