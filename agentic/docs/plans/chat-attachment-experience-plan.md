@@ -8,12 +8,12 @@
 
 ## 当前进度
 
-- 整体状态：`BLOCKED`
-- 当前阶段：page-acceptance-blocked
-- 当前任务：Task 5：完成全量回归、页面验收和代码审查
-- 已完成：4 / 5
-- 阻塞问题：当前会话无可控制的真实浏览器实例，无法完成桌面、390px、暗色、真实拖放和焦点流页面验收
-- 最近更新时间：2026-07-26 11:01（Asia/Shanghai）
+- 整体状态：`READY_TO_MERGE`
+- 当前阶段：completed
+- 当前任务：无
+- 已完成：5 / 5
+- 阻塞问题：无
+- 最近更新时间：2026-07-26 13:44（Asia/Shanghai）
 
 ## 全局约束
 
@@ -43,6 +43,7 @@
 | 2026-07-26 10:28 | `IN_PROGRESS` | 无 | Task 4 文件库、预览生命周期、首页、Session、运行中队列和静态检查通过，等待 Task 5 |
 | 2026-07-26 | `VERIFYING` | Task 5 | 开始全量测试、生产构建、页面验收、变更边界检查和代码审查 |
 | 2026-07-26 11:01 | `BLOCKED` | Task 5 | 自动化、类型、构建、边界和自检完成；真实浏览器页面验收环境不可用 |
+| 2026-07-26 13:44 | `READY_TO_MERGE` | 无 | 用户完成真实页面验收并确认通过，全部合并门禁满足 |
 
 ## Task 1：建立统一 Composer 附件视图模型
 
@@ -371,7 +372,7 @@
 
 ## Task 5：完成全量回归、页面验收和代码审查
 
-状态：blocked
+状态：completed
 
 ### 目标
 
@@ -424,7 +425,8 @@
 - 修复后的最新全量结果为 39 个测试文件、149 项测试通过，`vue-tsc -b` 和 Vite 生产构建通过。
 - 本地 Vite 服务可启动且 `http://127.0.0.1:5173/` 返回 `200 OK`；临时服务已退出。
 - `pnpm format:check` 和 `pnpm lint` 未执行，因为项目未定义这两个脚本；静态门禁使用计划规定的 `git diff --check`、类型检查和生产构建。
-- 已创建 `agentic/docs/reviews/chat-attachment-experience-review.md`；代码层无未处理 blocking/major，但因真实页面验收不可执行，审查未给出 `APPROVED`。
+- 已创建 `agentic/docs/reviews/chat-attachment-experience-review.md`；代码层无未处理 blocking/major。
+- 用户完成桌面、390px、暗色模式、真实拖放、Dialog、键盘和焦点流页面验收并确认通过，审查结论更新为 `APPROVED`。
 
 ### 验证证据
 
@@ -467,6 +469,10 @@
 手工页面验收：阻塞
 关键结果：浏览器控制返回 No browser is available，故障文档又指向已失效插件版本；未绕过技能约束使用独立自动化
 执行时间：2026-07-26 10:53（Asia/Shanghai）
+
+手工页面验收：通过
+关键结果：用户完成最终页面清单并确认“验收通过”
+执行时间：2026-07-26 13:44（Asia/Shanghai）
 ```
 
 ## 计划变更
@@ -500,8 +506,8 @@ git diff 16ccd1e -- agentic/api agentic/web/package.json agentic/web/pnpm-lock.y
 - 类型检查：通过；`pnpm type-check` 退出 0。
 - 构建：通过；`pnpm build` 退出 0，3669 个模块完成转换。
 - 数据库迁移：不适用；后端与数据库相对基线无差异。
-- 手工验证：部分；本地页面 HTTP 200，真实浏览器页面验收因环境不可用而阻塞。
-- 代码审查：代码自检无未处理 blocking/major；审查过程中发现的拖拽 major 已修复并重验，但最终结论等待页面验收。
+- 手工验证：通过；本地页面 HTTP 200，用户完成真实页面验收并确认通过。
+- 代码审查：`APPROVED`；无未处理 blocking/major，审查过程中发现的拖拽 major 已修复并重验。
 
 ### 验收标准检查
 
@@ -516,14 +522,14 @@ git diff 16ccd1e -- agentic/api agentic/web/package.json agentic/web/pnpm-lock.y
 - [x] Blob URL 在所有退出路径撤销。
 - [x] 首页、普通 Session、running queue 和快速 Session 切换正确。
 - [x] 发送失败保留附件，成功清理不影响其他 Session。
-- [ ] 桌面、390px、暗色、键盘、焦点和无横向溢出通过。
+- [x] 桌面、390px、暗色、键盘、焦点和无横向溢出通过。
 - [x] 无数据库、后端 API、依赖、lockfile、shell、沙箱写入或工具批准变化。
 - [x] 现有聊天、文件、Artifact、Tool、Trace、分支、审批、HITL、Skill 和下一条消息自动化回归通过。
 
 ### 未通过项目
 
-真实浏览器页面验收未完成：桌面、390px、暗色模式、真实文件拖放、Dialog 实际布局、Tab/Enter/Escape 和焦点恢复仍需可见页面证据。
+无。
 
 ### 最终状态
 
-`BLOCKED`。代码、测试、类型、构建、静态边界和自检已通过，但缺少真实浏览器页面验收，暂不能标记 `READY_TO_MERGE`。
+`READY_TO_MERGE`。代码、全量测试、类型检查、生产构建、静态边界、用户真实页面验收和代码审查全部通过。
