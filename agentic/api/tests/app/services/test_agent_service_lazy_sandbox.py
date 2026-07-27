@@ -12,6 +12,7 @@ from app.core.entities.app_config import (
 )
 from app.core.entities.session import Session
 from app.core.entities.tool_config import ToolConfig
+from app.core.sandbox.runtime import LazySandboxRuntime
 from app.services.agent_service import AgentService
 
 
@@ -109,7 +110,7 @@ def make_service() -> tuple[AgentService, RecordingSessionRepository]:
     return service, session_repo
 
 
-def test_current_task_initialization_creates_sandbox_before_any_tool_is_selected() -> None:
+def test_task_initialization_builds_lazy_runtime_without_starting_sandbox() -> None:
     service, session_repo = make_service()
     session = Session(id="session-1", user_id="user-1")
 
@@ -117,28 +118,17 @@ def test_current_task_initialization_creates_sandbox_before_any_tool_is_selected
 
     assert task.id == "task-created"
     assert RecordingSandboxClass.get_calls == []
-    assert RecordingSandboxClass.create_calls == 1
-    assert RecordingTask.created_runners[0]._sandbox.id == "sandbox-created"
-    assert RecordingTask.created_runners[0]._browser is not None
-    activation = RecordingTask.created_runners[0]._sandbox_activation_summary
-    assert activation["activation_reason"] == "task_initialization"
-    assert activation["first_capability"] is None
-    assert activation["operation_counts"] == {
-        "create": 1,
-        "get": 0,
-        "ensure": 0,
-        "get_browser": 1,
-        "upload_file": 0,
-    }
-    assert activation["startup_ms"] >= 0
-    assert activation["attachment_sync_bytes"] == 0
-    assert session_repo.runtime_updates == [
-        {"sandbox_id": "sandbox-created"},
-        {"task_id": "task-created"},
-    ]
+    assert RecordingSandboxClass.create_calls == 0
+    runner = RecordingTask.created_runners[0]
+    assert isinstance(runner._sandbox_runtime, LazySandboxRuntime)
+    assert runner._sandbox_runtime.is_activated is False
+    assert runner._sandbox is runner._sandbox_runtime.sandbox
+    assert runner._browser is runner._sandbox_runtime.browser
+    assert session.sandbox_id is None
+    assert session_repo.runtime_updates == [{"task_id": "task-created"}]
 
 
-def test_current_task_initialization_restores_sandbox_and_initializes_browser() -> None:
+def test_existing_handle_is_not_restored_until_sandbox_capability_is_used() -> None:
     service, _ = make_service()
     existing = RecordingSandbox("sandbox-existing")
     RecordingSandboxClass.existing[existing.id] = existing
@@ -150,9 +140,8 @@ def test_current_task_initialization_restores_sandbox_and_initializes_browser() 
 
     asyncio.run(service._create_task(session))
 
-    assert RecordingSandboxClass.get_calls == ["sandbox-existing"]
+    assert RecordingSandboxClass.get_calls == []
     assert RecordingSandboxClass.create_calls == 0
-    assert existing.browser_calls == 1
-    activation = RecordingTask.created_runners[0]._sandbox_activation_summary
-    assert activation["operation_counts"]["get"] == 1
-    assert activation["operation_counts"]["create"] == 0
+    assert existing.browser_calls == 0
+    runtime = RecordingTask.created_runners[0]._sandbox_runtime
+    assert runtime.is_activated is False

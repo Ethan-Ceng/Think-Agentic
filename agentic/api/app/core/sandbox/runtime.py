@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import BinaryIO, Callable, Optional, Type
+from dataclasses import dataclass
+from pathlib import PurePosixPath
+from time import perf_counter
+from typing import Awaitable, BinaryIO, Callable, Optional, Type
 
 from app.core.browser.base import Browser
 from app.core.browser.lazy import LazyBrowser
+from app.core.entities.file import File
 from app.core.entities.tool_result import ToolResult
 from app.core.sandbox.base import Sandbox
+from app.extensions.file_storage import FileStorage
 from app.repositories.uow import IUnitOfWork
 
 logger = logging.getLogger(__name__)
@@ -15,6 +20,175 @@ logger = logging.getLogger(__name__)
 
 class SandboxNotActivatedError(RuntimeError):
     """Raised when synchronous Sandbox metadata is read before activation."""
+
+
+@dataclass(frozen=True)
+class SandboxAttachment:
+    file: File
+    sandbox_path: str
+
+    @property
+    def prompt_text(self) -> str:
+        media_type = self.file.mime_type or "application/octet-stream"
+        display_name = PurePosixPath(self.sandbox_path).name
+        return (
+            f"{display_name} "
+            f"[file_id={self.file.id}, mime={media_type}, size={self.file.size}; "
+            f"sandbox_path_after_activation={self.sandbox_path}]"
+        )
+
+
+@dataclass(frozen=True)
+class SandboxActivation:
+    activation_reason: str
+    first_capability: str
+    operation_counts: dict[str, int]
+    startup_ms: int
+    attachment_sync_bytes: int
+    materialized_files: tuple[File, ...] = ()
+
+
+@dataclass(frozen=True)
+class MaterializationResult:
+    files: tuple[File, ...] = ()
+    upload_count: int = 0
+    uploaded_bytes: int = 0
+
+
+class SandboxAttachmentMaterializer:
+    """Download authorized managed files and upload each once per Sandbox."""
+
+    UPLOAD_ROOT = "/home/ubuntu/upload"
+
+    def __init__(
+        self,
+        *,
+        file_storage: FileStorage,
+        user_id: str,
+    ) -> None:
+        self._file_storage = file_storage
+        self._user_id = user_id
+        self._materialized: dict[str, File] = {}
+        self._paths_by_file_id: dict[str, str] = {}
+        self._path_owners: dict[str, str] = {}
+
+    def prepare_manifest(
+        self,
+        attachments: list[File],
+    ) -> list[SandboxAttachment]:
+        entries: list[SandboxAttachment] = []
+        seen: set[str] = set()
+        for attachment in attachments:
+            if not attachment.id or attachment.id in seen:
+                continue
+            seen.add(attachment.id)
+            sandbox_path = self._paths_by_file_id.get(attachment.id)
+            if sandbox_path is None:
+                sandbox_path = self._allocate_path(attachment)
+                self._paths_by_file_id[attachment.id] = sandbox_path
+                self._path_owners[sandbox_path] = attachment.id
+            entries.append(
+                SandboxAttachment(
+                    file=attachment,
+                    sandbox_path=sandbox_path,
+                )
+            )
+        return entries
+
+    async def materialize(
+        self,
+        sandbox: Sandbox,
+        entries: list[SandboxAttachment],
+    ) -> MaterializationResult:
+        files: list[File] = []
+        uploaded_bytes = 0
+        for entry in entries:
+            if entry.file.id in self._materialized:
+                continue
+
+            file_data, authoritative = await self._file_storage.download_file(
+                entry.file.id,
+                user_id=self._user_id,
+            )
+            upload_name = PurePosixPath(entry.sandbox_path).name
+            try:
+                if authoritative.id != entry.file.id:
+                    raise RuntimeError(
+                        f"附件[{entry.file.id}]下载结果标识不一致"
+                    )
+                result = await sandbox.upload_file(
+                    file_data=file_data,
+                    filepath=entry.sandbox_path,
+                    filename=upload_name,
+                )
+            finally:
+                close = getattr(file_data, "close", None)
+                if callable(close):
+                    close()
+
+            if not result.success:
+                raise RuntimeError(
+                    result.message
+                    or f"附件[{authoritative.id}]同步到 Sandbox 失败"
+                )
+
+            materialized = authoritative.model_copy(
+                update={"filepath": entry.sandbox_path}
+            )
+            self._materialized[entry.file.id] = materialized
+            files.append(materialized)
+            uploaded_bytes += max(0, authoritative.size)
+
+        return MaterializationResult(
+            files=tuple(files),
+            upload_count=len(files),
+            uploaded_bytes=uploaded_bytes,
+        )
+
+    def reset(self) -> None:
+        self._materialized.clear()
+
+    def _allocate_path(self, file: File) -> str:
+        filename = self._safe_filename(file.filename, file.id)
+        candidate = f"{self.UPLOAD_ROOT}/{filename}"
+        if candidate not in self._path_owners:
+            return candidate
+
+        path = PurePosixPath(filename)
+        stem = path.stem or "attachment"
+        suffix = path.suffix
+        short_id = (file.id or "file")[:8]
+        candidate = f"{self.UPLOAD_ROOT}/{stem}-{short_id}{suffix}"
+        index = 2
+        while (
+            candidate in self._path_owners
+            and self._path_owners[candidate] != file.id
+        ):
+            candidate = (
+                f"{self.UPLOAD_ROOT}/{stem}-{short_id}-{index}{suffix}"
+            )
+            index += 1
+        return candidate
+
+    @staticmethod
+    def _safe_filename(filename: str, file_id: str) -> str:
+        normalized = (filename or "").replace("\\", "/")
+        basename = PurePosixPath(normalized).name
+        basename = "".join(
+            character
+            for character in basename
+            if character >= " " and character != "\x7f"
+        ).strip()
+        if basename in {"", ".", ".."}:
+            basename = f"attachment-{(file_id or 'file')[:8]}"
+        if len(basename) > 180:
+            path = PurePosixPath(basename)
+            suffix = path.suffix[:20]
+            basename = f"{path.stem[: 180 - len(suffix)]}{suffix}"
+        return basename
+
+
+ActivationObserver = Callable[[SandboxActivation], Awaitable[None]]
 
 
 class LazySandboxRuntime:
@@ -27,6 +201,8 @@ class LazySandboxRuntime:
         sandbox_id: Optional[str],
         sandbox_cls: Type[Sandbox],
         uow_factory: Callable[[], IUnitOfWork],
+        attachment_materializer: Optional[SandboxAttachmentMaterializer] = None,
+        activation_observer: Optional[ActivationObserver] = None,
     ) -> None:
         self._session_id = session_id
         self._sandbox_id = sandbox_id
@@ -34,8 +210,19 @@ class LazySandboxRuntime:
         self._uow_factory = uow_factory
         self._sandbox: Optional[Sandbox] = None
         self._browser: Optional[Browser] = None
+        self._sandbox_ready = False
         self._sandbox_lock = asyncio.Lock()
         self._browser_lock = asyncio.Lock()
+        self._attachment_materializer = attachment_materializer
+        self._activation_observer = activation_observer
+        self._attachment_manifest: list[SandboxAttachment] = []
+        self._manifest_version = 0
+        self._prepared_manifest_version = -1
+        self._notified_manifest_version = -1
+        self._activation_started: Optional[float] = None
+        self._activation_counts = self._empty_operation_counts()
+        self._last_materialized_files: tuple[File, ...] = ()
+        self._attachment_sync_bytes = 0
         self.sandbox = LazySandboxProxy(self)
         self.browser = LazyBrowser(self)
 
@@ -48,49 +235,123 @@ class LazySandboxRuntime:
         """Return the cached instance without activating or restoring it."""
         return self._sandbox
 
-    async def get_sandbox(self) -> Sandbox:
-        sandbox = self._sandbox
-        if sandbox is not None:
-            self._log_reuse(sandbox, source="memory")
-            return sandbox
+    def set_activation_observer(
+        self,
+        observer: Optional[ActivationObserver],
+    ) -> None:
+        self._activation_observer = observer
 
+    def set_attachment_manifest(
+        self,
+        attachments: list[File],
+    ) -> list[SandboxAttachment]:
+        if self._attachment_materializer is None:
+            self._attachment_manifest = [
+                SandboxAttachment(
+                    file=attachment,
+                    sandbox_path=(
+                        f"/home/ubuntu/upload/"
+                        f"{SandboxAttachmentMaterializer._safe_filename(attachment.filename, attachment.id)}"
+                    ),
+                )
+                for attachment in attachments
+                if attachment.id
+            ]
+        else:
+            self._attachment_manifest = (
+                self._attachment_materializer.prepare_manifest(attachments)
+            )
+        self._manifest_version += 1
+        self._prepared_manifest_version = -1
+        self._notified_manifest_version = -1
+        self._activation_started = None
+        self._activation_counts = self._empty_operation_counts()
+        self._last_materialized_files = ()
+        self._attachment_sync_bytes = 0
+        return list(self._attachment_manifest)
+
+    async def get_sandbox(
+        self,
+        *,
+        capability: str = "sandbox",
+        notify: bool = True,
+        materialize: bool = True,
+    ) -> Sandbox:
         async with self._sandbox_lock:
+            if self._activation_started is None:
+                self._activation_started = perf_counter()
             sandbox = self._sandbox
             if sandbox is not None:
-                self._log_reuse(sandbox, source="memory_after_lock")
-                return sandbox
+                self._log_reuse(sandbox, source="memory")
+            else:
+                expected_sandbox_id = self._sandbox_id
+                if expected_sandbox_id:
+                    self._activation_counts["get"] += 1
+                    sandbox = await self._try_restore(expected_sandbox_id)
+                    if sandbox is not None:
+                        self._sandbox = sandbox
+                        self._sandbox_ready = False
+                        self._log_reuse(
+                            sandbox,
+                            source="persisted_handle",
+                        )
 
-            expected_sandbox_id = self._sandbox_id
-            if expected_sandbox_id:
-                sandbox = await self._try_restore(expected_sandbox_id)
-                if sandbox is not None:
-                    self._sandbox = sandbox
-                    self._log_reuse(sandbox, source="persisted_handle")
-                    return sandbox
+                if sandbox is None:
+                    sandbox = await self._create_and_claim(
+                        expected_sandbox_id
+                    )
 
-            return await self._create_and_claim(expected_sandbox_id)
+            if not self._sandbox_ready:
+                self._activation_counts["ensure"] += 1
+                ensure_started = perf_counter()
+                try:
+                    await sandbox.ensure_sandbox()
+                except BaseException as exc:
+                    self._log_failed("ensure", exc, sandbox_id=sandbox.id)
+                    raise
+                finally:
+                    if self._activation_started is None:
+                        self._activation_started = ensure_started
+                self._sandbox_ready = True
+
+            if (
+                materialize
+                and self._prepared_manifest_version
+                != self._manifest_version
+            ):
+                materialized = await self._materialize_attachments(sandbox)
+                self._last_materialized_files = materialized.files
+                self._activation_counts["upload_file"] += (
+                    materialized.upload_count
+                )
+                self._attachment_sync_bytes += materialized.uploaded_bytes
+                self._prepared_manifest_version = self._manifest_version
+
+            if notify:
+                await self._notify_activation(capability)
+            return sandbox
 
     async def get_browser(self) -> Browser:
-        browser = self._browser
-        if browser is not None:
-            return browser
-
-        sandbox = await self.get_sandbox()
+        sandbox = await self.get_sandbox(
+            capability="browser",
+            notify=False,
+        )
         async with self._browser_lock:
             browser = self._browser
-            if browser is not None:
-                return browser
-            try:
-                browser = await sandbox.get_browser()
-                if browser is None:
-                    raise RuntimeError(
-                        f"获取沙箱[{sandbox.id}]中的浏览器实例失败"
-                    )
-            except BaseException as exc:
-                self._log_failed("get_browser", exc)
-                raise
-            self._browser = browser
-            return browser
+            if browser is None:
+                self._activation_counts["get_browser"] += 1
+                try:
+                    browser = await sandbox.get_browser()
+                    if browser is None:
+                        raise RuntimeError(
+                            f"获取沙箱[{sandbox.id}]中的浏览器实例失败"
+                        )
+                except BaseException as exc:
+                    self._log_failed("get_browser", exc)
+                    raise
+                self._browser = browser
+        await self._notify_activation("browser")
+        return browser
 
     async def destroy(self) -> bool:
         """Destroy only an instance that was actually activated."""
@@ -100,6 +361,10 @@ class LazySandboxRuntime:
                 return True
             self._sandbox = None
             self._browser = None
+            self._sandbox_ready = False
+            self._prepared_manifest_version = -1
+            if self._attachment_materializer is not None:
+                self._attachment_materializer.reset()
             try:
                 return await sandbox.destroy()
             except BaseException as exc:
@@ -122,6 +387,7 @@ class LazySandboxRuntime:
         created: Optional[Sandbox] = None
         candidate_owned = False
         try:
+            self._activation_counts["create"] += 1
             created = await self._sandbox_cls.create()
             candidate_owned = True
             winner_id = await self._claim_sandbox_id(
@@ -131,6 +397,7 @@ class LazySandboxRuntime:
             if winner_id != created.id:
                 await self._destroy_unclaimed(created)
                 candidate_owned = False
+                self._activation_counts["get"] += 1
                 winner = await self._sandbox_cls.get(winner_id)
                 if winner is None:
                     self._sandbox_id = winner_id
@@ -139,11 +406,13 @@ class LazySandboxRuntime:
                     )
                 self._sandbox_id = winner_id
                 self._sandbox = winner
+                self._sandbox_ready = False
                 self._log_reuse(winner, source="concurrent_winner")
                 return winner
 
             self._sandbox_id = created.id
             self._sandbox = created
+            self._sandbox_ready = False
             candidate_owned = False
             logger.info(
                 "sandbox_lazy_create",
@@ -158,6 +427,60 @@ class LazySandboxRuntime:
                 await self._destroy_unclaimed(created)
             self._log_failed("create", exc)
             raise
+
+    async def _materialize_attachments(
+        self,
+        sandbox: Sandbox,
+    ) -> MaterializationResult:
+        if (
+            self._attachment_materializer is None
+            or not self._attachment_manifest
+        ):
+            return MaterializationResult()
+        try:
+            return await self._attachment_materializer.materialize(
+                sandbox,
+                self._attachment_manifest,
+            )
+        except BaseException as exc:
+            self._log_failed(
+                "materialize_attachments",
+                exc,
+                sandbox_id=sandbox.id,
+            )
+            raise
+
+    async def _notify_activation(self, capability: str) -> None:
+        if self._notified_manifest_version == self._manifest_version:
+            return
+        observer = self._activation_observer
+        if observer is None:
+            return
+
+        started = self._activation_started or perf_counter()
+        activation = SandboxActivation(
+            activation_reason="tool_invocation",
+            first_capability=capability,
+            operation_counts=dict(self._activation_counts),
+            startup_ms=max(0, int((perf_counter() - started) * 1000)),
+            attachment_sync_bytes=self._attachment_sync_bytes,
+            materialized_files=self._last_materialized_files,
+        )
+        self._notified_manifest_version = self._manifest_version
+        try:
+            await observer(activation)
+        except Exception as exc:
+            self._log_failed("activation_observer", exc)
+
+    @staticmethod
+    def _empty_operation_counts() -> dict[str, int]:
+        return {
+            "create": 0,
+            "get": 0,
+            "ensure": 0,
+            "get_browser": 0,
+            "upload_file": 0,
+        }
 
     async def _claim_sandbox_id(
         self,
@@ -379,11 +702,10 @@ class LazySandboxProxy:
         return await (await self._sandbox()).download_file(filepath)
 
     async def ensure_sandbox(self) -> None:
-        await (await self._sandbox()).ensure_sandbox()
+        await self._runtime.get_sandbox()
 
     async def destroy(self) -> bool:
         return await self._runtime.destroy()
 
     async def get_browser(self) -> Browser:
         return await self._runtime.get_browser()
-

@@ -12,7 +12,7 @@
 - 整体状态：`IN_PROGRESS`
 - 当前阶段：implementation
 - 当前任务：无
-- 已完成：2 / 6
+- 已完成：3 / 6
 - 阻塞问题：无
 - 最近更新时间：2026-07-27（Asia/Shanghai）
 
@@ -41,6 +41,8 @@
 | 2026-07-27 | `IN_PROGRESS` | 无 | Task 1 基线与 Trace 观测字段验证完成，等待推进 Task 2 |
 | 2026-07-27 | `IN_PROGRESS` | Task 2 | 开始建立并发安全的 Lazy Sandbox Runtime、代理对象与原子 runtime handle 持久化 |
 | 2026-07-27 | `IN_PROGRESS` | 无 | Task 2 的 Lazy Runtime、代理、并发认领与失败清理验证完成，等待推进 Task 3 |
+| 2026-07-27 | `IN_PROGRESS` | Task 3 | 开始将 Lazy Runtime 接入 Agent Task，并把附件同步改为 Sandbox 能力首次使用时按需触发 |
+| 2026-07-27 | `IN_PROGRESS` | 无 | Task 3 的 Agent 接入、按 Run 附件 Manifest、首次能力同步与生命周期回归验证完成，等待推进 Task 4 |
 
 ## Task 1：固定 Sandbox 资源成本与 Tool Schema Token 代理基线
 
@@ -224,7 +226,7 @@
 
 ## Task 3：让 Agent Task 与附件同步真正按需触发
 
-状态：pending
+状态：completed
 
 ### 目标
 
@@ -276,15 +278,44 @@
 
 ### 执行结果
 
-待执行。
+- `AgentService._create_task()` 现在只构造 `LazySandboxRuntime`、Sandbox Proxy 和 Browser Proxy；新 Session 与已有 `sandbox_id` 都不会在 Task 构造阶段创建、恢复或初始化 Browser，只立即持久化 `task_id`。
+- `AgentTaskRunner.invoke()` 已移除无条件 `ensure_sandbox()` 和 Run 开始时的附件下载/上传。每条 Message/next-message 只更新当前 Run 的安全附件 Manifest，再启动 Trace、Skill 和 Flow。
+- Planner/ReAct 接收的附件信息改为文件名、Managed File ID、MIME、大小和“激活后 Sandbox 路径”；对象存储内部路径不进入模型，文件名会去除目录穿越和控制字符。
+- 新增统一 `SandboxAttachmentMaterializer`：从当前用户 `FileStorage` 重新授权下载，校验返回 File ID，安全分配 `/home/ubuntu/upload` 路径，处理重名，并在同一 Sandbox 中按 File ID 最多上传一次。
+- Runtime 在首次 Sandbox 或 Browser 方法调用时，在同一激活锁中依次执行创建/恢复、`ensure_sandbox()`、当前 Run 附件同步和真实 Tool 委托；Browser 首次调用同样遵循该顺序。
+- 后续 Run 更新 Manifest 时只补充尚未进入当前 Sandbox 的附件；销毁后清空物化缓存，若重新创建实例会重新同步，不复用已失效的路径状态。
+- 附件上传失败不会写入物化缓存，后续调用可重新下载并重试；未调用 Sandbox/Browser 能力时不会下载附件、不会写入 `sandbox_id`、不会产生 Sandbox activation Trace。
+- Lazy activation 成功后将新物化文件路径写入 Session，并以 `tool_invocation`、首个 capability、operation counts、启动耗时和同步字节写入 Trace。
+- Agent 生成文件回传、ToolEvent 的 Browser 截图/Shell Console/File 预览继续通过现有代理访问真实 Sandbox；审批恢复、next-message、Skill Runtime 和分支上下文回归通过。
+- `shell.py`、`file.py`、`browser.py` 无需修改：它们已经依赖 Sandbox/Browser Protocol，传入代理后自然获得懒行为；`MessageEvent` 现有 `File` 引用也足以形成安全 Manifest，因此未新增持久化字段或数据库迁移。
 
 ### 验证证据
 
 ```text
-命令：待执行
-退出状态：待执行
-关键结果：待执行
-执行时间：待执行
+命令：uv run pytest tests/app/services/test_agent_service_lazy_sandbox.py tests/app/core/agent/test_agent_task_runner_lazy_sandbox.py tests/app/core/agent/test_lazy_attachment_materialization.py tests/app/core/agent/test_agent_task_runner_completion.py -q
+退出状态：0
+关键结果：20 passed；10 个既有 Pydantic deprecation warnings
+执行时间：2026-07-27 16:45（Asia/Shanghai）
+
+命令：uv run pytest tests/app/services/test_agent_service_lazy_sandbox.py tests/app/core/agent/test_agent_task_runner_lazy_sandbox.py tests/app/core/agent/test_lazy_attachment_materialization.py tests/app/core/agent/test_agent_task_runner_completion.py tests/app/core/sandbox/test_lazy_sandbox_runtime.py tests/app/repositories/test_db_session_runtime_handles.py tests/app/services/test_trace_service.py tests/app/services/test_agent_interactions.py tests/app/services/test_agent_next_message.py tests/app/services/test_agent_service_recovery.py tests/app/core/agent/test_skill_runtime_context.py tests/app/services/test_skill_trace.py tests/app/core/agent/test_branch_context_seed.py -q
+退出状态：0
+关键结果：63 passed；10 个既有 Pydantic deprecation warnings
+执行时间：2026-07-27 16:45（Asia/Shanghai）
+
+命令：uv run ruff check app/services/agent_service.py app/core/agent/agent_task_runner.py app/core/sandbox/runtime.py app/core/tools/shell.py app/core/tools/file.py app/core/tools/browser.py tests/app/core/agent/test_lazy_attachment_materialization.py
+退出状态：0
+关键结果：All checks passed
+执行时间：2026-07-27 16:45（Asia/Shanghai）
+
+命令：uv run python -m py_compile app/services/agent_service.py app/core/agent/agent_task_runner.py app/core/sandbox/runtime.py app/core/browser/lazy.py
+退出状态：0
+关键结果：无语法错误
+执行时间：2026-07-27 16:45（Asia/Shanghai）
+
+命令：git diff --check
+退出状态：0
+关键结果：无空白错误；仅显示 Windows CRLF 转换提示
+执行时间：2026-07-27 16:46（Asia/Shanghai）
 ```
 
 ## Task 4：裁剪 Planner 与 ReAct 的 Tool Schema

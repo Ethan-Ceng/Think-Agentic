@@ -130,6 +130,11 @@ def make_runner() -> tuple[AgentTaskRunner, FakeSessionRepository]:
     runner = object.__new__(AgentTaskRunner)
     runner._session_id = "session-1"
     runner._uow = uow
+    runner._sandbox_runtime = type(
+        "Runtime",
+        (),
+        {"set_attachment_manifest": lambda self, attachments: []},
+    )()
     runner._sandbox = type("Sandbox", (), {"ensure_sandbox": AsyncMock()})()
     runner._mcp_config = object()
     runner._mcp_tool = type("MCP", (), {"initialize": AsyncMock()})()

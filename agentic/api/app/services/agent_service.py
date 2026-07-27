@@ -8,7 +8,6 @@
 import asyncio
 import logging
 from datetime import datetime
-from time import perf_counter
 from typing import AsyncGenerator, Optional, List, Type, Callable
 
 from pydantic import TypeAdapter
@@ -17,6 +16,10 @@ from app.extensions.file_storage import FileStorage
 from app.core.json_parser.base import JSONParser
 from app.core.llm.base import LLM
 from app.core.sandbox.base import Sandbox
+from app.core.sandbox.runtime import (
+    LazySandboxRuntime,
+    SandboxAttachmentMaterializer,
+)
 from app.core.search.base import SearchEngine
 from app.core.task.base import Task
 from app.core.entities.event import (
@@ -128,54 +131,22 @@ class AgentService:
 
     async def _create_task(self, session: Session) -> Task:
         """根据传递的会话创建一个新任务"""
-        sandbox_started = perf_counter()
-        sandbox_activation_summary = {
-            "activation_reason": "task_initialization",
-            "first_capability": None,
-            "operation_counts": {
-                "create": 0,
-                "get": 0,
-                "ensure": 0,
-                "get_browser": 0,
-                "upload_file": 0,
-            },
-            "startup_ms": 0,
-            "attachment_sync_bytes": 0,
-        }
-        # 1.获取沙箱实例
-        sandbox = None
-        sandbox_id = session.sandbox_id
-        if sandbox_id:
-            sandbox_activation_summary["operation_counts"]["get"] += 1
-            sandbox = await self._sandbox_cls.get(sandbox_id)
-
-        # 2.判断是否能获取到沙箱(如果没有则创建)
-        if not sandbox:
-            # 3.沙箱不存在则创建一个新的(有可能被释放了)
-            sandbox_activation_summary["operation_counts"]["create"] += 1
-            sandbox = await self._sandbox_cls.create()
-            session.sandbox_id = sandbox.id
-            async with self._uow:
-                await self._uow.session.update_runtime_handles(
-                    session.id,
-                    sandbox_id=sandbox.id,
-                )
-
-        # 4.从沙箱中获取浏览器实例
-        sandbox_activation_summary["operation_counts"]["get_browser"] += 1
-        browser = await sandbox.get_browser()
-        if not browser:
-            logger.error(f"获取沙箱[{sandbox.id}]中的浏览器实例失败")
-            raise RuntimeError(f"获取沙箱[{sandbox.id}]中的浏览器实例失败")
-        sandbox_activation_summary["startup_ms"] = int(
-            (perf_counter() - sandbox_started) * 1000
+        sandbox_runtime = LazySandboxRuntime(
+            session_id=session.id,
+            sandbox_id=session.sandbox_id,
+            sandbox_cls=self._sandbox_cls,
+            uow_factory=self._uow_factory,
+            attachment_materializer=SandboxAttachmentMaterializer(
+                file_storage=self._file_storage,
+                user_id=session.user_id,
+            ),
         )
 
-        # 5.读取当前用户的运行时配置
+        # 1.读取当前用户的运行时配置
         app_config = await self._user_config_service.get_app_config(session.user_id)
         llm = self._llm_factory(app_config.llm_config)
 
-        # 5.创建AgentTaskRunner
+        # 2.创建AgentTaskRunner
         task_runner = AgentTaskRunner(
             uow_factory=self._uow_factory,
             llm=llm,
@@ -188,16 +159,16 @@ class AgentService:
             user_id=session.user_id,
             file_storage=self._file_storage,
             json_parser=self._json_parser,
-            browser=browser,
+            browser=sandbox_runtime.browser,
             search_engine=self._search_engine,
-            sandbox=sandbox,
+            sandbox=sandbox_runtime.sandbox,
+            sandbox_runtime=sandbox_runtime,
             skill_package_storage=self._skill_package_storage,
             bundled_skill_service=self._bundled_skill_service,
             skill_workspace_service=self._skill_workspace_service,
-            sandbox_activation_summary=sandbox_activation_summary,
         )
 
-        # 6.创建任务Task并更新会话中的信息
+        # 3.创建任务Task并更新会话中的信息
         task = self._task_cls.create(task_runner=task_runner)
         session.task_id = task.id
         async with self._uow:
