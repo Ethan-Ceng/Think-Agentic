@@ -29,9 +29,22 @@ class ToolRegistry:
         self._builtin_descriptors: Optional[List[ToolDescriptor]] = None
         self._runtime_descriptors: List[ToolDescriptor] = []
 
-    def register_runtime_tool(self, runtime_tool: BaseTool) -> None:
+    def register_runtime_tool(
+        self,
+        runtime_tool: BaseTool,
+        *,
+        provider_id: str | None = None,
+        provider_label: str = "Skill draft",
+        group: str | None = None,
+        executor_type: str = "builtin",
+        category: str = "Skills",
+        requires_sandbox: bool = False,
+        requires_browser: bool = False,
+        requires_credentials: bool = False,
+    ) -> None:
         """Register descriptors only in this Run's registry."""
-        provider_id = f"builtin.{runtime_tool.name}"
+        provider_id = provider_id or f"builtin.{runtime_tool.name}"
+        group = group or runtime_tool.name
         existing = {item.function_name for item in self._runtime_descriptors}
         for schema in runtime_tool.get_tools():
             function_name = schema["function"]["name"]
@@ -42,14 +55,17 @@ class ToolRegistry:
                     tool_id=f"{provider_id}.{function_name}",
                     function_name=function_name,
                     provider_id=provider_id,
-                    provider_label="Skill draft",
-                    group=runtime_tool.name,
-                    executor_type="builtin",
+                    provider_label=provider_label,
+                    group=group,
+                    executor_type=executor_type,
                     label=function_name,
                     description=schema["function"].get("description", ""),
                     schema=schema,
-                    category="Skills",
+                    category=category,
                     risk_level="high" if function_name == "skill_draft_write" else "low",
+                    requires_sandbox=requires_sandbox,
+                    requires_browser=requires_browser,
+                    requires_credentials=requires_credentials,
                     enabled_by_default=True,
                 )
             )
@@ -106,6 +122,65 @@ class ToolRegistry:
             )
 
         return sorted(registrations, key=lambda item: (item.source_type, item.provider_id))
+
+    def list_capability_catalog(
+        self,
+        tool_config: ToolConfig | None = None,
+    ) -> List[Dict[str, Any]]:
+        """Return compact enabled capability metadata without parameter schemas."""
+        effective_config = tool_config or self._tool_config or ToolConfig()
+        registrations = {
+            registration.group: registration
+            for registration in self.list_registrations(effective_config)
+            if registration.enabled
+        }
+        catalog: Dict[str, Dict[str, Any]] = {}
+        for descriptor in self.apply_config(effective_config, effective=True):
+            if not descriptor.enabled:
+                continue
+            registration = registrations.get(descriptor.group)
+            entry = catalog.setdefault(
+                descriptor.group,
+                {
+                    "group": descriptor.group,
+                    "description": (
+                        registration.description
+                        if registration and registration.description
+                        else descriptor.description
+                    ),
+                    "requires_sandbox": False,
+                    "requires_browser": False,
+                },
+            )
+            entry["requires_sandbox"] = bool(
+                entry["requires_sandbox"] or descriptor.requires_sandbox
+            )
+            entry["requires_browser"] = bool(
+                entry["requires_browser"] or descriptor.requires_browser
+            )
+        return [catalog[group] for group in sorted(catalog)]
+
+    def capability_groups(self, tool_config: ToolConfig | None = None) -> set[str]:
+        return {
+            item["group"]
+            for item in self.list_capability_catalog(tool_config)
+        }
+
+    def validate_capability_groups(
+        self,
+        capabilities: Iterable[str],
+        tool_config: ToolConfig | None = None,
+    ) -> None:
+        known = self.capability_groups(tool_config)
+        unknown = sorted(
+            {
+                str(capability).strip()
+                for capability in capabilities
+                if str(capability).strip() not in known
+            }
+        )
+        if unknown:
+            raise ValueError(f"未知 capability group: {', '.join(unknown)}")
 
     def tool_id_for_function(self, tool_name: str, function_name: str) -> str:
         descriptor = self.get_by_function_name(function_name)

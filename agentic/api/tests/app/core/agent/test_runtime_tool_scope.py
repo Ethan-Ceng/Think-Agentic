@@ -68,8 +68,9 @@ def test_tool_schema_bytes_handles_empty_dynamic_and_chinese_schemas() -> None:
     assert tool_schema_bytes(schemas) > len(canonical)
 
 
-def test_current_planner_and_react_both_receive_all_enabled_schemas() -> None:
-    tools = ToolFactory(ToolConfig()).build(
+def test_planner_receives_zero_schemas_and_react_defaults_to_system_message_only() -> None:
+    factory = ToolFactory(ToolConfig())
+    tools = factory.build(
         sandbox=object(),
         browser=object(),
         search_engine=object(),
@@ -83,6 +84,8 @@ def test_current_planner_and_react_both_receive_all_enabled_schemas() -> None:
         "llm": object(),
         "json_parser": object(),
         "tools": tools,
+        "tool_registry": factory.registry,
+        "runtime_tool_scope": factory.runtime_scope,
     }
     planner = PlannerAgent(**common)
     react = ReActAgent(**common)
@@ -91,7 +94,93 @@ def test_current_planner_and_react_both_receive_all_enabled_schemas() -> None:
     react_schemas = react._get_available_tools()
 
     assert planner._tool_choice == "none"
-    assert len(planner_schemas) == 27
-    assert len(react_schemas) == 27
-    assert tool_schema_bytes(planner_schemas) == 12933
-    assert tool_schema_bytes(react_schemas) == 12933
+    assert planner_schemas == []
+    assert _function_names(react_schemas) == {
+        "message_ask_user",
+        "message_notify_user",
+    }
+    assert tool_schema_bytes(planner_schemas) == 0
+
+
+def test_react_scope_exposes_shell_and_file_without_browser() -> None:
+    factory = ToolFactory(ToolConfig())
+    tools = factory.build(
+        sandbox=object(),
+        browser=object(),
+        search_engine=object(),
+        mcp_tool=MCPTool(),
+        a2a_tool=A2ATool(),
+    )
+    react = ReActAgent(
+        uow_factory=lambda: object(),
+        session_id="session-1",
+        agent_config=AgentConfig(),
+        llm=object(),
+        json_parser=object(),
+        tools=tools,
+        tool_registry=factory.registry,
+        runtime_tool_scope=factory.runtime_scope,
+    )
+
+    react.set_runtime_tool_scope(["shell", "file"])
+    names = _function_names(react._get_available_tools())
+
+    assert {"shell_execute", "read_file", "message_ask_user"} <= names
+    assert not any(name.startswith("browser_") for name in names)
+    assert "search_web" not in names
+
+
+def test_empty_and_unknown_scopes_never_mean_all_tools() -> None:
+    factory = ToolFactory(ToolConfig())
+    tools = factory.build(
+        sandbox=object(),
+        browser=object(),
+        search_engine=object(),
+        mcp_tool=MCPTool(),
+        a2a_tool=A2ATool(),
+    )
+
+    factory.runtime_scope.activate([])
+    empty_names = {
+        schema["function"]["name"]
+        for tool in tools
+        for schema in tool.get_tools()
+    }
+    factory.runtime_scope.activate(["does-not-exist"])
+    unknown_names = {
+        schema["function"]["name"]
+        for tool in tools
+        for schema in tool.get_tools()
+    }
+
+    assert empty_names == {"message_ask_user", "message_notify_user"}
+    assert unknown_names == empty_names
+    assert factory.runtime_scope.unknown_capabilities == ("does-not-exist",)
+
+
+def test_exact_recovery_scope_restores_only_the_persisted_function() -> None:
+    factory = ToolFactory(ToolConfig())
+    tools = factory.build(
+        sandbox=object(),
+        browser=object(),
+        search_engine=object(),
+        mcp_tool=MCPTool(),
+        a2a_tool=A2ATool(),
+    )
+
+    factory.runtime_scope.activate([], exact_functions=["shell_execute"])
+    names = {
+        schema["function"]["name"]
+        for tool in tools
+        for schema in tool.get_tools()
+    }
+
+    assert names == {
+        "message_ask_user",
+        "message_notify_user",
+        "shell_execute",
+    }
+
+
+def _function_names(schemas: list[dict]) -> set[str]:
+    return {schema["function"]["name"] for schema in schemas}

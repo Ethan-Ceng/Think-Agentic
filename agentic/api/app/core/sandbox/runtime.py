@@ -388,7 +388,7 @@ class LazySandboxRuntime:
         candidate_owned = False
         try:
             self._activation_counts["create"] += 1
-            created = await self._sandbox_cls.create()
+            created = await self._create_candidate()
             candidate_owned = True
             winner_id = await self._claim_sandbox_id(
                 created.id,
@@ -426,6 +426,22 @@ class LazySandboxRuntime:
             if created is not None and candidate_owned:
                 await self._destroy_unclaimed(created)
             self._log_failed("create", exc)
+            raise
+
+    async def _create_candidate(self) -> Sandbox:
+        """Finish and clean up a blocking create even when its caller is cancelled."""
+        create_task = asyncio.create_task(self._sandbox_cls.create())
+        try:
+            return await asyncio.shield(create_task)
+        except asyncio.CancelledError:
+            try:
+                created = await create_task
+            except asyncio.CancelledError:
+                raise
+            except BaseException as exc:
+                self._log_failed("create_after_cancel", exc)
+            else:
+                await self._destroy_unclaimed(created)
             raise
 
     async def _materialize_attachments(

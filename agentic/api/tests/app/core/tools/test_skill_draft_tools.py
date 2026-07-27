@@ -148,6 +148,9 @@ async def test_flow_exposes_draft_tools_only_for_bundled_skill_creator(
 
     flow.set_skill_runtime_context(creator_context())
     assert [tool.name for tool in flow._tools] == ["skill_draft"]
+    assert flow._tools[0].get_tools() == []
+
+    flow._tool_factory.runtime_scope.activate(["skill_draft"])
     names = {
         schema["function"]["name"]
         for schema in flow._tools[0].get_tools()

@@ -87,6 +87,8 @@ class PlannerReActFlow(BaseFlow):
             json_parser=json_parser,
             tools=tools,
             trace_service=trace_service,
+            tool_registry=self._tool_factory.registry,
+            runtime_tool_scope=self._tool_factory.runtime_scope,
         )
         logger.debug(f"创建规划Agent成功, 会话id: {self._session_id}")
 
@@ -99,6 +101,8 @@ class PlannerReActFlow(BaseFlow):
             json_parser=json_parser,
             tools=tools,
             trace_service=trace_service,
+            tool_registry=self._tool_factory.registry,
+            runtime_tool_scope=self._tool_factory.runtime_scope,
         )
         logger.debug(f"创建执行Agent成功, 会话id: {self._session_id}")
 

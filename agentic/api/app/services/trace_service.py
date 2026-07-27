@@ -223,6 +223,8 @@ class TraceService:
         tools: List[Dict[str, Any]],
         response_format: Dict[str, Any] | None,
         tool_choice: str | None,
+        capability_groups: List[str] | None = None,
+        tool_scope_excluded_count: int = 0,
     ) -> str | None:
         """Insert a started model call and return its id."""
         if not self.run_id or not self.session_id:
@@ -239,6 +241,8 @@ class TraceService:
             "messages": _summarize_messages(messages),
             "tools": [_tool_name(tool) for tool in tools],
             "tool_schema_bytes": schema_bytes,
+            "capability_groups": list(capability_groups or []),
+            "tool_scope_excluded_count": tool_scope_excluded_count,
         }
         data = {
             "id": model_call_id,
@@ -272,6 +276,8 @@ class TraceService:
                         "model_name": model_name,
                         "tool_schema_count": len(tools or []),
                         "tool_schema_bytes": schema_bytes,
+                        "capability_groups": list(capability_groups or []),
+                        "tool_scope_excluded_count": tool_scope_excluded_count,
                         "message_count": len(messages or []),
                     },
                     created_at=started_at,

@@ -1,5 +1,6 @@
+from __future__ import annotations
+
 import json
-from collections.abc import Callable
 
 import pytest
 
@@ -20,8 +21,13 @@ from app.core.entities.memory import Memory
 from app.core.entities.session import BranchContextMessage
 from app.core.entities.plan import ExecutionStatus, Plan, Step
 from app.core.entities.tool_result import ToolResult
+from app.core.entities.tool_config import ToolConfig
+from app.core.sandbox.runtime import LazySandboxRuntime
+from app.core.tools.a2a import A2ATool
 from app.core.tools.base import BaseTool, tool
+from app.core.tools.factory import ToolFactory
 from app.core.tools.message import MessageTool
+from app.core.tools.mcp import MCPTool
 
 
 pytestmark = pytest.mark.anyio
@@ -35,6 +41,8 @@ def anyio_backend() -> str:
 class MemoryRepository:
     def __init__(self) -> None:
         self.memories: dict[tuple[str, str], Memory] = {}
+        self.sandbox_id: str | None = None
+        self.sandbox_claims: list[tuple[str, str, str | None]] = []
 
     async def get_memory(self, session_id: str, agent_name: str) -> Memory:
         return self.memories.setdefault((session_id, agent_name), Memory()).model_copy(deep=True)
@@ -46,6 +54,19 @@ class MemoryRepository:
         self, session_id: str
     ) -> list[BranchContextMessage]:
         return []
+
+    async def claim_sandbox_id(
+        self,
+        session_id: str,
+        candidate_id: str,
+        *,
+        expected_sandbox_id: str | None,
+    ) -> str:
+        self.sandbox_claims.append(
+            (session_id, candidate_id, expected_sandbox_id)
+        )
+        self.sandbox_id = candidate_id
+        return candidate_id
 
 
 class FakeUow:
@@ -72,9 +93,11 @@ class QueueLlm:
     def __init__(self, responses: list[dict]) -> None:
         self.responses = list(responses)
         self.calls: list[list[dict]] = []
+        self.call_kwargs: list[dict] = []
 
     async def invoke(self, messages, **kwargs):
         self.calls.append(messages)
+        self.call_kwargs.append(kwargs)
         return self.responses.pop(0)
 
 
@@ -106,6 +129,9 @@ def build_agent(
     repository: MemoryRepository,
     llm: QueueLlm,
     tools: list[BaseTool],
+    *,
+    tool_registry=None,
+    runtime_tool_scope=None,
 ) -> ReActAgent:
     def uow_factory() -> FakeUow:
         return FakeUow(repository)
@@ -117,6 +143,8 @@ def build_agent(
         llm=llm,
         json_parser=JsonParser(),
         tools=tools,
+        tool_registry=tool_registry,
+        runtime_tool_scope=runtime_tool_scope,
     )
 
 
@@ -323,3 +351,153 @@ async def test_react_step_waits_without_duplicate_prompt_and_resumes_current_ste
     assert step.success is True
     assert risky.calls == [arguments]
     assert any(isinstance(event, MessageEvent) and event.message == "written" for event in resumed_events)
+
+
+class LazyApprovalSandbox:
+    create_calls = 0
+    instances: dict[str, "LazyApprovalSandbox"] = {}
+
+    def __init__(self, sandbox_id: str) -> None:
+        self.id = sandbox_id
+        self.vnc_url = f"ws://{sandbox_id}/vnc"
+        self.cdp_url = f"http://{sandbox_id}/cdp"
+        self.exec_calls: list[tuple[str, str, str]] = []
+
+    @classmethod
+    def reset(cls) -> None:
+        cls.create_calls = 0
+        cls.instances = {}
+
+    @classmethod
+    async def create(cls) -> "LazyApprovalSandbox":
+        cls.create_calls += 1
+        sandbox = cls(f"sandbox-{cls.create_calls}")
+        cls.instances[sandbox.id] = sandbox
+        return sandbox
+
+    @classmethod
+    async def get(cls, sandbox_id: str) -> "LazyApprovalSandbox" | None:
+        return cls.instances.get(sandbox_id)
+
+    async def ensure_sandbox(self) -> None:
+        return None
+
+    async def exec_command(
+        self,
+        session_id: str,
+        exec_dir: str,
+        command: str,
+    ) -> ToolResult:
+        self.exec_calls.append((session_id, exec_dir, command))
+        return ToolResult(success=True, data={"output": "done"})
+
+    async def destroy(self) -> bool:
+        return True
+
+
+async def test_shell_approval_starts_lazy_sandbox_once_and_restores_exact_legacy_call() -> None:
+    repository = MemoryRepository()
+    LazyApprovalSandbox.reset()
+
+    def uow_factory() -> FakeUow:
+        return FakeUow(repository)
+
+    runtime = LazySandboxRuntime(
+        session_id="session-1",
+        sandbox_id=None,
+        sandbox_cls=LazyApprovalSandbox,
+        uow_factory=uow_factory,
+    )
+    factory = ToolFactory(ToolConfig())
+    tools = factory.build(
+        sandbox=runtime.sandbox,
+        browser=runtime.browser,
+        search_engine=object(),
+        mcp_tool=MCPTool(),
+        a2a_tool=A2ATool(),
+    )
+    arguments = {
+        "session_id": "shell-1",
+        "exec_dir": "/tmp",
+        "command": "echo ready",
+    }
+    plan = Plan(
+        language="zh-CN",
+        steps=[
+            Step(
+                description="run approved command",
+                capabilities=["shell"],
+            )
+        ],
+    )
+    step = plan.steps[0]
+    pending_llm = QueueLlm(
+        [tool_call_response("shell_execute", arguments)]
+    )
+    pending_events = await collect(
+        build_agent(
+            repository,
+            pending_llm,
+            tools,
+            tool_registry=factory.registry,
+            runtime_tool_scope=factory.runtime_scope,
+        ).execute_step(plan, step, Message(message="run it"))
+    )
+    pending = next(
+        event
+        for event in pending_events
+        if isinstance(event, InteractionEvent)
+    )
+
+    assert LazyApprovalSandbox.create_calls == 0
+    assert repository.sandbox_claims == []
+
+    # Simulate a historical waiting Step that predates persisted capabilities.
+    step.capabilities = []
+    completed_step = {
+        "id": step.id,
+        "description": step.description,
+        "status": "completed",
+        "success": True,
+        "result": "done",
+        "attachments": [],
+    }
+    resumed_llm = QueueLlm(
+        [{"role": "assistant", "content": json.dumps(completed_step)}]
+    )
+    resolution = InteractionResolution(
+        action_id=pending.action_id,
+        interaction_type=pending.interaction_type,
+        decision=InteractionDecision.APPROVE,
+        tool_call_id=pending.tool_call_id,
+        function_name=pending.function_name,
+        function_args=pending.function_args,
+    )
+
+    await collect(
+        build_agent(
+            repository,
+            resumed_llm,
+            tools,
+            tool_registry=factory.registry,
+            runtime_tool_scope=factory.runtime_scope,
+        ).resume_step(plan, step, resolution)
+    )
+
+    sandbox = LazyApprovalSandbox.instances["sandbox-1"]
+    assert LazyApprovalSandbox.create_calls == 1
+    assert sandbox.exec_calls == [
+        ("shell-1", "/tmp", "echo ready"),
+    ]
+    assert repository.sandbox_claims == [
+        ("session-1", "sandbox-1", None),
+    ]
+    resumed_tool_names = {
+        schema["function"]["name"]
+        for schema in resumed_llm.call_kwargs[0]["tools"]
+    }
+    assert resumed_tool_names == {
+        "message_ask_user",
+        "message_notify_user",
+        "shell_execute",
+    }

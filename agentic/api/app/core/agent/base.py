@@ -33,6 +33,8 @@ from app.core.entities.session import BranchContextMessage
 from app.core.entities.tool_result import ToolResult
 from app.repositories.uow import IUnitOfWork
 from app.core.tools.base import BaseTool
+from app.core.tools.registry import ToolRegistry
+from app.core.tools.scope import RuntimeToolScope
 from app.services.skill_runtime_service import SkillRuntimeContext
 from app.services.trace_service import TraceService, elapsed_ms, model_call_timer
 
@@ -57,6 +59,8 @@ class BaseAgent(ABC):
             tools: List[BaseTool],  # 工具列表
             trace_service: TraceService | None = None,
             skill_runtime_context: SkillRuntimeContext | None = None,
+            tool_registry: ToolRegistry | None = None,
+            runtime_tool_scope: RuntimeToolScope | None = None,
     ) -> None:
         """构造函数，完成Agent的初始化"""
         self._uow_factory = uow_factory
@@ -70,6 +74,15 @@ class BaseAgent(ABC):
         self._tools = tools
         self._trace_service = trace_service
         self._skill_runtime_context = skill_runtime_context or SkillRuntimeContext()
+        self._tool_registry = tool_registry
+        self._runtime_tool_scope = runtime_tool_scope or next(
+            (
+                getattr(tool, "runtime_scope")
+                for tool in tools
+                if getattr(tool, "runtime_scope", None) is not None
+            ),
+            None,
+        )
 
     def set_skill_runtime_context(self, context: SkillRuntimeContext) -> None:
         """Replace the transient per-run Skill context without touching Memory."""
@@ -78,12 +91,25 @@ class BaseAgent(ABC):
     def get_available_tool_names(self) -> set[str]:
         """Return both tool-group and callable names used by Skill constraints."""
         names = {tool.name for tool in self._tools if tool.name}
-        for tool_schema in self._get_available_tools():
+        for tool_schema in self._get_configured_tools():
             function = tool_schema.get("function") or {}
             name = function.get("name")
             if name:
                 names.add(name)
         return names
+
+    def set_runtime_tool_scope(
+        self,
+        capabilities: List[str] | None,
+        *,
+        exact_functions: List[str] | None = None,
+    ) -> None:
+        """Activate the current Step boundary on all shared filtered tools."""
+        if self._runtime_tool_scope is not None:
+            self._runtime_tool_scope.activate(
+                capabilities,
+                exact_functions=exact_functions,
+            )
 
     def _get_llm_messages(self) -> List[Dict[str, Any]]:
         """Build one model-call view with transient context after the base prompt."""
@@ -112,6 +138,14 @@ class BaseAgent(ABC):
             available_tools.extend(tool.get_tools())
         return available_tools
 
+    def _get_configured_tools(self) -> List[Dict[str, Any]]:
+        """Return schemas after ToolConfig but before the current runtime scope."""
+        configured_tools: List[Dict[str, Any]] = []
+        for tool in self._tools:
+            getter = getattr(tool, "get_configured_tools", None)
+            configured_tools.extend(getter() if getter else tool.get_tools())
+        return configured_tools
+
     def _get_tool(self, tool_name: str) -> BaseTool:
         """获取对应工具所在的工具集/包"""
         # 1.循环遍历所有工具包
@@ -134,6 +168,7 @@ class BaseAgent(ABC):
         error = "调用语言模型发生错误"
         for _ in range(self._agent_config.max_retries):
             available_tools = self._get_available_tools()
+            configured_tool_count = len(self._get_configured_tools())
             llm_messages = self._get_llm_messages()
             model_call_id = None
             model_started = model_call_timer()
@@ -146,6 +181,15 @@ class BaseAgent(ABC):
                         tools=available_tools,
                         response_format=response_format,
                         tool_choice=self._tool_choice,
+                        capability_groups=(
+                            list(self._runtime_tool_scope.capabilities)
+                            if self._runtime_tool_scope
+                            else []
+                        ),
+                        tool_scope_excluded_count=max(
+                            0,
+                            configured_tool_count - len(available_tools),
+                        ),
                     )
 
                 # 4.调用语言模型获取响应内容

@@ -9,7 +9,7 @@ import uuid
 from enum import Enum
 from typing import List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class ExecutionStatus(str, Enum):
@@ -29,6 +29,21 @@ class Step(BaseModel):
     error: Optional[str] = None  # 错误信息
     success: bool = False  # 是否执行成功
     attachments: List[str] = Field(default_factory=list)  # 附件列表信息
+    capabilities: List[str] = Field(default_factory=list)  # 当前步骤所需能力组
+
+    @field_validator("capabilities")
+    @classmethod
+    def normalize_capabilities(cls, values: List[str]) -> List[str]:
+        """Keep persisted capability groups deterministic and backwards compatible."""
+        normalized: List[str] = []
+        seen: set[str] = set()
+        for value in values:
+            item = str(value).strip()
+            if not item or item in seen:
+                continue
+            seen.add(item)
+            normalized.append(item)
+        return normalized
 
     @property
     def done(self) -> bool:

@@ -303,17 +303,23 @@ def test_trace_records_tool_schema_bytes_without_persisting_full_schema() -> Non
             tools=tools,
             response_format=None,
             tool_choice="none",
+            capability_groups=["search"],
+            tool_scope_excluded_count=26,
         )
 
         stored = repo.model_calls[model_call_id]
         assert stored["tool_schema_count"] == 1
         assert stored["request_preview"]["tool_schema_bytes"] == tool_schema_bytes(tools)
         assert stored["request_preview"]["tools"] == ["api_private_search"]
+        assert stored["request_preview"]["capability_groups"] == ["search"]
+        assert stored["request_preview"]["tool_scope_excluded_count"] == 26
         assert "private schema description" not in str(stored)
 
         started = next(event for event in repo.events if event["event_type"] == "model.started")
         assert started["payload"]["tool_schema_count"] == 1
         assert started["payload"]["tool_schema_bytes"] == tool_schema_bytes(tools)
+        assert started["payload"]["capability_groups"] == ["search"]
+        assert started["payload"]["tool_scope_excluded_count"] == 26
 
     asyncio.run(run())
 

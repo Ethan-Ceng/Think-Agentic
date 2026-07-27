@@ -13,6 +13,7 @@ from app.core.tools.builtin import build_builtin_runtime_tools
 from app.core.tools.filter import FilteredTool
 from app.core.tools.mcp import MCPTool
 from app.core.tools.registry import ToolRegistry
+from app.core.tools.scope import RuntimeToolScope
 
 
 class ToolFactory:
@@ -21,6 +22,7 @@ class ToolFactory:
     def __init__(self, tool_config: ToolConfig | None = None) -> None:
         self.tool_config = tool_config or ToolConfig()
         self.registry = ToolRegistry(tool_config=self.tool_config)
+        self.runtime_scope = RuntimeToolScope(self.registry)
 
     def build(
         self,
@@ -40,11 +42,21 @@ class ToolFactory:
         api_tool = APITool(self.tool_config)
         if api_tool.get_tools():
             tools.append(api_tool)
+        self.registry.register_runtime_tool(
+            mcp_tool,
+            provider_id="mcp.dynamic",
+            provider_label="MCP",
+            group="mcp",
+            executor_type="mcp",
+            category="MCP",
+            requires_credentials=True,
+        )
         return [
             FilteredTool(
                 inner=tool,
                 tool_config=self.tool_config,
                 registry=self.registry,
+                runtime_scope=self.runtime_scope,
             )
             for tool in tools
         ]
@@ -56,4 +68,5 @@ class ToolFactory:
             inner=runtime_tool,
             tool_config=self.tool_config,
             registry=self.registry,
+            runtime_scope=self.runtime_scope,
         )

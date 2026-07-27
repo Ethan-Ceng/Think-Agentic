@@ -12,6 +12,7 @@ PLANNER_SYSTEM_PROMPT = """
 2. 确定完成任务需要使用哪些工具;
 3. 根据用户的消息确定工作语言;
 4. 生成计划的目标和步骤;
+5. 只能从 Capability Catalog 中选择当前步骤真正需要的能力组;
 """
 
 # 创建Plan规划提示词模板，内部有message+attachments占位符
@@ -24,6 +25,8 @@ CREATE_PLAN_PROMPT = """
 - 你的计划必须简洁明了，不要添加任何不必要的细节
 - 你的步骤必须是原子性且独立的，以便下一个执行者可以使用工具逐一执行它们
 - 你需要判断任务是否可以拆分为多个步骤，如果可以，返回多个步骤；否则，返回单个步骤
+- 每个步骤的 capabilities 只能使用下方 Capability Catalog 的 group；不需要工具时返回空数组
+- 不要因为能力可能有用就提前加入；只声明该步骤实际需要的能力
 
 返回格式要求：
 - 必须返回符合以下 TypeScript 接口定义的 JSON 格式
@@ -43,6 +46,8 @@ interface CreatePlanResponse {{
     id: string;
     /** 步骤描述 **/
     description: string;
+    /** 当前步骤所需的 capability group；不需要工具时为空数组 **/
+    capabilities: string[];
   }}>;
   /** 根据上下文生成的计划目标 **/
   goal: string;
@@ -60,7 +65,8 @@ JSON 输出示例:
   "steps": [
     {{
       "id": "1",
-      "description": "步骤1描述"
+      "description": "步骤1描述",
+      "capabilities": []
     }}
   ]
 }}
@@ -77,6 +83,9 @@ JSON 输出示例:
 
 附件:
 {attachments}
+
+Capability Catalog（仅包含能力摘要，不包含 Tool 参数 Schema）:
+{capability_catalog}
 """
 
 # 更新Plan规划提示词模板，内部有plan和step占位符
@@ -92,6 +101,7 @@ UPDATE_PLAN_PROMPT = """
 - 如果步骤已完成或者不再必要，请将其删除
 - 仔细阅读步骤结果以确定是否成功，如果不成功，请更改后续步骤
 - 根据步骤结果，你需要相应地更新计划步骤
+- 每个新步骤的 capabilities 只能使用下方 Capability Catalog 的 group；不需要工具时返回空数组
 
 返回格式要求：
 - 必须返回符合以下 TypeScript 接口定义的 JSON 格式
@@ -106,6 +116,8 @@ interface UpdatePlanResponse {{
     id: string;
     /** 步骤描述 **/
     description: string;
+    /** 当前步骤所需的 capability group；不需要工具时为空数组 **/
+    capabilities: string[];
   }}>;
 }}
 ```
@@ -115,7 +127,8 @@ JSON输出示例：
   "steps": [
     {{
       "id": "1",
-      "description": "步骤1描述"
+      "description": "步骤1描述",
+      "capabilities": []
     }}
   ]
 }}
@@ -132,4 +145,7 @@ JSON输出示例：
 
 计划 (plan):
 {plan}
+
+Capability Catalog（仅包含能力摘要，不包含 Tool 参数 Schema）:
+{capability_catalog}
 """

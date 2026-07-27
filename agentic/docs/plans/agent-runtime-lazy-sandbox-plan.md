@@ -12,7 +12,7 @@
 - 整体状态：`IN_PROGRESS`
 - 当前阶段：implementation
 - 当前任务：无
-- 已完成：3 / 6
+- 已完成：5 / 6
 - 阻塞问题：无
 - 最近更新时间：2026-07-27（Asia/Shanghai）
 
@@ -43,6 +43,10 @@
 | 2026-07-27 | `IN_PROGRESS` | 无 | Task 2 的 Lazy Runtime、代理、并发认领与失败清理验证完成，等待推进 Task 3 |
 | 2026-07-27 | `IN_PROGRESS` | Task 3 | 开始将 Lazy Runtime 接入 Agent Task，并把附件同步改为 Sandbox 能力首次使用时按需触发 |
 | 2026-07-27 | `IN_PROGRESS` | 无 | Task 3 的 Agent 接入、按 Run 附件 Manifest、首次能力同步与生命周期回归验证完成，等待推进 Task 4 |
+| 2026-07-27 | `IN_PROGRESS` | Task 4 | 开始用紧凑 Capability Catalog 替代 Planner 全量 Schema，并按当前 Step 裁剪 ReAct 工具 |
+| 2026-07-27 | `IN_PROGRESS` | 无 | Task 4 的 Planner 0 Schema、Step Runtime Scope、精确审批恢复和 Trace 裁剪指标验证完成，等待推进 Task 5 |
+| 2026-07-27 | `IN_PROGRESS` | Task 5 | 开始收口 VNC、审批恢复、next-message、取消与 Session 生命周期兼容性 |
+| 2026-07-27 | `IN_PROGRESS` | 无 | Task 5 的 VNC、审批恢复、跨 Run 复用、取消清理与服务关闭兼容性验证完成，等待推进 Task 6 |
 
 ## Task 1：固定 Sandbox 资源成本与 Tool Schema Token 代理基线
 
@@ -320,7 +324,7 @@
 
 ## Task 4：裁剪 Planner 与 ReAct 的 Tool Schema
 
-状态：pending
+状态：completed
 
 ### 目标
 
@@ -381,20 +385,49 @@
 
 ### 执行结果
 
-待执行。
+- `Step` 新增 `capabilities: list[str]`，缺失字段默认空列表；值会去空白、去重。Planner 生成的新 Plan 只保留当前 Registry 中存在的 group，未知 group 被安全移除；历史 Plan 的未知/空 group 在 Runtime Scope 中同样不会获得任何外部工具。
+- Tool Registry 现在可以生成紧凑 Capability Catalog，只包含 `group`、简短描述和 `requires_sandbox/requires_browser`，不包含参数、properties 或完整 Tool JSON Schema；当前 Run 的 MCP 与 Skill contextual tool 会动态进入同一目录。
+- Planner Prompt 要求每个 Step 明确输出 capabilities；`PlannerAgent._get_available_tools()` 固定返回空列表，创建和更新 Plan 前也会清空共享 Scope，因此 Planner 模型调用的 Schema 数与字节均为 0。
+- 新增共享 `RuntimeToolScope`。ReAct 在 Step 开始时按 capabilities 激活 Scope；`FilteredTool` 先应用 Scope，再应用现有 ToolConfig、executor、risk 和 approval 策略，空列表不会被解释为全量能力。
+- `message_notify_user/message_ask_user` 作为结构化系统交互能力始终保留；普通空能力步骤除此之外没有外部工具。Skill contextual tool 只有被当前 Step 显式声明后才进入 Schema。
+- waiting 审批恢复会在原 Step Scope 基础上只额外恢复持久化的 `function_name`；测试证明空能力恢复 `shell_execute` 时不会同时暴露其他 Shell/File/Browser 函数。
+- ReAct 总结阶段重新回到空 Scope；Planner、ReAct 继续共享现有 Memory、Skill Runtime 和分支上下文，不把临时 Scope 写入持久化 Memory。
+- Trace Model Call 的 `request_preview` 与 `model.started` 新增 `capability_groups`、`tool_scope_excluded_count`，继续记录实际 `tool_schema_count/tool_schema_bytes`，不持久化完整 Schema。
+- 基于默认 27 个函数、12,933 bytes 基线的实测代理大小：Planner 为 `0 / 0 bytes`；空能力文本 Step 为 `2 / 1,655 bytes`（仅 message）；Shell+File Step 为 `12 / 6,693 bytes`，且不含 Browser；Browser Step 为 `14 / 6,269 bytes`（Browser + message）。
+- 本 Task 没有数据库迁移或前端改动；用户页面交互不新增可见控件，主要效果体现在模型输入成本和 Trace 摘要。
 
 ### 验证证据
 
 ```text
-命令：待执行
-退出状态：待执行
-关键结果：待执行
-执行时间：待执行
+命令：uv run pytest tests/app/core/agent/test_runtime_tool_scope.py tests/app/core/agent/test_plan_capabilities.py tests/app/core/agent/test_skill_runtime_context.py tests/app/core/agent/test_branch_context_seed.py -q
+退出状态：0
+关键结果：17 passed；10 个既有 Pydantic deprecation warnings
+执行时间：2026-07-27 17:19（Asia/Shanghai）
+
+命令：uv run pytest tests/app/core/agent/test_runtime_tool_scope.py tests/app/core/agent/test_plan_capabilities.py tests/app/core/agent/test_skill_runtime_context.py tests/app/core/agent/test_branch_context_seed.py tests/app/core/tools/test_skill_draft_tools.py tests/app/services/test_trace_service.py tests/app/services/test_agent_interactions.py tests/app/services/test_agent_next_message.py tests/app/services/test_agent_service_recovery.py tests/app/core/agent/test_agent_task_runner_completion.py tests/app/core/agent/test_lazy_attachment_materialization.py tests/app/core/sandbox/test_lazy_sandbox_runtime.py tests/app/services/test_agent_skill_runtime.py tests/app/services/test_skill_trace.py -q
+退出状态：0
+关键结果：76 passed；覆盖审批恢复、队列、服务恢复、Skill、分支、附件懒物化和 Lazy Sandbox；10 个既有 Pydantic deprecation warnings
+执行时间：2026-07-27 17:18（Asia/Shanghai）
+
+命令：uv run ruff check app/core/entities/plan.py app/core/prompts/planner.py app/core/tools/scope.py app/core/tools/filter.py app/core/tools/factory.py app/core/tools/registry.py app/core/agent/base.py app/core/agent/planner.py app/core/agent/react.py app/core/flows/planner_react.py app/services/trace_service.py tests/app/core/agent/test_runtime_tool_scope.py tests/app/core/agent/test_plan_capabilities.py tests/app/core/tools/test_skill_draft_tools.py tests/app/services/test_trace_service.py
+退出状态：0
+关键结果：All checks passed
+执行时间：2026-07-27 17:19（Asia/Shanghai）
+
+命令：uv run python -m py_compile app/core/entities/plan.py app/core/tools/scope.py app/core/tools/factory.py app/core/agent/base.py app/core/agent/planner.py app/core/agent/react.py app/core/flows/planner_react.py app/services/trace_service.py
+退出状态：0
+关键结果：无语法错误
+执行时间：2026-07-27 17:19（Asia/Shanghai）
+
+命令：git diff --check
+退出状态：0
+关键结果：无空白错误；仅显示 Windows CRLF 转换提示
+执行时间：2026-07-27 17:19（Asia/Shanghai）
 ```
 
 ## Task 5：保持 VNC、审批恢复、队列与生命周期兼容
 
-状态：pending
+状态：completed
 
 ### 目标
 
@@ -406,6 +439,11 @@
 - `agentic/api/app/controllers/session.py`（仅在错误映射需要时修改）
 - `agentic/api/app/core/agent/agent_task_runner.py`
 - `agentic/api/app/core/sandbox/runtime.py`
+- `agentic/api/app/core/task/redis_stream_task.py`
+- `agentic/api/tests/app/core/agent/test_interaction_resume.py`
+- `agentic/api/tests/app/core/sandbox/test_lazy_sandbox_runtime.py`
+- `agentic/api/tests/app/core/task/test_redis_stream_task_lifecycle.py`（新建）
+- `agentic/api/tests/app/services/test_session_service_lazy_sandbox.py`（新建）
 - `agentic/api/tests/app/services/test_agent_interactions.py`
 - `agentic/api/tests/app/services/test_agent_next_message.py`
 - `agentic/api/tests/app/services/test_agent_service_recovery.py`
@@ -443,15 +481,39 @@
 
 ### 执行结果
 
-待执行。
+- VNC 保持稳定语义：尚未激活 Sandbox 的 running Session 返回“当前会话无沙箱环境”，且不会因 VNC 查询反向创建 Sandbox；Browser capability 激活后仍可读取持久化 handle 并返回 VNC URL。
+- Tool Approval 保持精确恢复：审批前不创建 Sandbox，批准后仅首次创建一个实例、待调用函数只执行一次；旧 Step 没有 capability 字段时从持久化函数名恢复精确 Runtime Scope。
+- next-message 与跨 Run 生命周期保持按需行为：纯文本 Run 为零 Sandbox，后续 Shell Run 首次激活，之后的 Shell Run 复用同一实例和 handle。
+- 修复 Sandbox 创建中取消的孤儿资源窗口：创建任务受 shield 保护，调用方取消后等待底层 `to_thread` 创建完成并销毁尚未被 runtime 认领的 candidate。
+- 修复服务关闭时任务注册表边遍历边删除导致的 `RuntimeError: dictionary changed size during iteration`：先快照任务列表，再逐个取消并清空注册表。
+- 覆盖 Run cancel/error、实例创建后 destroy、固定 Sandbox Address 和未创建 Sandbox 的组织/归档/分支 Service 行为。
+- 前端未修改：现有 VNC 入口只出现在 Browser Tool 预览，不存在把普通 `running` 状态直接映射为 VNC 可用的逻辑。
+- 未修改 Controller 协议，未新增数据库迁移。
 
 ### 验证证据
 
 ```text
-命令：待执行
-退出状态：待执行
-关键结果：待执行
-执行时间：待执行
+命令：uv run pytest tests/app/services/test_agent_interactions.py tests/app/services/test_agent_next_message.py tests/app/services/test_agent_service_recovery.py tests/app/interfaces/endpoints/test_session_interactions.py tests/app/interfaces/endpoints/test_session_next_message_route.py tests/app/interfaces/endpoints/test_session_recovery_route.py tests/app/core/agent/test_interaction_resume.py tests/app/core/agent/test_agent_task_runner_completion.py tests/app/core/sandbox/test_lazy_sandbox_runtime.py tests/app/core/task/test_redis_stream_task_lifecycle.py tests/app/services/test_session_service_lazy_sandbox.py tests/app/services/test_session_organization.py tests/app/services/test_session_branching.py tests/app/services/test_session_branch_family.py tests/app/core/agent/test_branch_context_seed.py -q
+退出状态：0
+关键结果：79 passed；10 条为既有 Pydantic deprecated 警告
+执行时间：2026-07-27 17:52（Asia/Shanghai）
+
+命令：uv run ruff check app/core/sandbox/runtime.py app/core/task/redis_stream_task.py app/services/session_service.py app/core/agent/agent_task_runner.py tests/app/services/test_agent_interactions.py tests/app/services/test_agent_next_message.py tests/app/services/test_agent_service_recovery.py tests/app/core/agent/test_interaction_resume.py tests/app/core/sandbox/test_lazy_sandbox_runtime.py tests/app/core/task/test_redis_stream_task_lifecycle.py tests/app/services/test_session_service_lazy_sandbox.py
+退出状态：0
+关键结果：All checks passed
+执行时间：2026-07-27 17:51（Asia/Shanghai）
+
+命令：uv run python -m py_compile app/core/sandbox/runtime.py app/core/task/redis_stream_task.py app/services/session_service.py app/core/agent/agent_task_runner.py
+退出状态：0
+关键结果：核心生命周期文件语法检查通过
+执行时间：2026-07-27 17:51（Asia/Shanghai）
+
+命令：git diff --check
+退出状态：0
+关键结果：无 whitespace error；仅 Git 的 LF/CRLF 转换提示
+执行时间：2026-07-27 17:52（Asia/Shanghai）
+
+补充限制：扩展运行需要完整应用 lifespan 的组织/分支 endpoint 测试时，本机 PostgreSQL 与 Redis 未启动，连接 127.0.0.1 被拒绝；Task 5 计划内的 6 个 endpoint 协议测试及对应组织/归档/分支 Service 测试均已通过。真实依赖环境验证留在 Task 6。
 ```
 
 ## Task 6：全量验证、资源对比和代码审查

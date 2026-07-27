@@ -6,6 +6,7 @@
 @File    : planner.py
 """
 import logging
+import json
 from typing import Optional, AsyncGenerator
 
 from app.core.entities.event import BaseEvent, MessageEvent, PlanEvent, PlanEventStatus
@@ -49,12 +50,37 @@ class PlannerAgent(BaseAgent):
     _format: Optional[str] = "json_object"
     _tool_choice: Optional[str] = "none"
 
+    def _get_available_tools(self) -> list[dict]:
+        """Planner selects capability groups and never receives full Tool schemas."""
+        return []
+
+    def _capability_catalog(self) -> str:
+        catalog = (
+            self._tool_registry.list_capability_catalog()
+            if self._tool_registry
+            else []
+        )
+        return json.dumps(catalog, ensure_ascii=False, separators=(",", ":"))
+
+    def _validate_plan_capabilities(self, plan: Plan) -> None:
+        if self._tool_registry is None:
+            return
+        known = self._tool_registry.capability_groups()
+        for step in plan.steps:
+            step.capabilities = [
+                capability
+                for capability in step.capabilities
+                if capability in known
+            ]
+
     async def create_plan(self, message: Message) -> AsyncGenerator[BaseEvent, None]:
         """根据用户传递的消息创建计划/规划，迭代返回对应的事件"""
+        self.set_runtime_tool_scope([])
         # 1.根据用户传递的消息生成创建plan的提示词
         query = CREATE_PLAN_PROMPT.format(
             message=message.message,
             attachments="\n".join(message.attachments),
+            capability_catalog=self._capability_catalog(),
         )
 
         # 2.调用invoke函数返回迭代事件
@@ -67,6 +93,7 @@ class PlannerAgent(BaseAgent):
 
                 # 5.将解析对象转换成Plan计划
                 plan = Plan.model_validate(parsed_obj)
+                self._validate_plan_capabilities(plan)
 
                 # 6.返回PlanEvent表示规划创建成功
                 yield PlanEvent(plan=plan, status=PlanEventStatus.CREATED)
@@ -76,10 +103,12 @@ class PlannerAgent(BaseAgent):
 
     async def update_plan(self, plan: Plan, step: Step) -> AsyncGenerator[BaseEvent, None]:
         """根据传递的原始规划+子步骤更新事件"""
+        self.set_runtime_tool_scope([])
         # 1.使用plan+step创建更新Plan提示词
         query = UPDATE_PLAN_PROMPT.format(
             plan=plan.model_dump_json(),
             step=step.model_dump_json(),
+            capability_catalog=self._capability_catalog(),
         )
 
         # 2.调用invoke获取对应的事件
@@ -92,6 +121,7 @@ class PlannerAgent(BaseAgent):
 
                 # 5.将解析对象转换成Plan
                 updated_plan = Plan.model_validate(parsed_obj)
+                self._validate_plan_capabilities(updated_plan)
 
                 # 6.拷贝更新计划中的steps，避免造成数据污染
                 new_steps = [Step.model_validate(step) for step in updated_plan.steps]

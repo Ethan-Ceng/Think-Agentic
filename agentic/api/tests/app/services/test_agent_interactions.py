@@ -1,5 +1,3 @@
-from datetime import datetime
-
 import pytest
 
 from app.core.entities.event import (

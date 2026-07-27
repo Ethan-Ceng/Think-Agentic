@@ -5,6 +5,7 @@ from collections import deque
 
 import pytest
 
+from app.core.sandbox.docker_sandbox import DockerSandbox
 from app.core.sandbox.runtime import (
     LazySandboxRuntime,
     SandboxNotActivatedError,
@@ -182,6 +183,29 @@ def test_concurrent_first_access_creates_and_persists_only_one_sandbox() -> None
     asyncio.run(scenario())
 
 
+def test_cancellation_during_create_waits_for_and_destroys_unclaimed_candidate() -> None:
+    async def scenario() -> None:
+        runtime, repository = make_runtime()
+        candidate = RecordingSandbox("sandbox-cancelled")
+        RecordingSandboxClass.create_results.append(candidate)
+        RecordingSandboxClass.create_started = asyncio.Event()
+        RecordingSandboxClass.allow_create = asyncio.Event()
+
+        activation = asyncio.create_task(runtime.get_sandbox())
+        await RecordingSandboxClass.create_started.wait()
+        activation.cancel()
+        RecordingSandboxClass.allow_create.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await activation
+
+        assert candidate.destroy_calls == 1
+        assert repository.claims == []
+        assert runtime.is_activated is False
+
+    asyncio.run(scenario())
+
+
 def test_existing_handle_is_restored_without_creating_a_new_sandbox() -> None:
     async def scenario() -> None:
         runtime, repository = make_runtime(sandbox_id="sandbox-existing")
@@ -305,6 +329,35 @@ def test_sandbox_proxy_delegates_async_methods_after_activation() -> None:
     asyncio.run(scenario())
 
 
+def test_cross_run_sequence_plain_then_shell_activates_once_and_later_runs_reuse() -> None:
+    async def scenario() -> None:
+        runtime, repository = make_runtime()
+
+        # A plain first/next message only updates Run state and never asks for
+        # a Sandbox capability.
+        assert runtime.is_activated is False
+        assert RecordingSandboxClass.create_calls == 0
+
+        await runtime.sandbox.exec_command("shell-1", "/tmp", "echo first")
+        sandbox = runtime.active_sandbox
+
+        # A later plain message leaves the activated instance untouched, and a
+        # following Shell message reuses the same persisted handle.
+        assert sandbox is not None
+        await runtime.sandbox.exec_command("shell-2", "/tmp", "echo second")
+
+        assert RecordingSandboxClass.create_calls == 1
+        assert repository.claims == [
+            ("session-1", sandbox.id, None),
+        ]
+        assert sandbox.exec_calls == [
+            ("shell-1", "/tmp", "echo first"),
+            ("shell-2", "/tmp", "echo second"),
+        ]
+
+    asyncio.run(scenario())
+
+
 def test_destroy_before_activation_is_a_noop() -> None:
     async def scenario() -> None:
         runtime, _ = make_runtime()
@@ -327,3 +380,18 @@ def test_destroy_after_activation_delegates_once() -> None:
         assert sandbox.destroy_calls == 1
 
     asyncio.run(scenario())
+
+
+def test_fixed_address_sandbox_destroy_never_removes_a_docker_container(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected_docker_client():
+        raise AssertionError("fixed-address Sandbox must not manage Docker")
+
+    monkeypatch.setattr(
+        "app.core.sandbox.docker_sandbox.docker.from_env",
+        unexpected_docker_client,
+    )
+    sandbox = DockerSandbox(ip="127.0.0.1")
+
+    assert asyncio.run(sandbox.destroy()) is True

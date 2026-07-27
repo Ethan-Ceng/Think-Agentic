@@ -37,6 +37,7 @@ class ReActAgent(BaseAgent):
 
     async def execute_step(self, plan: Plan, step: Step, message: Message) -> AsyncGenerator[BaseEvent, None]:
         """根据传递的消息+规划+子步骤，执行相应的子步骤"""
+        self.set_runtime_tool_scope(step.capabilities)
         # 1.根据传递的内容生成执行消息
         query = EXECUTION_PROMPT.format(
             message=message.message,
@@ -99,6 +100,10 @@ class ReActAgent(BaseAgent):
             resolution: InteractionResolution,
     ) -> AsyncGenerator[BaseEvent, None]:
         """恢复被结构化询问或工具审批暂停的当前步骤。"""
+        self.set_runtime_tool_scope(
+            step.capabilities,
+            exact_functions=[resolution.function_name],
+        )
         step.status = ExecutionStatus.RUNNING
         async for event in self.resume_interaction(resolution):
             if isinstance(event, InteractionEvent):
@@ -124,6 +129,7 @@ class ReActAgent(BaseAgent):
 
     async def summarize(self) -> AsyncGenerator[BaseEvent, None]:
         """调用Agent汇总历史的消息并生成最终回复+附件"""
+        self.set_runtime_tool_scope([])
         # 1.构建请求query
         query = SUMMARIZE_PROMPT
 
