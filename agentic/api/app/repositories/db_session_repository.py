@@ -650,6 +650,44 @@ class DBSessionRepository(SessionRepository):
         if result.rowcount == 0:
             raise ValueError(f"会话[{session_id}]不存在，请核实后重试")
 
+    async def claim_sandbox_id(
+            self,
+            session_id: str,
+            candidate_id: str,
+            *,
+            expected_sandbox_id: Optional[str],
+    ) -> str:
+        """Atomically persist a lazy Sandbox candidate or return its winner."""
+        expected_condition = (
+            SessionModel.sandbox_id.is_(None)
+            if expected_sandbox_id is None
+            else SessionModel.sandbox_id == expected_sandbox_id
+        )
+        result = await self.db_session.execute(
+            update(SessionModel)
+            .where(
+                SessionModel.id == session_id,
+                expected_condition,
+            )
+            .values(sandbox_id=candidate_id)
+            .returning(SessionModel.sandbox_id)
+        )
+        claimed_id = result.scalar_one_or_none()
+        if claimed_id is not None:
+            return claimed_id
+
+        current_result = await self.db_session.execute(
+            select(SessionModel).where(SessionModel.id == session_id)
+        )
+        current = current_result.scalar_one_or_none()
+        if current is None:
+            raise ValueError(f"会话[{session_id}]不存在，请核实后重试")
+        if current.sandbox_id is None:
+            raise RuntimeError(
+                f"会话[{session_id}]的 Sandbox 运行句柄发生异常并发变更"
+            )
+        return current.sandbox_id
+
     async def update_latest_message(self, session_id: str, message: str, timestamp: datetime) -> None:
         """更新会话最新消息"""
         # 1.构建更新语句并执行

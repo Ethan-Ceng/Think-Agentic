@@ -12,7 +12,7 @@
 - 整体状态：`IN_PROGRESS`
 - 当前阶段：implementation
 - 当前任务：无
-- 已完成：1 / 6
+- 已完成：2 / 6
 - 阻塞问题：无
 - 最近更新时间：2026-07-27（Asia/Shanghai）
 
@@ -39,6 +39,8 @@
 | 2026-07-27 | `PLAN_READY` | 无 | 设计确认后拆出独立的 Sandbox 懒启动与 Tool Token 优化批次 |
 | 2026-07-27 | `IN_PROGRESS` | Task 1 | 已建立 `feature/agent-runtime-lazy-sandbox` 分支，开始固定资源与 Tool Schema 基线 |
 | 2026-07-27 | `IN_PROGRESS` | 无 | Task 1 基线与 Trace 观测字段验证完成，等待推进 Task 2 |
+| 2026-07-27 | `IN_PROGRESS` | Task 2 | 开始建立并发安全的 Lazy Sandbox Runtime、代理对象与原子 runtime handle 持久化 |
+| 2026-07-27 | `IN_PROGRESS` | 无 | Task 2 的 Lazy Runtime、代理、并发认领与失败清理验证完成，等待推进 Task 3 |
 
 ## Task 1：固定 Sandbox 资源成本与 Tool Schema Token 代理基线
 
@@ -131,7 +133,7 @@
 
 ## Task 2：建立并发安全的 Lazy Sandbox Runtime
 
-状态：pending
+状态：completed
 
 ### 目标
 
@@ -182,15 +184,42 @@
 
 ### 执行结果
 
-待执行。
+- 新增 `LazySandboxRuntime`，构造阶段不创建或恢复 Sandbox；`get_sandbox()` 使用 async lock 和 double-check，首次调用才恢复或创建实例。
+- 新增完整的 Sandbox/Browser 懒代理。所有异步能力按需委托；未激活时读取 `id/vnc_url/cdp_url` 会返回明确错误，不会借属性访问隐式创建环境。
+- Browser 实例在首个 Browser 方法调用时获取并缓存；Sandbox 与 Browser 共用同一个 Runtime 生命周期。
+- 新增 `SessionRepository.claim_sandbox_id()`，通过期望旧 handle 的条件更新原子认领候选 sandbox_id；并发失败者读取赢家、销毁自己新建的实例后复用赢家。
+- 创建失败、持久化失败和 Session 已删除均不缓存实例；已创建但无法认领的孤儿实例会销毁，后续调用可以重试。
+- 未激活 Runtime 的 `destroy()` 为 no-op；激活后只委托一次当前 Sandbox 的销毁逻辑，因此固定 `SANDBOX_ADDRESS` 继续沿用现有 `DockerSandbox.destroy()` 语义。
+- 增加 `sandbox_lazy_create`、`sandbox_lazy_reuse`、`sandbox_lazy_failed` 结构化日志，只记录 Session/Sandbox/操作和错误类型，不记录文件或命令内容。
+- 本 Task 只建立可复用 Runtime 与持久化原语；`AgentService` 从 eager 路径切换到代理、移除 Run 启动时 `ensure_sandbox()` 及附件懒同步属于 Task 3。
 
 ### 验证证据
 
 ```text
-命令：待执行
-退出状态：待执行
-关键结果：待执行
-执行时间：待执行
+命令：uv run pytest tests/app/core/sandbox/test_lazy_sandbox_runtime.py tests/app/repositories/test_db_session_runtime_handles.py -q
+退出状态：0
+关键结果：14 passed；10 个既有 Pydantic deprecation warnings
+执行时间：2026-07-27 15:50（Asia/Shanghai）
+
+命令：uv run pytest tests/app/core/sandbox/test_lazy_sandbox_runtime.py tests/app/repositories/test_db_session_runtime_handles.py tests/app/repositories/test_db_session_organization.py tests/app/services/test_agent_service_lazy_sandbox.py tests/app/core/agent/test_agent_task_runner_lazy_sandbox.py tests/app/core/agent/test_runtime_tool_scope.py tests/app/services/test_trace_service.py -q
+退出状态：0
+关键结果：43 passed；10 个既有 Pydantic deprecation warnings
+执行时间：2026-07-27 15:48（Asia/Shanghai）
+
+命令：uv run ruff check app/core/sandbox/runtime.py app/core/browser/lazy.py app/services/agent_service.py tests/app/core/sandbox/test_lazy_sandbox_runtime.py
+退出状态：0
+关键结果：All checks passed
+执行时间：2026-07-27 15:50（Asia/Shanghai）
+
+命令：uv run python -m py_compile app/core/sandbox/runtime.py app/core/browser/lazy.py app/services/agent_service.py
+退出状态：0
+关键结果：无语法错误
+执行时间：2026-07-27 15:50（Asia/Shanghai）
+
+命令：git diff --check
+退出状态：0
+关键结果：无空白错误；仅显示 Windows CRLF 转换提示
+执行时间：2026-07-27 15:49（Asia/Shanghai）
 ```
 
 ## Task 3：让 Agent Task 与附件同步真正按需触发

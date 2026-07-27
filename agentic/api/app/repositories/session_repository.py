@@ -110,6 +110,16 @@ class SessionRepository(Protocol):
         """只更新 Agent 运行句柄，避免覆盖并发写入的导航元数据。"""
         ...
 
+    async def claim_sandbox_id(
+            self,
+            session_id: str,
+            candidate_id: str,
+            *,
+            expected_sandbox_id: Optional[str],
+    ) -> str:
+        """Atomically install a lazy Sandbox handle or return the winner."""
+        ...
+
     async def update_latest_message(self, session_id: str, message: str, timestamp: datetime) -> None:
         """根据传递的信息更新最新消息"""
         ...
