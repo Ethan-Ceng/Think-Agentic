@@ -51,6 +51,13 @@ SENSITIVE_KEYS = {
     "set-cookie",
 }
 PREVIEW_LIMIT = 1200
+SANDBOX_OPERATION_NAMES = {
+    "create",
+    "get",
+    "ensure",
+    "get_browser",
+    "upload_file",
+}
 
 
 class TraceService:
@@ -96,6 +103,10 @@ class TraceService:
         self._tool_started_at = {}
         self._terminal_failed = False
         now = datetime.now()
+        tool_registry_summary = summarize_tool_registry(
+            self._registry,
+            self._tool_config,
+        )
         run_data = {
             "id": self.run_id,
             "trace_id": self.trace_id,
@@ -120,6 +131,7 @@ class TraceService:
                     payload={
                         "message": _preview(input_event.message),
                         "attachments": _snapshot(input_event.attachments),
+                        "tool_registry": tool_registry_summary,
                     },
                     created_at=now,
                 )
@@ -127,6 +139,48 @@ class TraceService:
 
         await self._write(write)
         return self.run_id
+
+    async def record_sandbox_activation(
+        self,
+        *,
+        activation_reason: str,
+        first_capability: str | None,
+        operation_counts: Dict[str, int],
+        startup_ms: int | None,
+        attachment_sync_bytes: int,
+        outcome: str,
+        error_type: str | None = None,
+    ) -> None:
+        """Record bounded Sandbox lifecycle metrics without user content."""
+        if not self.run_id:
+            return
+        counts = {
+            name: max(0, int(operation_counts.get(name, 0)))
+            for name in sorted(SANDBOX_OPERATION_NAMES)
+        }
+        payload = {
+            "activation_reason": activation_reason,
+            "first_capability": first_capability or "",
+            "operation_counts": counts,
+            "startup_ms": max(0, int(startup_ms)) if startup_ms is not None else None,
+            "attachment_sync_bytes": max(0, int(attachment_sync_bytes)),
+            "outcome": outcome,
+            "error_type": error_type or "",
+        }
+
+        async def write(uow: IUnitOfWork) -> None:
+            await uow.trace.append_event(
+                self._trace_event_data(
+                    event_type=(
+                        "sandbox.activated"
+                        if outcome == "succeeded"
+                        else "sandbox.activation_failed"
+                    ),
+                    payload=payload,
+                )
+            )
+
+        await self._write(write)
 
     async def project_event(self, event: BaseEvent) -> None:
         """Project one runtime event into trace tables."""
@@ -180,9 +234,11 @@ class TraceService:
         model_name = str(llm_snapshot.get("model_name") or getattr(llm, "model_name", "") or "")
         temperature = llm_snapshot.get("temperature", getattr(llm, "temperature", None))
         max_tokens = llm_snapshot.get("max_tokens", getattr(llm, "max_tokens", None))
+        schema_bytes = tool_schema_bytes(tools)
         request_preview = {
             "messages": _summarize_messages(messages),
             "tools": [_tool_name(tool) for tool in tools],
+            "tool_schema_bytes": schema_bytes,
         }
         data = {
             "id": model_call_id,
@@ -215,6 +271,7 @@ class TraceService:
                         "agent_name": agent_name,
                         "model_name": model_name,
                         "tool_schema_count": len(tools or []),
+                        "tool_schema_bytes": schema_bytes,
                         "message_count": len(messages or []),
                     },
                     created_at=started_at,
@@ -610,6 +667,80 @@ def model_call_timer() -> float:
 
 def elapsed_ms(start: float) -> int:
     return int((perf_counter() - start) * 1000)
+
+
+def tool_schema_bytes(tools: List[Dict[str, Any]] | None) -> int:
+    """Return UTF-8 bytes for the canonical schema payload, not a token estimate."""
+    if not tools:
+        return 0
+    payload = json.dumps(
+        tools,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=_schema_json_default,
+    )
+    return len(payload.encode("utf-8"))
+
+
+def summarize_tool_registry(
+    registry: ToolRegistry,
+    tool_config: ToolConfig,
+) -> Dict[str, Any]:
+    """Summarize effective Tool capabilities without retaining full schemas."""
+    descriptors = [
+        descriptor
+        for descriptor in registry.apply_config(tool_config, effective=True)
+        if descriptor.enabled
+    ]
+    categories = {
+        "requires_sandbox": 0,
+        "requires_browser": 0,
+        "no_sandbox": 0,
+    }
+    groups: Dict[str, Dict[str, Any]] = {}
+    for descriptor in descriptors:
+        if descriptor.requires_browser:
+            category = "requires_browser"
+        elif descriptor.requires_sandbox:
+            category = "requires_sandbox"
+        else:
+            category = "no_sandbox"
+        categories[category] += 1
+        group = groups.setdefault(
+            descriptor.group,
+            {"function_count": 0, "categories": set()},
+        )
+        group["function_count"] += 1
+        group["categories"].add(category)
+
+    group_summary = {}
+    for group_name in sorted(groups):
+        group = groups[group_name]
+        group_categories = sorted(group["categories"])
+        group_summary[group_name] = {
+            "function_count": group["function_count"],
+            "category": (
+                group_categories[0] if len(group_categories) == 1 else "mixed"
+            ),
+        }
+    return {
+        "group_count": len(group_summary),
+        "function_count": len(descriptors),
+        "categories": categories,
+        "groups": group_summary,
+        "tool_schema_bytes": tool_schema_bytes(
+            [descriptor.tool_schema for descriptor in descriptors]
+        ),
+    }
+
+
+def _schema_json_default(value: Any) -> str:
+    if callable(value):
+        module = getattr(value, "__module__", type(value).__module__)
+        name = getattr(value, "__qualname__", getattr(value, "__name__", type(value).__name__))
+        return f"{module}.{name}"
+    return type(value).__name__
 
 
 def _event_type(event: BaseEvent) -> str:

@@ -8,7 +8,8 @@
 import asyncio
 import base64
 import logging
-from typing import List, AsyncGenerator, Callable, BinaryIO
+from time import perf_counter
+from typing import Any, List, AsyncGenerator, Callable, BinaryIO
 
 from fastapi import UploadFile
 from pydantic import TypeAdapter
@@ -73,6 +74,7 @@ class AgentTaskRunner(TaskRunner):
             skill_package_storage: SkillPackageStorage | None = None,
             bundled_skill_service: BundledSkillService | None = None,
             skill_workspace_service: SkillWorkspaceService | None = None,
+            sandbox_activation_summary: dict[str, Any] | None = None,
     ) -> None:
         """构造函数，完成Agent任务运行器的创建"""
         self._uow_factory = uow_factory
@@ -80,6 +82,7 @@ class AgentTaskRunner(TaskRunner):
         self._session_id = session_id
         self._user_id = user_id
         self._sandbox = sandbox
+        self._sandbox_activation_summary = sandbox_activation_summary
         self._trace_service = TraceService(
             uow_factory=uow_factory,
             tool_config=tool_config,
@@ -172,6 +175,10 @@ class AgentTaskRunner(TaskRunner):
             filepath = f"/home/ubuntu/upload/{file.filename}"
 
             # 3.调用沙箱将文件上传至沙箱
+            self._record_sandbox_operation(
+                "upload_file",
+                attachment_bytes=file.size,
+            )
             tool_result = await self._sandbox.upload_file(
                 file_data=file_data,
                 filepath=filepath,
@@ -183,6 +190,23 @@ class AgentTaskRunner(TaskRunner):
                 return file.model_copy(update={"filepath": filepath})
         except Exception as e:
             logger.exception(f"AgentTaskRunner同步文件[{file_id}]失败: {str(e)}")
+
+    def _record_sandbox_operation(
+        self,
+        operation: str,
+        *,
+        elapsed: int = 0,
+        attachment_bytes: int = 0,
+    ) -> None:
+        summary = getattr(self, "_sandbox_activation_summary", None)
+        if summary is None:
+            return
+        counts = summary.setdefault("operation_counts", {})
+        counts[operation] = int(counts.get(operation, 0)) + 1
+        summary["startup_ms"] = int(summary.get("startup_ms", 0)) + max(0, elapsed)
+        summary["attachment_sync_bytes"] = int(
+            summary.get("attachment_sync_bytes", 0)
+        ) + max(0, attachment_bytes)
 
     async def _sync_message_attachments_to_sandbox(self, event: MessageEvent) -> None:
         """将消息事件中的附件同步到沙箱中"""
@@ -390,6 +414,17 @@ class AgentTaskRunner(TaskRunner):
             task_id=task.id,
             input_event=event,
         )
+        if self._sandbox_activation_summary is not None:
+            summary = self._sandbox_activation_summary
+            await self._trace_service.record_sandbox_activation(
+                activation_reason=summary["activation_reason"],
+                first_capability=summary.get("first_capability"),
+                operation_counts=summary["operation_counts"],
+                startup_ms=summary.get("startup_ms"),
+                attachment_sync_bytes=summary.get("attachment_sync_bytes", 0),
+                outcome="succeeded",
+            )
+            self._sandbox_activation_summary = None
         if self._skill_runtime_service is None:
             if event.skills:
                 raise SkillRuntimeError("Skill runtime is not configured")
@@ -468,7 +503,14 @@ class AgentTaskRunner(TaskRunner):
         """根据传递的任务处理agent消息队列并运行agent流"""
         try:
             logger.info("AgentTaskRunner任务处理开始")
-            await self._sandbox.ensure_sandbox()
+            ensure_started = perf_counter()
+            try:
+                await self._sandbox.ensure_sandbox()
+            finally:
+                self._record_sandbox_operation(
+                    "ensure",
+                    elapsed=int((perf_counter() - ensure_started) * 1000),
+                )
             await self._mcp_tool.initialize(self._mcp_config)
             await self._a2a_tool.initialize(self._a2a_config)
 

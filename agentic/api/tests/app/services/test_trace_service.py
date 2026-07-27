@@ -18,7 +18,7 @@ from app.core.entities.event import (
 from app.core.entities.plan import Step
 from app.core.entities.tool_config import ToolConfig
 from app.core.entities.tool_result import ToolResult
-from app.services.trace_service import TraceService
+from app.services.trace_service import TraceService, tool_schema_bytes
 
 
 class FakeTraceRepository:
@@ -211,6 +211,15 @@ def test_trace_service_projects_run_step_tool_and_model_call() -> None:
         event_types = {event["event_type"] for event in repo.events}
         expected = {"run.started", "step.started", "tool.calling", "tool.called", "model.started", "model.succeeded"}
         assert expected <= event_types
+        run_started = next(event for event in repo.events if event["event_type"] == "run.started")
+        registry_summary = run_started["payload"]["tool_registry"]
+        assert registry_summary["function_count"] == 27
+        assert registry_summary["categories"] == {
+            "requires_sandbox": 10,
+            "requires_browser": 12,
+            "no_sandbox": 5,
+        }
+        assert "shell_execute" not in str(registry_summary)
 
     asyncio.run(run())
 
@@ -259,5 +268,100 @@ def test_trace_service_projects_interaction_without_sensitive_arguments() -> Non
         assert interaction_events[1]["payload"]["decision"] == "approve"
         assert all("function_args" not in event["payload"] for event in interaction_events)
         assert "must-not-appear" not in str(interaction_events)
+
+    asyncio.run(run())
+
+
+def test_trace_records_tool_schema_bytes_without_persisting_full_schema() -> None:
+    repo = FakeTraceRepository()
+    service = TraceService(uow_factory=lambda: FakeUow(repo))
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "api_private_search",
+                "description": "private schema description must not be persisted",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string", "description": "中文关键词"}},
+                },
+            },
+        }
+    ]
+
+    async def run() -> None:
+        await service.start_run(
+            user_id="user-1",
+            session_id="session-1",
+            task_id="task-1",
+            input_event=MessageEvent(role="user", message="search"),
+        )
+        model_call_id = await service.record_model_call_started(
+            agent_name="planner",
+            llm=FakeLLM(),
+            messages=[{"role": "user", "content": "search"}],
+            tools=tools,
+            response_format=None,
+            tool_choice="none",
+        )
+
+        stored = repo.model_calls[model_call_id]
+        assert stored["tool_schema_count"] == 1
+        assert stored["request_preview"]["tool_schema_bytes"] == tool_schema_bytes(tools)
+        assert stored["request_preview"]["tools"] == ["api_private_search"]
+        assert "private schema description" not in str(stored)
+
+        started = next(event for event in repo.events if event["event_type"] == "model.started")
+        assert started["payload"]["tool_schema_count"] == 1
+        assert started["payload"]["tool_schema_bytes"] == tool_schema_bytes(tools)
+
+    asyncio.run(run())
+
+
+def test_trace_records_sandbox_activation_summary_without_content() -> None:
+    repo = FakeTraceRepository()
+    service = TraceService(uow_factory=lambda: FakeUow(repo))
+
+    async def run() -> None:
+        await service.start_run(
+            user_id="user-1",
+            session_id="session-1",
+            task_id="task-1",
+            input_event=MessageEvent(role="user", message="open a shell"),
+        )
+        await service.record_sandbox_activation(
+            activation_reason="task_initialization",
+            first_capability=None,
+            operation_counts={
+                "create": 1,
+                "get": 0,
+                "ensure": 1,
+                "get_browser": 1,
+                "upload_file": 2,
+            },
+            startup_ms=420,
+            attachment_sync_bytes=8192,
+            outcome="succeeded",
+        )
+
+        event = next(
+            item for item in repo.events if item["event_type"] == "sandbox.activated"
+        )
+        assert event["payload"] == {
+            "activation_reason": "task_initialization",
+            "first_capability": "",
+            "operation_counts": {
+                "create": 1,
+                "get": 0,
+                "ensure": 1,
+                "get_browser": 1,
+                "upload_file": 2,
+            },
+            "startup_ms": 420,
+            "attachment_sync_bytes": 8192,
+            "outcome": "succeeded",
+            "error_type": "",
+        }
+        assert "open a shell" not in str(event["payload"])
 
     asyncio.run(run())
