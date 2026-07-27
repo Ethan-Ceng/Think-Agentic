@@ -55,10 +55,14 @@ class FakeUow:
 class RecordingBrowser:
     def __init__(self) -> None:
         self.navigate_calls: list[str] = []
+        self.cleanup_calls = 0
 
     async def navigate(self, url: str) -> str:
         self.navigate_calls.append(url)
         return f"visited:{url}"
+
+    async def cleanup(self) -> None:
+        self.cleanup_calls += 1
 
 
 class RecordingSandbox:
@@ -377,6 +381,20 @@ def test_destroy_after_activation_delegates_once() -> None:
         assert sandbox.destroy_calls == 1
         assert runtime.is_activated is False
         assert await runtime.destroy() is True
+        assert sandbox.destroy_calls == 1
+
+    asyncio.run(scenario())
+
+
+def test_destroy_cleans_up_activated_browser_before_sandbox() -> None:
+    async def scenario() -> None:
+        runtime, _ = make_runtime()
+        browser = await runtime.get_browser()
+        sandbox = runtime.active_sandbox
+
+        assert sandbox is not None
+        assert await runtime.destroy() is True
+        assert browser.cleanup_calls == 1
         assert sandbox.destroy_calls == 1
 
     asyncio.run(scenario())

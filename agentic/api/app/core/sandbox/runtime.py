@@ -356,20 +356,38 @@ class LazySandboxRuntime:
     async def destroy(self) -> bool:
         """Destroy only an instance that was actually activated."""
         async with self._sandbox_lock:
-            sandbox = self._sandbox
-            if sandbox is None:
-                return True
-            self._sandbox = None
-            self._browser = None
-            self._sandbox_ready = False
-            self._prepared_manifest_version = -1
-            if self._attachment_materializer is not None:
-                self._attachment_materializer.reset()
-            try:
-                return await sandbox.destroy()
-            except BaseException as exc:
-                self._log_failed("destroy", exc)
-                raise
+            async with self._browser_lock:
+                sandbox = self._sandbox
+                browser = self._browser
+                if sandbox is None and browser is None:
+                    return True
+                self._sandbox = None
+                self._browser = None
+                self._sandbox_ready = False
+                self._prepared_manifest_version = -1
+                if self._attachment_materializer is not None:
+                    self._attachment_materializer.reset()
+
+                cleanup_error: BaseException | None = None
+                cleanup = getattr(browser, "cleanup", None)
+                if callable(cleanup):
+                    try:
+                        await cleanup()
+                    except BaseException as exc:
+                        cleanup_error = exc
+                        self._log_failed("browser_cleanup", exc)
+
+                sandbox_destroyed = True
+                if sandbox is not None:
+                    try:
+                        sandbox_destroyed = await sandbox.destroy()
+                    except BaseException as exc:
+                        self._log_failed("destroy", exc)
+                        raise
+
+                if cleanup_error is not None:
+                    raise cleanup_error
+                return sandbox_destroyed
 
     async def _try_restore(self, sandbox_id: str) -> Optional[Sandbox]:
         try:

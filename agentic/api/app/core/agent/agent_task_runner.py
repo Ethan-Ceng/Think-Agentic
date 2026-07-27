@@ -454,6 +454,9 @@ class AgentTaskRunner(TaskRunner):
         try:
             logger.info("AgentTaskRunner任务处理开始")
             await self._mcp_tool.initialize(self._mcp_config)
+            flow = getattr(self, "_flow", None)
+            if flow is not None:
+                flow.refresh_mcp_tools()
             await self._a2a_tool.initialize(self._a2a_config)
 
             current_event: Event | None = None

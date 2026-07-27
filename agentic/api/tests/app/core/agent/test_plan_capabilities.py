@@ -104,3 +104,40 @@ def test_contextual_tool_is_visible_only_when_its_group_is_in_scope() -> None:
         schema["function"]["name"]
         for schema in contextual.get_tools()
     ] == ["context_search_run"]
+
+
+def test_mcp_capability_catalog_refreshes_after_async_initialization() -> None:
+    factory = ToolFactory(ToolConfig())
+    mcp_tool = MCPTool()
+    tools = factory.build(
+        sandbox=object(),
+        browser=object(),
+        search_engine=object(),
+        mcp_tool=mcp_tool,
+        a2a_tool=A2ATool(),
+    )
+    filtered_mcp = next(tool for tool in tools if tool.name == "mcp")
+
+    assert "mcp" not in factory.registry.capability_groups()
+
+    mcp_tool._tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "mcp_search",
+                "description": "Search an MCP source.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                },
+            },
+        }
+    ]
+    factory.refresh_mcp_tools(mcp_tool)
+
+    assert "mcp" in factory.registry.capability_groups()
+    factory.runtime_scope.activate(["mcp"])
+    assert [
+        schema["function"]["name"]
+        for schema in filtered_mcp.get_tools()
+    ] == ["mcp_search"]

@@ -61,6 +61,7 @@ class PlannerReActFlow(BaseFlow):
         self._session_id = session_id
         self.status = FlowStatus.IDLE
         self.plan: Optional[Plan] = None
+        self._mcp_tool = mcp_tool
 
         # 2.初始化Agent预设工具列表
         self._tool_factory = ToolFactory(tool_config=tool_config)
@@ -125,6 +126,10 @@ class PlannerReActFlow(BaseFlow):
 
     def get_available_tool_names(self) -> set[str]:
         return self.react.get_available_tool_names()
+
+    def refresh_mcp_tools(self) -> None:
+        """Expose MCP tools after their asynchronous initialization completes."""
+        self._tool_factory.refresh_mcp_tools(self._mcp_tool)
 
     async def invoke(self, message: Message) -> AsyncGenerator[BaseEvent, None]:
         """传递消息，运行流，在六中调用planner&react智能体组合完成任务并返回对应事件"""

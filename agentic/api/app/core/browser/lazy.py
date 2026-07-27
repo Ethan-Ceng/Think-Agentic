@@ -90,4 +90,3 @@ class LazyBrowser:
         max_lines: Optional[int] = None,
     ) -> ToolResult:
         return await (await self._browser()).console_view(max_lines)
-

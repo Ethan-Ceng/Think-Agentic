@@ -9,10 +9,10 @@
 
 ## 当前进度
 
-- 整体状态：`IN_PROGRESS`
-- 当前阶段：implementation
+- 整体状态：`READY_TO_MERGE`
+- 当前阶段：complete
 - 当前任务：无
-- 已完成：5 / 6
+- 已完成：6 / 6
 - 阻塞问题：无
 - 最近更新时间：2026-07-27（Asia/Shanghai）
 
@@ -47,6 +47,9 @@
 | 2026-07-27 | `IN_PROGRESS` | 无 | Task 4 的 Planner 0 Schema、Step Runtime Scope、精确审批恢复和 Trace 裁剪指标验证完成，等待推进 Task 5 |
 | 2026-07-27 | `IN_PROGRESS` | Task 5 | 开始收口 VNC、审批恢复、next-message、取消与 Session 生命周期兼容性 |
 | 2026-07-27 | `IN_PROGRESS` | 无 | Task 5 的 VNC、审批恢复、跨 Run 复用、取消清理与服务关闭兼容性验证完成，等待推进 Task 6 |
+| 2026-07-27 | `IN_PROGRESS` | Task 6 | 开始全量自动化、真实 Docker 资源行为、Trace 成本对比与代码审查门禁 |
+| 2026-07-27 | `REVIEWING` | Task 6 | 自动化、构建与真实 Docker 路径通过；代码审查发现 MCP Registry 刷新和 Browser cleanup 两个 major |
+| 2026-07-27 | `READY_TO_MERGE` | 无 | 两个 major 已整改并重新验证；350 项后端、172 项前端、构建、真实 File/CDP/VNC 和代码审查全部通过 |
 
 ## Task 1：固定 Sandbox 资源成本与 Tool Schema Token 代理基线
 
@@ -518,7 +521,7 @@
 
 ## Task 6：全量验证、资源对比和代码审查
 
-状态：pending
+状态：completed
 
 ### 目标
 
@@ -565,15 +568,77 @@
 
 ### 执行结果
 
-待执行。
+- 启动仓库开发 PostgreSQL/Redis，`alembic upgrade head` 成功；后端全量 endpoint、Service、Repository、Agent、Skill 和 Trace 测试在真实中间件上通过。
+- 真实动态 Sandbox 验证：
+  - 构造 `LazySandboxRuntime` 前后动态容器数保持 `0 → 0`；
+  - 第一次 File 能力后为 `0 → 1`，`create=1`、`ensure=1`、handle claim `=1`；
+  - 文件写入、读取、重复调用复用和 VNC URL 成功；
+  - Browser CDP 实际导航 `about:blank` 成功，VNC TCP 实际连接成功；
+  - 每次 Runtime destroy 后动态容器数回到 0，无孤儿容器。
+- Tool Schema 对比：
+  - 修改前/全量 Registry：27 functions、12,933 bytes；
+  - Planner：0 functions、0 bytes；
+  - Search Step：3 functions、2,558 bytes，仅 Search + 两个 Message 工具；
+  - Shell + File Step：12 functions、6,693 bytes，不包含 Browser/Search；
+  - Trace 自动化验证记录 count/bytes、capability groups 和 excluded count，不持久化完整 Schema。
+- 代码审查发现并整改两个 major：
+  - MCP 在异步初始化后没有刷新 Capability Registry，导致 Planner 可能看不到 `mcp`；现已在初始化后刷新共享 Registry，并增加回归测试。
+  - Browser 激活后 Runtime destroy 没有执行 `PlaywrightBrowser.cleanup()`；现已先清理 Browser 客户端，再销毁 Sandbox，并用真实 CDP 路径确认不再出现 transport 泄漏。
+- 前端没有本功能行为改动；由于分支包含历史生成的组件声明，补跑了 43 个测试文件、类型检查和生产构建。
+- 审查记录：`agentic/docs/reviews/agent-runtime-lazy-sandbox-review.md`，结论 `APPROVED`。
 
 ### 验证证据
 
 ```text
-命令：待执行
-退出状态：待执行
-关键结果：待执行
-执行时间：待执行
+命令：uv run alembic upgrade head
+退出状态：0
+关键结果：PostgreSQL migration head 检查通过；本批无新增迁移
+执行时间：2026-07-27 18:00（Asia/Shanghai）
+
+命令：uv run pytest -q --disable-warnings
+退出状态：0
+关键结果：350 passed，10 条既有 Pydantic deprecated warnings
+执行时间：2026-07-27 18:30（Asia/Shanghai）
+
+命令：uv run ruff check app tests
+退出状态：0
+关键结果：All checks passed
+执行时间：2026-07-27 18:30（Asia/Shanghai）
+
+命令：uv run python -m py_compile app/core/sandbox/runtime.py app/core/tools/scope.py app/core/tools/factory.py app/core/agent/base.py app/core/agent/agent_task_runner.py app/core/flows/planner_react.py app/services/agent_service.py
+退出状态：0
+关键结果：核心模块编译通过
+执行时间：2026-07-27 18:30（Asia/Shanghai）
+
+命令：pnpm test:run
+退出状态：0
+关键结果：43 test files passed，172 tests passed
+执行时间：2026-07-27 18:25（Asia/Shanghai）
+
+命令：pnpm type-check；pnpm build
+退出状态：0
+关键结果：vue-tsc 与 Vite production build 通过，3,678 modules transformed
+执行时间：2026-07-27 18:25（Asia/Shanghai）
+
+命令：真实 Lazy Runtime + DockerSandbox File/VNC 检查
+退出状态：0
+关键结果：容器 0→0（构造）→1（首次 File）；create=1、ensure=1、claim=1；write/read/VNC 成功；销毁后回 0
+执行时间：2026-07-27 18:23（Asia/Shanghai）
+
+命令：真实 Lazy Runtime + Browser CDP + VNC TCP 检查
+退出状态：0
+关键结果：Browser about:blank 导航成功，VNC TCP 连接成功，只创建 1 个容器，销毁后回 0；Browser cleanup 后无未关闭 transport
+执行时间：2026-07-27 18:29（Asia/Shanghai）
+
+命令：Tool Registry / Runtime Scope Schema 度量
+退出状态：0
+关键结果：全量 27/12933 bytes；Planner 0/0；Search 3/2558；Shell+File 12/6693
+执行时间：2026-07-27 18:24（Asia/Shanghai）
+
+命令：git diff --check
+退出状态：0
+关键结果：无 whitespace error；仅 Windows LF/CRLF 转换提示
+执行时间：2026-07-27 18:30（Asia/Shanghai）
 ```
 
 ## 计划变更
@@ -582,6 +647,8 @@
 | --- | --- | --- | --- | --- |
 | 2026-07-27 | 初始计划 | 将急迫的 Sandbox/Token 优化与文档格式能力拆分，先建立无 Sandbox Run 基础 | Task 1–6 | 否 |
 | 2026-07-27 | 固定 eager Sandbox 与全量 Tool Schema 基线，并把摘要接入 Trace | 将容器资源成本、Schema 字节代理和 Provider 实际 Token 分开观测后才能证明后续优化幅度 | Task 1–Task 6 | 否 |
+| 2026-07-27 | MCP 初始化后刷新 Capability Registry | 代码审查发现动态 MCP Schema 在 Task 构造阶段尚不存在，必须在异步初始化后补充注册 | Task 6 | 否 |
+| 2026-07-27 | Runtime destroy 增加 Browser cleanup | 真实 Browser 验证发现 Playwright transport 未关闭；销毁容器前需释放客户端资源 | Task 6 | 否 |
 
 ## 最终验证
 
@@ -606,31 +673,38 @@ pnpm build
 
 ### 执行结果
 
-- 单元测试：未执行
-- 集成测试：未执行
-- 静态检查：未执行
-- 类型检查：未执行
-- 构建：未执行
-- 数据库迁移：不适用，本批不修改数据库 Schema
-- 手工验证：未执行
-- 代码审查：未执行
+- 单元/回归测试：后端 350 passed；10 条为既有 Pydantic deprecated warnings。
+- 集成测试：真实 PostgreSQL、Redis lifespan/endpoint 测试包含在后端全量测试中并通过。
+- 静态检查：`uv run ruff check app tests` 通过；`git diff --check` 通过。
+- 类型/编译检查：核心 Python `py_compile` 通过；前端 `vue-tsc -b` 通过。
+- 构建：Vite production build 通过，3,678 modules transformed。
+- 数据库迁移：`alembic upgrade head` 通过；本批不修改数据库 Schema。
+- 手工/真实资源验证：动态 Sandbox 构造零创建，首次 File/Browser 创建一个；File round trip、Browser CDP、VNC TCP 成功；销毁回零。
+- Schema 对比：全量 27/12,933 bytes；Planner 0/0；Search 3/2,558；Shell+File 12/6,693。
+- 代码审查：`APPROVED`；2 个 major 已整改，无遗留 blocking/major。
 
 ### 验收标准检查
 
-- [ ] 普通文本、Knowledge 和 Context Run 不创建/恢复 Sandbox。
-- [ ] Planner 模型调用的完整 Tool Schema 数为 0。
-- [ ] ReAct 只接收当前 Step capability 对应的 Schema。
-- [ ] 首次 Shell/Browser/File Workspace Tool 调用只创建一个 Sandbox。
-- [ ] 附件只在 Sandbox Tool 实际需要时同步，且同一 File 不重复同步。
-- [ ] ToolConfig、审批、waiting 恢复、下一条消息、Skill、MCP/A2A/API 和 Trace 无回归。
-- [ ] VNC 在 Sandbox 未创建时不诱发创建，创建后可用。
-- [ ] Trace 能展示 Schema 数量/大小与 Sandbox lazy 指标。
-- [ ] 全量测试、静态检查、真实 Docker 验证和代码审查通过。
+- [x] 普通文本、Knowledge 和 Context Run 不创建/恢复 Sandbox。
+- [x] Planner 模型调用的完整 Tool Schema 数为 0。
+- [x] ReAct 只接收当前 Step capability 对应的 Schema。
+- [x] 首次 Shell/Browser/File Workspace Tool 调用只创建一个 Sandbox。
+- [x] 附件只在 Sandbox Tool 实际需要时同步，且同一 File 不重复同步。
+- [x] ToolConfig、审批、waiting 恢复、下一条消息、Skill、MCP/A2A/API 和 Trace 无回归。
+- [x] VNC 在 Sandbox 未创建时不诱发创建，创建后可用。
+- [x] Trace 能展示 Schema 数量/大小与 Sandbox lazy 指标。
+- [x] 全量测试、静态检查、真实 Docker 验证和代码审查通过。
 
 ### 未通过项目
 
-无；实施后填写。
+无。
+
+限制：
+
+- 未调用真实外部 LLM Provider 验证自然语言规划质量；确定性的 Planner/Scope/Trace 行为已由自动化和 Schema 度量覆盖。
+- 未目视检查 VNC 图形画面；已验证 VNC TCP 连接和 Browser CDP 实际导航。
+- 分支中的 `readme.md` 与 `agentic/web/src/components.d.ts` 为 Task 1 提交时带入的既有非 Runtime 文件，本轮按保留用户改动约束未删除，记录为审查 minor。
 
 ### 最终状态
 
-`READY_TO_MERGE / BLOCKED / FAILED`
+`READY_TO_MERGE`

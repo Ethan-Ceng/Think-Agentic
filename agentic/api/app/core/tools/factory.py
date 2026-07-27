@@ -42,15 +42,7 @@ class ToolFactory:
         api_tool = APITool(self.tool_config)
         if api_tool.get_tools():
             tools.append(api_tool)
-        self.registry.register_runtime_tool(
-            mcp_tool,
-            provider_id="mcp.dynamic",
-            provider_label="MCP",
-            group="mcp",
-            executor_type="mcp",
-            category="MCP",
-            requires_credentials=True,
-        )
+        self.refresh_mcp_tools(mcp_tool)
         return [
             FilteredTool(
                 inner=tool,
@@ -60,6 +52,18 @@ class ToolFactory:
             )
             for tool in tools
         ]
+
+    def refresh_mcp_tools(self, mcp_tool: MCPTool) -> None:
+        """Register tools discovered by MCP's asynchronous initialization."""
+        self.registry.register_runtime_tool(
+            mcp_tool,
+            provider_id="mcp.dynamic",
+            provider_label="MCP",
+            group="mcp",
+            executor_type="mcp",
+            category="MCP",
+            requires_credentials=True,
+        )
 
     def build_contextual(self, runtime_tool: BaseTool) -> BaseTool:
         """Apply the same Run ToolConfig policy to a context-gated tool."""
