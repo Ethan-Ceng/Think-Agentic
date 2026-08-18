@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-from pydantic import TypeAdapter
+import pytest
+from pydantic import TypeAdapter, ValidationError
 
 from app.core.entities.event import (
     Event,
@@ -9,8 +10,15 @@ from app.core.entities.event import (
     InteractionOption,
     InteractionStatus,
     InteractionType,
+    MessageDeltaEvent,
+    MessageEvent,
 )
-from app.schemas.event import EventMapper, InteractionSSEEvent
+from app.schemas.event import (
+    EventMapper,
+    InteractionSSEEvent,
+    MessageDeltaSSEEvent,
+    MessageSSEEvent,
+)
 
 
 def test_interaction_event_round_trips_through_domain_union_and_sse_mapper() -> None:
@@ -86,3 +94,58 @@ def test_interaction_sse_redacts_sensitive_tool_arguments() -> None:
     assert sse.data.function_args["environment"] == "production"
     assert sse.data.function_args["api_key"] == "******"
     assert sse.data.function_args["headers"]["authorization"] == "******"
+
+
+def test_message_delta_and_final_message_round_trip_with_stream_id() -> None:
+    delta = MessageDeltaEvent(
+        stream_id="stream-1",
+        sequence=2,
+        delta="你好",
+        operation="append",
+    )
+
+    restored = TypeAdapter(Event).validate_json(delta.model_dump_json())
+    assert isinstance(restored, MessageDeltaEvent)
+    assert restored.role == "assistant"
+    assert restored.sequence == 2
+
+    EventMapper._cache_mapping = None
+    delta_sse = EventMapper.event_to_sse_event(restored)
+    assert isinstance(delta_sse, MessageDeltaSSEEvent)
+    assert delta_sse.event == "message_delta"
+    assert delta_sse.data.stream_id == "stream-1"
+    assert delta_sse.data.delta == "你好"
+    assert delta_sse.data.operation == "append"
+
+    final = MessageEvent(message="你好", stream_id="stream-1")
+    final_sse = EventMapper.event_to_sse_event(final)
+    assert isinstance(final_sse, MessageSSEEvent)
+    assert final_sse.data.stream_id == "stream-1"
+
+
+@pytest.mark.parametrize("operation", ["unknown", "replace", "finish"])
+def test_message_delta_rejects_unknown_operations(operation: str) -> None:
+    with pytest.raises(ValidationError):
+        MessageDeltaEvent(
+            stream_id="stream-1",
+            sequence=0,
+            delta="text",
+            operation=operation,
+        )
+
+
+@pytest.mark.parametrize(
+    ("operation", "delta"),
+    [("append", ""), ("reset", "text"), ("abort", "text")],
+)
+def test_message_delta_rejects_invalid_operation_payloads(
+    operation: str,
+    delta: str,
+) -> None:
+    with pytest.raises(ValidationError):
+        MessageDeltaEvent(
+            stream_id="stream-1",
+            sequence=0,
+            delta=delta,
+            operation=operation,
+        )

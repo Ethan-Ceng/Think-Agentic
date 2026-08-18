@@ -8,6 +8,9 @@
 import logging
 from typing import AsyncGenerator
 
+from app.core.agent.base import ProjectedMessageDelta
+from app.core.agent.streaming import VisibleMessageStream
+
 from app.core.entities.event import (
     InteractionEvent,
     InteractionResolution,
@@ -40,25 +43,43 @@ class ReActAgent(BaseAgent):
 
     async def _handle_goal_stream(
         self,
-        stream: AsyncGenerator[BaseEvent, None],
+        stream: AsyncGenerator[BaseEvent | ProjectedMessageDelta, None],
     ) -> AsyncGenerator[BaseEvent, None]:
-        async for event in stream:
-            if isinstance(event, InteractionEvent):
+        visible_stream = VisibleMessageStream()
+        try:
+            async for event in stream:
+                if isinstance(event, ProjectedMessageDelta):
+                    yield visible_stream.map(event)
+                    continue
+                if isinstance(event, InteractionEvent):
+                    abort = visible_stream.abort()
+                    if abort is not None:
+                        yield abort
+                    yield event
+                    yield WaitEvent()
+                    return
+                if isinstance(event, MessageEvent):
+                    parsed_obj = await self._json_parser.invoke(event.message)
+                    result = Message.model_validate(parsed_obj)
+                    yield MessageEvent(
+                        role="assistant",
+                        message=result.message,
+                        attachments=[
+                            File(filepath=filepath) for filepath in result.attachments
+                        ],
+                        stream_id=visible_stream.final_stream_id,
+                    )
+                    continue
+                if isinstance(event, ErrorEvent):
+                    abort = visible_stream.abort()
+                    if abort is not None:
+                        yield abort
                 yield event
-                yield WaitEvent()
-                return
-            if isinstance(event, MessageEvent):
-                parsed_obj = await self._json_parser.invoke(event.message)
-                result = Message.model_validate(parsed_obj)
-                yield MessageEvent(
-                    role="assistant",
-                    message=result.message,
-                    attachments=[
-                        File(filepath=filepath) for filepath in result.attachments
-                    ],
-                )
-                continue
-            yield event
+        except Exception:
+            abort = visible_stream.abort()
+            if abort is not None:
+                yield abort
+            raise
 
     async def execute_goal(
         self,
@@ -77,7 +98,12 @@ class ReActAgent(BaseAgent):
             attachments="\n".join(message.attachments),
             language=language,
         )
-        async for event in self._handle_goal_stream(self.invoke(query)):
+        async for event in self._handle_goal_stream(
+            self.invoke(
+                query,
+                stream_field="message" if self._streaming_enabled else None,
+            )
+        ):
             yield event
 
     async def resume_goal(
@@ -92,7 +118,10 @@ class ReActAgent(BaseAgent):
         prompts = get_react_prompts(resolution.lead_language)
         self.set_runtime_system_prompt(prompts.system)
         async for event in self._handle_goal_stream(
-            self.resume_interaction(resolution)
+            self.resume_interaction(
+                resolution,
+                stream_field="message" if self._streaming_enabled else None,
+            )
         ):
             yield event
 
@@ -114,58 +143,81 @@ class ReActAgent(BaseAgent):
         yield StepEvent(step=step, status=StepEventStatus.STARTED)
 
         # 3.调用invoke获取agent返回的事件内容
-        async for event in self.invoke(query):
-            # 4.判断事件类型执行不同操作
-            if isinstance(event, InteractionEvent):
-                yield event
-                yield WaitEvent()
-                return
-            if isinstance(event, ToolEvent):
-                pass
-            elif isinstance(event, MessageEvent):
-                # 8.返回消息事件，意味着content有内容，content有内容则代表执行Agent已运行完毕
-                # 9.message中输出的数据结构为json，需要提取并解析
-                parsed_obj = await self._json_parser.invoke(event.message)
-                new_step = Step.model_validate(parsed_obj)
+        visible_stream = VisibleMessageStream()
+        try:
+            async for event in self.invoke(
+                query,
+                stream_field="result" if self._streaming_enabled else None,
+            ):
+                # 4.判断事件类型执行不同操作
+                if isinstance(event, ProjectedMessageDelta):
+                    yield visible_stream.map(event)
+                    continue
+                if isinstance(event, InteractionEvent):
+                    abort = visible_stream.abort()
+                    if abort is not None:
+                        yield abort
+                    yield event
+                    yield WaitEvent()
+                    return
+                if isinstance(event, ToolEvent):
+                    pass
+                elif isinstance(event, MessageEvent):
+                    # 8.返回消息事件，意味着content有内容，content有内容则代表执行Agent已运行完毕
+                    # 9.message中输出的数据结构为json，需要提取并解析
+                    parsed_obj = await self._json_parser.invoke(event.message)
+                    new_step = Step.model_validate(parsed_obj)
 
-                # 10.更新子步骤的数据
-                step.success = new_step.success
-                step.result = new_step.result
-                step.attachments = new_step.attachments
-                step.needs_replan = new_step.needs_replan
-                step.replan_reason = new_step.replan_reason
-                step.status = (
-                    ExecutionStatus.COMPLETED
-                    if step.success
-                    else ExecutionStatus.FAILED
-                )
-                if not step.success:
-                    step.error = new_step.error or new_step.result or "步骤执行失败"
-
-                # 11.返回步骤完成事件
-                yield StepEvent(
-                    step=step,
-                    status=(
-                        StepEventStatus.COMPLETED
+                    # 10.更新子步骤的数据
+                    step.success = new_step.success
+                    step.result = new_step.result
+                    step.attachments = new_step.attachments
+                    step.needs_replan = new_step.needs_replan
+                    step.replan_reason = new_step.replan_reason
+                    step.status = (
+                        ExecutionStatus.COMPLETED
                         if step.success
-                        else StepEventStatus.FAILED
-                    ),
-                )
+                        else ExecutionStatus.FAILED
+                    )
+                    if not step.success:
+                        step.error = new_step.error or new_step.result or "步骤执行失败"
 
-                # 12.如果子步骤拿到了结果，还需要返回一段消息给用户(将结果返回给用户)
-                if step.result:
-                    yield MessageEvent(role="assistant", message=step.result)
-                continue
-            elif isinstance(event, ErrorEvent):
-                # 13.错误事件更新步骤的状态
-                step.status = ExecutionStatus.FAILED
-                step.error = event.error
+                    # 11.返回步骤完成事件
+                    yield StepEvent(
+                        step=step,
+                        status=(
+                            StepEventStatus.COMPLETED
+                            if step.success
+                            else StepEventStatus.FAILED
+                        ),
+                    )
 
-                # 14.返回子步骤对应事件
-                yield StepEvent(step=step, status=StepEventStatus.FAILED)
+                    # 12.如果子步骤拿到了结果，还需要返回一段消息给用户(将结果返回给用户)
+                    if step.result:
+                        yield MessageEvent(
+                            role="assistant",
+                            message=step.result,
+                            stream_id=visible_stream.final_stream_id,
+                        )
+                    continue
+                elif isinstance(event, ErrorEvent):
+                    abort = visible_stream.abort()
+                    if abort is not None:
+                        yield abort
+                    # 13.错误事件更新步骤的状态
+                    step.status = ExecutionStatus.FAILED
+                    step.error = event.error
 
-            # 15.其他场景将事件直接返回
-            yield event
+                    # 14.返回子步骤对应事件
+                    yield StepEvent(step=step, status=StepEventStatus.FAILED)
+
+                # 15.其他场景将事件直接返回
+                yield event
+        except Exception:
+            abort = visible_stream.abort()
+            if abort is not None:
+                yield abort
+            raise
 
     async def resume_step(
             self,
@@ -181,42 +233,65 @@ class ReActAgent(BaseAgent):
         prompts = get_react_prompts(plan.language)
         self.set_runtime_system_prompt(prompts.system)
         step.status = ExecutionStatus.RUNNING
-        async for event in self.resume_interaction(resolution):
-            if isinstance(event, InteractionEvent):
-                yield event
-                yield WaitEvent()
-                return
-            if isinstance(event, MessageEvent):
-                parsed_obj = await self._json_parser.invoke(event.message)
-                new_step = Step.model_validate(parsed_obj)
-                step.success = new_step.success
-                step.result = new_step.result
-                step.attachments = new_step.attachments
-                step.needs_replan = new_step.needs_replan
-                step.replan_reason = new_step.replan_reason
-                step.status = (
-                    ExecutionStatus.COMPLETED
-                    if step.success
-                    else ExecutionStatus.FAILED
-                )
-                if not step.success:
-                    step.error = new_step.error or new_step.result or "步骤执行失败"
-                yield StepEvent(
-                    step=step,
-                    status=(
-                        StepEventStatus.COMPLETED
+        visible_stream = VisibleMessageStream()
+        try:
+            async for event in self.resume_interaction(
+                resolution,
+                stream_field="result" if self._streaming_enabled else None,
+            ):
+                if isinstance(event, ProjectedMessageDelta):
+                    yield visible_stream.map(event)
+                    continue
+                if isinstance(event, InteractionEvent):
+                    abort = visible_stream.abort()
+                    if abort is not None:
+                        yield abort
+                    yield event
+                    yield WaitEvent()
+                    return
+                if isinstance(event, MessageEvent):
+                    parsed_obj = await self._json_parser.invoke(event.message)
+                    new_step = Step.model_validate(parsed_obj)
+                    step.success = new_step.success
+                    step.result = new_step.result
+                    step.attachments = new_step.attachments
+                    step.needs_replan = new_step.needs_replan
+                    step.replan_reason = new_step.replan_reason
+                    step.status = (
+                        ExecutionStatus.COMPLETED
                         if step.success
-                        else StepEventStatus.FAILED
-                    ),
-                )
-                if step.result:
-                    yield MessageEvent(role="assistant", message=step.result)
-                continue
-            if isinstance(event, ErrorEvent):
-                step.status = ExecutionStatus.FAILED
-                step.error = event.error
-                yield StepEvent(step=step, status=StepEventStatus.FAILED)
-            yield event
+                        else ExecutionStatus.FAILED
+                    )
+                    if not step.success:
+                        step.error = new_step.error or new_step.result or "步骤执行失败"
+                    yield StepEvent(
+                        step=step,
+                        status=(
+                            StepEventStatus.COMPLETED
+                            if step.success
+                            else StepEventStatus.FAILED
+                        ),
+                    )
+                    if step.result:
+                        yield MessageEvent(
+                            role="assistant",
+                            message=step.result,
+                            stream_id=visible_stream.final_stream_id,
+                        )
+                    continue
+                if isinstance(event, ErrorEvent):
+                    abort = visible_stream.abort()
+                    if abort is not None:
+                        yield abort
+                    step.status = ExecutionStatus.FAILED
+                    step.error = event.error
+                    yield StepEvent(step=step, status=StepEventStatus.FAILED)
+                yield event
+        except Exception:
+            abort = visible_stream.abort()
+            if abort is not None:
+                yield abort
+            raise
 
     async def summarize(
         self,
@@ -230,25 +305,43 @@ class ReActAgent(BaseAgent):
         query = prompts.summarize
 
         # 2.调用invoke方法获取Agent生成的事件
-        async for event in self.invoke(query):
-            # 3.判断事件类型是否为消息事件，如果是则表示Agent结构化生成汇总内容
-            if isinstance(event, MessageEvent):
-                # 4.记录日志并解析输出内容
-                logger.info(f"执行Agent生成汇总内容: {event.message}")
-                parsed_obj = await self._json_parser.invoke(event.message)
+        visible_stream = VisibleMessageStream()
+        try:
+            async for event in self.invoke(
+                query,
+                stream_field="message" if self._streaming_enabled else None,
+            ):
+                if isinstance(event, ProjectedMessageDelta):
+                    yield visible_stream.map(event)
+                    continue
+                # 3.判断事件类型是否为消息事件，如果是则表示Agent结构化生成汇总内容
+                if isinstance(event, MessageEvent):
+                    # 4.记录日志并解析输出内容
+                    logger.info(f"执行Agent生成汇总内容: {event.message}")
+                    parsed_obj = await self._json_parser.invoke(event.message)
 
-                # 5.将解析数据转换为Message对象
-                message = Message.model_validate(parsed_obj)
+                    # 5.将解析数据转换为Message对象
+                    message = Message.model_validate(parsed_obj)
 
-                # 6.提取消息中的附件信息
-                attachments = [File(filepath=filepath) for filepath in message.attachments]
+                    # 6.提取消息中的附件信息
+                    attachments = [File(filepath=filepath) for filepath in message.attachments]
 
-                # 7.返回消息事件并将消息+附件进行相应
-                yield MessageEvent(
-                    role="assistant",
-                    message=message.message,
-                    attachments=attachments,
-                )
-            else:
-                # 8.其他事件则直接返回
-                yield event
+                    # 7.返回消息事件并将消息+附件进行相应
+                    yield MessageEvent(
+                        role="assistant",
+                        message=message.message,
+                        attachments=attachments,
+                        stream_id=visible_stream.final_stream_id,
+                    )
+                else:
+                    if isinstance(event, ErrorEvent):
+                        abort = visible_stream.abort()
+                        if abort is not None:
+                            yield abort
+                    # 8.其他事件则直接返回
+                    yield event
+        except Exception:
+            abort = visible_stream.abort()
+            if abort is not None:
+                yield abort
+            raise

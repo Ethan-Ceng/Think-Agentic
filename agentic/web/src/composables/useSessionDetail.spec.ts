@@ -113,6 +113,41 @@ describe('useSessionDetail stream completion', () => {
     wrapper.unmount()
   })
 
+  it('keeps delta events transiently and resumes after their Redis cursor', async () => {
+    mocks.getSessionDetail
+      .mockResolvedValueOnce({ session_id: 'session-1', status: 'completed', events: [] })
+      .mockResolvedValueOnce({ session_id: 'session-1', status: 'running', events: [] })
+    mocks.chat.mockImplementation((_id, params, onEvent, onError) => {
+      if (params.message) {
+        queueMicrotask(() => {
+          onEvent({
+            type: 'message_delta',
+            data: {
+              role: 'assistant',
+              stream_id: 'stream-1',
+              sequence: 0,
+              operation: 'append',
+              delta: 'partial',
+              event_id: 'redis-42-0',
+            },
+          })
+          onError(new Error('SSE_STREAM_END'))
+        })
+      }
+      return vi.fn()
+    })
+    const { detail, wrapper } = mountComposable()
+    await flushPromises()
+
+    await detail.sendMessage({ message: 'stream it', attachmentIds: [], skills: [] })
+    await flushPromises()
+
+    expect(detail.events.value).toEqual([])
+    expect(mocks.chat).toHaveBeenCalledTimes(2)
+    expect(mocks.chat.mock.calls[1]?.[1]).toEqual({ event_id: 'redis-42-0' })
+    wrapper.unmount()
+  })
+
   it('reconciles session state when a resume stream closes', async () => {
     mocks.resumeSession.mockImplementation((_id, _params, _onEvent, onError) => {
       queueMicrotask(() => onError(new Error('SSE_STREAM_END')))

@@ -53,6 +53,7 @@ class PlannerReActFlow(BaseFlow):
             a2a_tool: A2ATool,  # a2a远程agent
             trace_service: TraceService | None = None,
             skill_draft_tool: SkillDraftTool | None = None,
+            streaming_enabled: bool = False,
     ) -> None:
         """构造函数，完成规划与执行流的初始化"""
         # 1.流初始化数据配置
@@ -90,6 +91,7 @@ class PlannerReActFlow(BaseFlow):
             trace_service=trace_service,
             tool_registry=self._tool_factory.registry,
             runtime_tool_scope=self._tool_factory.runtime_scope,
+            streaming_enabled=streaming_enabled,
         )
         logger.debug(f"创建规划Agent成功, 会话id: {self._session_id}")
 
@@ -104,6 +106,7 @@ class PlannerReActFlow(BaseFlow):
             trace_service=trace_service,
             tool_registry=self._tool_factory.registry,
             runtime_tool_scope=self._tool_factory.runtime_scope,
+            streaming_enabled=streaming_enabled,
         )
         logger.debug(f"创建执行Agent成功, 会话id: {self._session_id}")
 

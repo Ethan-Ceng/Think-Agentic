@@ -248,6 +248,7 @@ class ModelCallModel(Base):
     completion_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     total_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     latency_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    ttft_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     request_preview: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
     response_preview: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

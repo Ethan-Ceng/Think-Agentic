@@ -2,9 +2,16 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Optional
+from dataclasses import dataclass
+from typing import Any, AsyncGenerator, Optional
 
-from app.core.agent.base import BaseAgent
+from app.core.agent.base import (
+    BaseAgent,
+    ProjectedLLMCompleted,
+    ProjectedMessageDelta,
+)
+from app.core.agent.streaming import VisibleMessageStream
+from app.core.entities.event import MessageDeltaEvent
 from app.core.entities.lead import (
     LEAD_DECISION_ADAPTER,
     DirectDecision,
@@ -41,6 +48,12 @@ _INLINE_TRANSFORM_PATTERN = re.compile(
     r"|^\s*(?:请)?(?:把|将).{0,16}(?:翻译|改写|润色|总结)",
     re.IGNORECASE,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class LeadDecisionCompleted:
+    decision: LeadDecision
+    stream_id: str | None = None
 
 
 class LeadDecisionPolicy(BaseAgent):
@@ -120,19 +133,56 @@ class LeadDecisionPolicy(BaseAgent):
             )
         return normalized_plan
 
-    async def decide(self, message: Message) -> LeadDecision:
+    async def decide_stream(
+        self,
+        message: Message,
+    ) -> AsyncGenerator[MessageDeltaEvent | LeadDecisionCompleted, None]:
         self.set_runtime_tool_scope([])
         query = LEAD_DECISION_PROMPT.format(
             message=message.message,
             attachments="\n".join(message.attachments),
             capability_catalog=self._capability_catalog(),
         )
-        response = await self._invoke_llm(
-            [{"role": "user", "content": query}],
-            self._format,
-        )
-        content = response.get("content")
-        if not content:
-            raise ValueError("Lead 决策没有返回可解析内容")
-        parsed = await self._json_parser.invoke(content)
-        return self._normalize_decision(parsed, message)
+        visible_stream = VisibleMessageStream()
+        try:
+            response: dict[str, Any] | None = None
+            async for event in self._invoke_llm_stream(
+                [{"role": "user", "content": query}],
+                self._format,
+                stream_field="answer" if self._streaming_enabled else None,
+            ):
+                if isinstance(event, ProjectedMessageDelta):
+                    yield visible_stream.map(event)
+                elif isinstance(event, ProjectedLLMCompleted):
+                    response = event.message
+            if response is None:
+                raise ValueError("Lead 决策没有返回完成消息")
+            content = response.get("content")
+            if not content:
+                raise ValueError("Lead 决策没有返回可解析内容")
+            parsed = await self._json_parser.invoke(content)
+            decision = self._normalize_decision(parsed, message)
+            if not isinstance(decision, DirectDecision):
+                abort = visible_stream.abort()
+                if abort is not None:
+                    yield abort
+                yield LeadDecisionCompleted(decision=decision)
+                return
+            yield LeadDecisionCompleted(
+                decision=decision,
+                stream_id=visible_stream.final_stream_id,
+            )
+        except Exception:
+            abort = visible_stream.abort()
+            if abort is not None:
+                yield abort
+            raise
+
+    async def decide(self, message: Message) -> LeadDecision:
+        completed: LeadDecisionCompleted | None = None
+        async for event in self.decide_stream(message):
+            if isinstance(event, LeadDecisionCompleted):
+                completed = event
+        if completed is None:
+            raise ValueError("Lead 决策没有返回完成结果")
+        return completed.decision

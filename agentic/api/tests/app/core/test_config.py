@@ -19,6 +19,7 @@ def _overlaps(left: str, right: str) -> bool:
 def test_default_local_skill_storage_is_separate_from_managed_files() -> None:
     settings = Settings(_env_file=None)
 
+    assert settings.token_delta_streaming_enabled is False
     assert settings.local_storage_path == "/app/storage/files"
     assert settings.skill_package_storage_path == "/app/storage/skills/packages"
     assert settings.skill_workspace_storage_path == "/app/storage/skill-workspaces"
@@ -32,6 +33,16 @@ def test_default_local_skill_storage_is_separate_from_managed_files() -> None:
         settings.skill_package_storage_path,
         settings.skill_workspace_storage_path,
     )
+
+
+def test_token_delta_streaming_can_be_enabled_from_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TOKEN_DELTA_STREAMING_ENABLED", "true")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.token_delta_streaming_enabled is True
 
 
 @pytest.mark.parametrize(

@@ -17,7 +17,6 @@ declare module 'vue' {
     BranchVersionNavigator: typeof import('./components/chat/BranchVersionNavigator.vue')['default']
     ChatArtifactPreviewPanel: typeof import('./components/chat/ChatArtifactPreviewPanel.vue')['default']
     ChatComposer: typeof import('./components/chat/ChatComposer.vue')['default']
-    ChatEditBranchDialog: typeof import('./components/chat/ChatEditBranchDialog.vue')['default']
     ChatFilePickerDialog: typeof import('./components/chat/ChatFilePickerDialog.vue')['default']
     ChatHeader: typeof import('./components/ChatHeader.vue')['default']
     ChatInlineBranchEditor: typeof import('./components/chat/ChatInlineBranchEditor.vue')['default']

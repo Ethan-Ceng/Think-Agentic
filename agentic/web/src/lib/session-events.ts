@@ -1,6 +1,7 @@
 import type {
   ChatMessage,
   InteractionEvent,
+  MessageDeltaEvent,
   PlanEvent,
   PlanStep,
   SSEEventData,
@@ -29,7 +30,15 @@ export type TimelineItem = (
       createdAt?: number
     }
   | { kind: 'attachments'; id: string; role: 'user' | 'assistant'; files: AttachmentFile[] }
-  | { kind: 'assistant'; id: string; data: ChatMessage; timeLabel?: string; createdAt?: number }
+  | {
+      kind: 'assistant'
+      id: string
+      data: ChatMessage
+      streaming?: boolean
+      streamId?: string
+      timeLabel?: string
+      createdAt?: number
+    }
   | { kind: 'tool'; id: string; data: ToolEvent; timeLabel?: string }
   | { kind: 'step'; id: string; data: StepEvent; tools: ToolEvent[] }
   | { kind: 'interaction'; id: string; data: InteractionEvent; timeLabel?: string }
@@ -160,6 +169,8 @@ function getEventCreatedAt(data: unknown): number | string | undefined {
 
 export function eventsToTimeline(events: SSEEventData[]): TimelineItem[] {
   const list: TimelineItem[] = []
+  const lastDeltaSequence = new Map<string, number>()
+  const closedStreams = new Set<string>()
   let lastStepId: string | null = null
   let messageIndex = 0
   let toolIndex = 0
@@ -195,22 +206,108 @@ export function eventsToTimeline(events: SSEEventData[]): TimelineItem[] {
             })
           }
         } else if (msg.role === 'assistant') {
-          list.push({
+          const streamId = msg.stream_id || undefined
+          const draftIndex = streamId
+            ? list.findIndex(
+                (item) => item.kind === 'assistant' && item.streamId === streamId,
+              )
+            : -1
+          const draft = draftIndex >= 0 ? list[draftIndex] : undefined
+          const assistantItem: TimelineItem = {
             kind: 'assistant',
-            id: stableId('assistant', messageIndex++, String(list.length)),
+            id:
+              draft?.kind === 'assistant'
+                ? draft.id
+                : stableId('assistant', messageIndex, String(list.length)),
             data: msg,
+            streaming: false,
+            streamId,
             timeLabel: formatMessageTimeLabel(getEventCreatedAt(msg)),
             createdAt,
             sourceEventId,
-          })
+          }
+          messageIndex += 1
+          if (draftIndex >= 0) {
+            list[draftIndex] = assistantItem
+          } else {
+            list.push(assistantItem)
+          }
+          if (streamId) closedStreams.add(streamId)
           if (msg.attachments?.length) {
-            list.push({
+            const attachments: TimelineItem = {
               kind: 'attachments',
               id: stableId('att', messageIndex, 'assistant'),
               role: 'assistant',
               files: msg.attachments.map(chatAttachmentToDisplay),
-            })
+            }
+            if (draftIndex >= 0) {
+              list.splice(draftIndex + 1, 0, attachments)
+            } else {
+              list.push(attachments)
+            }
           }
+        }
+        break
+      }
+      case 'message_delta': {
+        const delta = ev.data as MessageDeltaEvent
+        if (
+          delta.role !== 'assistant' ||
+          !delta.stream_id ||
+          !Number.isInteger(delta.sequence) ||
+          delta.sequence < 0
+        ) {
+          break
+        }
+        if (closedStreams.has(delta.stream_id)) break
+
+        const previousSequence = lastDeltaSequence.get(delta.stream_id)
+        if (previousSequence !== undefined && delta.sequence <= previousSequence) break
+        lastDeltaSequence.set(delta.stream_id, delta.sequence)
+
+        const draftIndex = list.findIndex(
+          (item) => item.kind === 'assistant' && item.streamId === delta.stream_id,
+        )
+        if (delta.operation === 'abort') {
+          if (draftIndex >= 0) list.splice(draftIndex, 1)
+          closedStreams.add(delta.stream_id)
+          break
+        }
+        if (delta.operation === 'reset') {
+          const draft = draftIndex >= 0 ? list[draftIndex] : undefined
+          if (draft?.kind === 'assistant') {
+            list[draftIndex] = {
+              ...draft,
+              data: { ...draft.data, message: '' },
+              streaming: true,
+            }
+          }
+          break
+        }
+        if (delta.operation !== 'append' || !delta.delta) break
+
+        const draft = draftIndex >= 0 ? list[draftIndex] : undefined
+        if (draft?.kind === 'assistant') {
+          list[draftIndex] = {
+            ...draft,
+            data: {
+              ...draft.data,
+              message: `${draft.data.message ?? ''}${delta.delta}`,
+            },
+            streaming: true,
+          }
+        } else {
+          list.push({
+            kind: 'assistant',
+            id: `assistant-stream-${delta.stream_id}`,
+            data: {
+              role: 'assistant',
+              message: delta.delta,
+              stream_id: delta.stream_id,
+            },
+            streaming: true,
+            streamId: delta.stream_id,
+          })
         }
         break
       }

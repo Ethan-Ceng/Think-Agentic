@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     deleted_file_retention_days: int = 7
     file_purge_interval_seconds: int = 60 * 60
     lead_agent_enabled: bool = False
+    token_delta_streaming_enabled: bool = False
 
     skill_package_storage_path: str = "/app/storage/skills/packages"
     skill_workspace_storage_path: str = "/app/storage/skill-workspaces"

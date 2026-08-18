@@ -381,6 +381,7 @@ class TraceService:
         finished_at = datetime.now()
         metadata = (message or {}).get("_trace_metadata") or {}
         usage = metadata.get("usage") or {}
+        ttft_ms = metadata.get("ttft_ms")
         data = {
             "status": "failed" if error else "succeeded",
             "finish_reason": metadata.get("finish_reason"),
@@ -388,6 +389,7 @@ class TraceService:
             "completion_tokens": usage.get("completion_tokens"),
             "total_tokens": usage.get("total_tokens"),
             "latency_ms": latency_ms,
+            "ttft_ms": ttft_ms,
             "response_preview": _snapshot(_summarize_model_response(message or {})),
             "error": error,
             "finished_at": finished_at,
@@ -395,16 +397,19 @@ class TraceService:
 
         async def write(uow: IUnitOfWork) -> None:
             await uow.trace.update_model_call(model_call_id, data)
+            event_payload = {
+                "model_call_id": model_call_id,
+                "latency_ms": latency_ms,
+                "finish_reason": metadata.get("finish_reason"),
+                "usage": _snapshot(usage),
+                "error": error,
+            }
+            if ttft_ms is not None:
+                event_payload["ttft_ms"] = ttft_ms
             await uow.trace.append_event(
                 self._trace_event_data(
                     event_type="model.failed" if error else "model.succeeded",
-                    payload={
-                        "model_call_id": model_call_id,
-                        "latency_ms": latency_ms,
-                        "finish_reason": metadata.get("finish_reason"),
-                        "usage": _snapshot(usage),
-                        "error": error,
-                    },
+                    payload=event_payload,
                     created_at=finished_at,
                 )
             )

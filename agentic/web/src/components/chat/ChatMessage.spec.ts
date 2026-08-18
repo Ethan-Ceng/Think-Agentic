@@ -235,4 +235,22 @@ describe('ChatMessage inline artifacts', () => {
       'assistant-local-1',
     )
   })
+
+  it('renders streaming markdown but withholds final-message actions', () => {
+    const wrapper = shallowMount(ChatMessage, {
+      props: {
+        item: {
+          kind: 'assistant',
+          id: 'assistant-stream-stream-1',
+          streaming: true,
+          streamId: 'stream-1',
+          data: { role: 'assistant', message: '**partial**' },
+        } as TimelineItem,
+      },
+    })
+
+    expect(wrapper.getComponent(MarkdownContent).props('content')).toBe('**partial**')
+    expect(wrapper.findComponent({ name: 'MessageActions' }).exists()).toBe(false)
+    expect(wrapper.find('.assistant-empty-card').exists()).toBe(false)
+  })
 })

@@ -176,6 +176,7 @@ def test_trace_service_projects_run_step_tool_and_model_call() -> None:
                 "content": "done",
                 "_trace_metadata": {
                     "finish_reason": "stop",
+                    "ttft_ms": 8,
                     "usage": {
                         "prompt_tokens": 11,
                         "completion_tokens": 7,
@@ -207,10 +208,15 @@ def test_trace_service_projects_run_step_tool_and_model_call() -> None:
         assert stored_model_call["completion_tokens"] == 7
         assert stored_model_call["total_tokens"] == 18
         assert stored_model_call["latency_ms"] == 25
+        assert stored_model_call["ttft_ms"] == 8
 
         event_types = {event["event_type"] for event in repo.events}
         expected = {"run.started", "step.started", "tool.calling", "tool.called", "model.started", "model.succeeded"}
         assert expected <= event_types
+        model_succeeded = next(
+            event for event in repo.events if event["event_type"] == "model.succeeded"
+        )
+        assert model_succeeded["payload"]["ttft_ms"] == 8
         run_started = next(event for event in repo.events if event["event_type"] == "run.started")
         registry_summary = run_started["payload"]["tool_registry"]
         assert registry_summary["function_count"] == 27
@@ -266,6 +272,44 @@ def test_trace_service_records_lead_strategy_lifecycle() -> None:
         "status": "completed",
         "replan_count": 1,
     }
+
+
+def test_trace_service_keeps_ttft_null_for_non_streaming_calls() -> None:
+    repo = FakeTraceRepository()
+    service = TraceService(uow_factory=lambda: FakeUow(repo))
+
+    async def run() -> None:
+        await service.start_run(
+            user_id="user-1",
+            session_id="session-1",
+            task_id="task-1",
+            input_event=MessageEvent(role="user", message="answer normally"),
+        )
+        model_call_id = await service.record_model_call_started(
+            agent_name="lead",
+            llm=FakeLLM(),
+            messages=[{"role": "user", "content": "hello"}],
+            tools=[],
+            response_format=None,
+            tool_choice=None,
+        )
+        await service.record_model_call_finished(
+            model_call_id,
+            message={
+                "role": "assistant",
+                "content": "done",
+                "_trace_metadata": {"finish_reason": "stop", "usage": {}},
+            },
+            latency_ms=20,
+        )
+
+        assert repo.model_calls[model_call_id]["ttft_ms"] is None
+        model_succeeded = next(
+            event for event in repo.events if event["event_type"] == "model.succeeded"
+        )
+        assert "ttft_ms" not in model_succeeded["payload"]
+
+    asyncio.run(run())
 
 
 def test_trace_service_projects_interaction_without_sensitive_arguments() -> None:

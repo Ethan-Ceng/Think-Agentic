@@ -18,6 +18,7 @@ from app.core.entities.event import (
     InteractionOption,
     InteractionStatus,
     InteractionType,
+    MessageDeltaEvent,
     PlanEvent,
     ToolEventStatus,
     ToolEvent,
@@ -96,6 +97,28 @@ class MessageEventData(BaseEventData):
     attachments: List[File] = Field(default_factory=list)
     skills: List[SkillRef] = Field(default_factory=list)
     visible: bool = True
+    stream_id: Optional[str] = None
+
+
+class MessageDeltaEventData(BaseEventData):
+    """Assistant 临时草稿增量。"""
+
+    role: Literal["assistant"] = "assistant"
+    stream_id: str
+    delta: str = ""
+    operation: Literal["append", "reset", "abort"] = "append"
+    sequence: int = 0
+
+
+class MessageDeltaSSEEvent(BaseSSEEvent):
+    """真正的用户可见文本 Delta。"""
+
+    event: Literal["message_delta"] = "message_delta"
+    data: MessageDeltaEventData
+
+    @classmethod
+    def from_event(cls, event: MessageDeltaEvent) -> Self:
+        return cls(data=MessageDeltaEventData.from_event(event))
 
 
 class MessageSSEEvent(BaseSSEEvent):
@@ -113,6 +136,7 @@ class MessageSSEEvent(BaseSSEEvent):
                 attachments=event.attachments,
                 skills=event.skills,
                 visible=event.visible,
+                stream_id=event.stream_id,
             )
         )
 
@@ -293,6 +317,7 @@ class ErrorSSEEvent(BaseSSEEvent):
 # 定义Agent流式事件类型集合
 AgentSSEEvent = Union[
     CommonSSEEvent,
+    MessageDeltaSSEEvent,
     MessageSSEEvent,
     TitleSSEEvent,
     StepSSEEvent,

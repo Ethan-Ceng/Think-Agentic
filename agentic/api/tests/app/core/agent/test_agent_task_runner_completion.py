@@ -11,6 +11,7 @@ from app.core.entities.event import (
     DoneEvent,
     ErrorEvent,
     Event,
+    MessageDeltaEvent,
     MessageEvent,
     TitleEvent,
     WaitEvent,
@@ -338,3 +339,89 @@ def test_existing_redis_input_waits_for_current_flow_to_finish() -> None:
 
     assert first_turn_events == ["first", "second"]
     assert received == ["current", "legacy queued"]
+
+
+def test_message_delta_is_transient_but_final_message_remains_persisted() -> None:
+    runner, session_repo = make_runner()
+
+    async def streaming_flow(_message):
+        yield MessageDeltaEvent(
+            stream_id="stream-1",
+            sequence=0,
+            delta="Hel",
+        )
+        yield MessageEvent(
+            role="assistant",
+            message="Hello",
+            stream_id="stream-1",
+        )
+        yield DoneEvent()
+
+    runner._run_flow = streaming_flow
+    task = FakeTask(MessageEvent(role="user", message="hello"))
+
+    asyncio.run(runner.invoke(task))
+
+    output_events = parse_output_events(task)
+    assert [event.type for event in output_events] == [
+        "message_delta",
+        "message",
+        "done",
+    ]
+    assert [event.type for event in session_repo.events] == ["message", "done"]
+    projected = runner._trace_service.project_event.await_args_list
+    assert [call.args[0].type for call in projected] == ["message", "done"]
+
+
+def test_flow_error_aborts_an_unfinished_transient_draft() -> None:
+    runner, session_repo = make_runner()
+
+    async def failed_stream(_message):
+        yield MessageDeltaEvent(
+            stream_id="stream-1",
+            sequence=0,
+            delta="partial",
+        )
+        raise RuntimeError("stream failed")
+
+    runner._run_flow = failed_stream
+    task = FakeTask(MessageEvent(role="user", message="hello"))
+
+    asyncio.run(runner.invoke(task))
+
+    output_events = parse_output_events(task)
+    assert [event.type for event in output_events] == [
+        "message_delta",
+        "message_delta",
+        "error",
+    ]
+    assert output_events[1].operation == "abort"
+    assert output_events[1].sequence == 1
+    assert [event.type for event in session_repo.events] == ["error"]
+
+
+def test_cancellation_aborts_an_unfinished_transient_draft() -> None:
+    runner, session_repo = make_runner()
+
+    async def cancelled_stream(_message):
+        yield MessageDeltaEvent(
+            stream_id="stream-1",
+            sequence=0,
+            delta="partial",
+        )
+        raise asyncio.CancelledError
+
+    runner._run_flow = cancelled_stream
+    task = FakeTask(MessageEvent(role="user", message="hello"))
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(runner.invoke(task))
+
+    output_events = parse_output_events(task)
+    assert [event.type for event in output_events] == [
+        "message_delta",
+        "message_delta",
+        "done",
+    ]
+    assert output_events[1].operation == "abort"
+    assert [event.type for event in session_repo.events] == ["done"]

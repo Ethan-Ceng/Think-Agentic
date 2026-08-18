@@ -155,6 +155,9 @@ const timeline = computed<TimelineItem[]>(() => {
   return items
 })
 const planSteps = computed(() => getLatestPlanFromEvents(detail.events.value))
+const hasStreamingAssistantDraft = computed(() =>
+  timeline.value.some((item) => item.kind === 'assistant' && item.streaming),
+)
 const pendingInteraction = computed(() => {
   for (let i = timeline.value.length - 1; i >= 0; i--) {
     const item = timeline.value[i]
@@ -1070,7 +1073,11 @@ async function handleStop() {
               />
 
               <div
-                v-if="detail.session.value.status === 'running' || (hasInitialMessage && !initialMessageSent)"
+                v-if="
+                  (detail.session.value.status === 'running' ||
+                    (hasInitialMessage && !initialMessageSent)) &&
+                  !hasStreamingAssistantDraft
+                "
                 class="thinking-state"
               >
                 <ThinkingIndicator />

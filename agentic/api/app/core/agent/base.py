@@ -9,10 +9,18 @@ import asyncio
 import logging
 import uuid
 from abc import ABC
-from typing import Optional, List, AsyncGenerator, Dict, Any, Callable
+from dataclasses import dataclass
+from time import monotonic
+from typing import Optional, List, AsyncGenerator, Dict, Any, Callable, Literal
 
 from app.core.json_parser.base import JSONParser
-from app.core.llm.base import LLM
+from app.core.llm.base import (
+    LLM,
+    LLMStreamCompleted,
+    LLMStreamDelta,
+    LLMStreamingUnsupportedError,
+)
+from app.core.llm.json_stream import TopLevelJSONStringProjector
 from app.core.entities.app_config import AgentConfig
 from app.core.entities.event import (
     BaseEvent,
@@ -41,6 +49,22 @@ from app.services.trace_service import TraceService, elapsed_ms, model_call_time
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True, slots=True)
+class ProjectedMessageDelta:
+    """Agent 内部的安全可见文本增量，公共事件在 Flow 边界映射。"""
+
+    delta: str
+    operation: Literal["append", "reset", "abort"] = "append"
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectedLLMCompleted:
+    """一次模型调用完成并写入 Memory 后的权威消息。"""
+
+    message: Dict[str, Any]
+    streamed: bool = False
+
+
 class BaseAgent(ABC):
     """基础Agent智能体"""
     name: str = ""  # 智能体名字
@@ -48,6 +72,8 @@ class BaseAgent(ABC):
     _format: Optional[str] = None  # Agent的响应格式
     _retry_interval: float = 1.0  # 重试间隔
     _tool_choice: Optional[str] = None  # 强制选择工具
+    _stream_batch_chars: int = 32
+    _stream_batch_interval: float = 0.05
 
     def __init__(
             self,
@@ -61,6 +87,7 @@ class BaseAgent(ABC):
             skill_runtime_context: SkillRuntimeContext | None = None,
             tool_registry: ToolRegistry | None = None,
             runtime_tool_scope: RuntimeToolScope | None = None,
+            streaming_enabled: bool = False,
     ) -> None:
         """构造函数，完成Agent的初始化"""
         self._uow_factory = uow_factory
@@ -84,6 +111,7 @@ class BaseAgent(ABC):
             ),
             None,
         )
+        self._streaming_enabled = streaming_enabled
 
     def set_skill_runtime_context(self, context: SkillRuntimeContext) -> None:
         """Replace the transient per-run Skill context without touching Memory."""
@@ -178,22 +206,40 @@ class BaseAgent(ABC):
 
         raise ValueError(f"未知工具: {tool_name}")
 
-    async def _invoke_llm(self, messages: List[Dict[str, Any]], format: Optional[str] = None) -> Dict[str, Any]:
-        """调用语言模型并处理记忆内容"""
-        # 1.将消息添加到记忆中
+    async def _invoke_llm(
+            self,
+            messages: List[Dict[str, Any]],
+            format: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """保持现有块调用接口，并复用统一模型调用生命周期。"""
+        completed: ProjectedLLMCompleted | None = None
+        async for event in self._invoke_llm_stream(messages, format):
+            if isinstance(event, ProjectedLLMCompleted):
+                completed = event
+        if completed is None:
+            raise RuntimeError("调用语言模型未返回完成消息")
+        return completed.message
+
+    async def _invoke_llm_stream(
+            self,
+            messages: List[Dict[str, Any]],
+            format: Optional[str] = None,
+            *,
+            stream_field: str | None = None,
+    ) -> AsyncGenerator[ProjectedMessageDelta | ProjectedLLMCompleted, None]:
+        """统一处理流式/块响应、重试、Memory 与 Trace。"""
         await self._add_to_memory(messages)
-
-        # 2.组装语言模型的响应格式
         response_format = {"type": format} if format else None
-
-        # 3.循环向LLM发起提问直到最大重试次数
         error = "调用语言模型发生错误"
-        for _ in range(self._agent_config.max_retries):
+        draft_active = False
+
+        for attempt in range(self._agent_config.max_retries):
             available_tools = self._get_available_tools()
             configured_tool_count = len(self._get_configured_tools())
             llm_messages = self._get_llm_messages()
             model_call_id = None
             model_started = model_call_timer()
+            trace_finished = False
             try:
                 if self._trace_service:
                     model_call_id = await self._trace_service.record_model_call_started(
@@ -214,65 +260,155 @@ class BaseAgent(ABC):
                         ),
                     )
 
-                # 4.调用语言模型获取响应内容
-                message = await self._llm.invoke(
-                    messages=llm_messages,
-                    tools=available_tools,
-                    response_format=response_format,
-                    tool_choice=self._tool_choice,
-                )
+                stream = getattr(self._llm, "stream", None)
+                use_stream = bool(stream_field and callable(stream))
+                message: Dict[str, Any] | None = None
+                attempt_visible = False
+                pending_delta = ""
+                last_emit = monotonic()
+
+                if use_stream:
+                    projector = TopLevelJSONStringProjector(stream_field)
+                    stream_event_received = False
+                    try:
+                        async for stream_event in stream(
+                            messages=llm_messages,
+                            tools=available_tools,
+                            response_format=response_format,
+                            tool_choice=self._tool_choice,
+                        ):
+                            stream_event_received = True
+                            if isinstance(stream_event, LLMStreamCompleted):
+                                message = stream_event.message
+                                continue
+                            if not isinstance(stream_event, LLMStreamDelta):
+                                raise RuntimeError("LLM流返回了未知事件")
+                            projected = projector.feed(stream_event.content or "")
+                            if not projected:
+                                continue
+                            if not attempt_visible:
+                                attempt_visible = True
+                                draft_active = True
+                                last_emit = monotonic()
+                                yield ProjectedMessageDelta(delta=projected)
+                                continue
+                            pending_delta += projected
+                            if (
+                                len(pending_delta) >= self._stream_batch_chars
+                                or monotonic() - last_emit >= self._stream_batch_interval
+                            ):
+                                yield ProjectedMessageDelta(delta=pending_delta)
+                                pending_delta = ""
+                                last_emit = monotonic()
+                    except (LLMStreamingUnsupportedError, NotImplementedError):
+                        if stream_event_received:
+                            raise
+                        logger.warning(
+                            "LLM Provider不支持流式响应，安全回退块调用: %s",
+                            self._llm.model_name,
+                        )
+                        message = await self._llm.invoke(
+                            messages=llm_messages,
+                            tools=available_tools,
+                            response_format=response_format,
+                            tool_choice=self._tool_choice,
+                        )
+                        use_stream = False
+                    else:
+                        if pending_delta:
+                            yield ProjectedMessageDelta(delta=pending_delta)
+                        if message is None:
+                            raise RuntimeError("LLM流未返回完成消息")
+                else:
+                    message = await self._llm.invoke(
+                        messages=llm_messages,
+                        tools=available_tools,
+                        response_format=response_format,
+                        tool_choice=self._tool_choice,
+                    )
+
                 if self._trace_service:
                     await self._trace_service.record_model_call_finished(
                         model_call_id,
                         message=message,
                         latency_ms=elapsed_ms(model_started),
                     )
+                    trace_finished = True
 
-                # 5.处理AI响应内容避免空回复
-                if message.get("role") == "assistant":
-                    if not message.get("content") and not message.get("tool_calls"):
-                        logger.warning("LLM回复了空内容，执行重试")
-                        await self._add_to_memory([
-                            {"role": "assistant", "content": ""},
-                            {"role": "user", "content": "AI无响应内容，请继续。"}
-                        ])
+                filtered_message = self._filter_llm_message(message)
+                if filtered_message is None:
+                    logger.warning("LLM回复了空内容，执行重试")
+                    error = "LLM回复了空内容"
+                    await self._add_to_memory([
+                        {"role": "assistant", "content": ""},
+                        {"role": "user", "content": "AI无响应内容，请继续。"},
+                    ])
+                    if draft_active:
+                        operation = (
+                            "abort"
+                            if attempt == self._agent_config.max_retries - 1
+                            else "reset"
+                        )
+                        yield ProjectedMessageDelta(delta="", operation=operation)
+                        if operation == "abort":
+                            draft_active = False
+                    if attempt < self._agent_config.max_retries - 1:
                         await asyncio.sleep(self._retry_interval)
-                        continue
+                    continue
 
-                    # 6.取出非空消息并处理工具调用(兼容DeepSeek思考模型的写法)
-                    filtered_message = {"role": "assistant", "content": message.get("content")}
-                    if message.get("reasoning_content"):
-                        filtered_message["reasoning_content"] = message.get("reasoning_content")
-                    if message.get("tool_calls"):
-                        # 7.取出工具调用的数据，限制LLM一次只能调用工具
-                        filtered_message["tool_calls"] = message.get("tool_calls")[:1]
-                else:
-                    # 8.非AI消息则记录日志并存储message
-                    logger.warning(f"LLM响应内容无法确认消息角色: {message.get('role')}")
-                    filtered_message = {
-                        key: value
-                        for key, value in message.items()
-                        if key != "_trace_metadata"
-                    }
-
-                # 9.将消息添加到记忆中
                 await self._add_to_memory([filtered_message])
-                return filtered_message
-            except Exception as e:
-                if self._trace_service:
+                yield ProjectedLLMCompleted(
+                    message=filtered_message,
+                    streamed=draft_active,
+                )
+                return
+            except Exception as exception:
+                if self._trace_service and not trace_finished:
                     await self._trace_service.record_model_call_finished(
                         model_call_id,
-                        error=str(e),
+                        error=str(exception),
                         latency_ms=elapsed_ms(model_started),
                     )
-                # 10.记录日志并睡眠指定的时间
-                logger.error(f"调用语言模型发生错误: {str(e)}")
-                error = str(e)
-                await asyncio.sleep(self._retry_interval)
-                continue
+                logger.error("调用语言模型发生错误: %s", str(exception))
+                error = str(exception)
+                if draft_active:
+                    operation = (
+                        "abort"
+                        if attempt == self._agent_config.max_retries - 1
+                        else "reset"
+                    )
+                    yield ProjectedMessageDelta(delta="", operation=operation)
+                    if operation == "abort":
+                        draft_active = False
+                if attempt < self._agent_config.max_retries - 1:
+                    await asyncio.sleep(self._retry_interval)
 
-        # 11.所有重试均已耗尽仍未获得有效响应，抛出异常避免返回None
-        raise RuntimeError(f"调用语言模型失败, 已达到最大重试次数({self._agent_config.max_retries}): {error}")
+        raise RuntimeError(
+            "调用语言模型失败, 已达到最大重试次数"
+            f"({self._agent_config.max_retries}): {error}"
+        )
+
+    @staticmethod
+    def _filter_llm_message(message: Dict[str, Any]) -> Dict[str, Any] | None:
+        if message.get("role") == "assistant":
+            if not message.get("content") and not message.get("tool_calls"):
+                return None
+            filtered_message = {
+                "role": "assistant",
+                "content": message.get("content"),
+            }
+            if message.get("reasoning_content"):
+                filtered_message["reasoning_content"] = message.get("reasoning_content")
+            if message.get("tool_calls"):
+                filtered_message["tool_calls"] = message.get("tool_calls")[:1]
+            return filtered_message
+
+        logger.warning("LLM响应内容无法确认消息角色: %s", message.get("role"))
+        return {
+            key: value
+            for key, value in message.items()
+            if key != "_trace_metadata"
+        }
 
     async def _invoke_tool(self, tool: BaseTool, tool_name: str, arguments: Dict[str, Any]) -> ToolResult:
         """传递工具包+工具名字+对应参数调用指定工具"""
@@ -423,7 +559,9 @@ class BaseAgent(ABC):
     async def _continue_tool_loop(
             self,
             message: Dict[str, Any],
-    ) -> AsyncGenerator[BaseEvent, None]:
+            *,
+            stream_field: str | None = None,
+    ) -> AsyncGenerator[BaseEvent | ProjectedMessageDelta, None]:
         """从一个 Assistant 消息开始执行 Tool Loop，并在需要人类输入时安全暂停。"""
         for _ in range(self._agent_config.max_iterations):
             if not message or not message.get("tool_calls"):
@@ -482,7 +620,19 @@ class BaseAgent(ABC):
                     "content": result.model_dump_json(),
                 })
 
-            message = await self._invoke_llm(tool_messages)
+            next_message: Dict[str, Any] | None = None
+            async for llm_event in self._invoke_llm_stream(
+                tool_messages,
+                stream_field=stream_field,
+            ):
+                if isinstance(llm_event, ProjectedMessageDelta):
+                    yield llm_event
+                else:
+                    next_message = llm_event.message
+            if next_message is None:
+                yield ErrorEvent(error="Agent未能获得工具调用后的模型回复")
+                return
+            message = next_message
         else:
             yield ErrorEvent(
                 error=f"Agent迭代超过最大迭代次数: {self._agent_config.max_iterations}, 任务处理失败"
@@ -497,7 +647,9 @@ class BaseAgent(ABC):
     async def resume_interaction(
             self,
             resolution: InteractionResolution,
-    ) -> AsyncGenerator[BaseEvent, None]:
+            *,
+            stream_field: str | None = None,
+    ) -> AsyncGenerator[BaseEvent | ProjectedMessageDelta, None]:
         """从持久化 Memory 尾部精确恢复一个待处理 Tool Call。"""
         await self._ensure_memory()
         last_message = self._memory.get_last_message()
@@ -547,26 +699,58 @@ class BaseAgent(ABC):
             function_result=result,
             status=ToolEventStatus.CALLED,
         )
-        next_message = await self._invoke_llm([{
-            "role": "tool",
-            "tool_call_id": tool_call_id,
-            "function_name": function_name,
-            "content": result.model_dump_json(),
-        }])
-        async for event in self._continue_tool_loop(next_message):
+        next_message: Dict[str, Any] | None = None
+        async for llm_event in self._invoke_llm_stream(
+            [{
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "function_name": function_name,
+                "content": result.model_dump_json(),
+            }],
+            stream_field=stream_field,
+        ):
+            if isinstance(llm_event, ProjectedMessageDelta):
+                yield llm_event
+            else:
+                next_message = llm_event.message
+        if next_message is None:
+            yield ErrorEvent(error="Agent未能获得交互恢复后的模型回复")
+            return
+        async for event in self._continue_tool_loop(
+            next_message,
+            stream_field=stream_field,
+        ):
             yield event
 
-    async def invoke(self, query: str, format: Optional[str] = None) -> AsyncGenerator[BaseEvent, None]:
+    async def invoke(
+            self,
+            query: str,
+            format: Optional[str] = None,
+            *,
+            stream_field: str | None = None,
+    ) -> AsyncGenerator[BaseEvent | ProjectedMessageDelta, None]:
         """传递消息+响应格式调用程序生成异步迭代内容"""
         # 1.需要判断下是否传递了format
         format = format if format else self._format
 
         # 2.调用语言模型获取响应内容
-        message = await self._invoke_llm(
+        message: Dict[str, Any] | None = None
+        async for llm_event in self._invoke_llm_stream(
             [{"role": "user", "content": query}],
             format,
-        )
+            stream_field=stream_field,
+        ):
+            if isinstance(llm_event, ProjectedMessageDelta):
+                yield llm_event
+            else:
+                message = llm_event.message
+        if message is None:
+            yield ErrorEvent(error="Agent未能获得模型回复")
+            return
 
         # 3.继续执行工具循环；需要人类输入时该生成器会在实际调用前安全结束。
-        async for event in self._continue_tool_loop(message):
+        async for event in self._continue_tool_loop(
+            message,
+            stream_field=stream_field,
+        ):
             yield event

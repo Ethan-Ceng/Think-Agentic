@@ -174,7 +174,7 @@ function handleResolveInteraction(actionId: string, params: ResolveInteractionPa
         enable-artifacts
         @artifact-open="emit('artifactOpen', $event)"
       />
-      <div v-else class="assistant-status-card assistant-empty-card">
+      <div v-else-if="!item.streaming" class="assistant-status-card assistant-empty-card">
         <MessageSquareOff :size="16" />
         <div>
           <strong>Assistant 返回了空回复</strong>
@@ -182,7 +182,7 @@ function handleResolveInteraction(actionId: string, params: ResolveInteractionPa
         </div>
       </div>
       <MessageActions
-        v-if="!isAssistantEmpty(item)"
+        v-if="!item.streaming && !isAssistantEmpty(item)"
         :content="item.data.message ?? ''"
         role="assistant"
         :source-event-id="item.sourceEventId"

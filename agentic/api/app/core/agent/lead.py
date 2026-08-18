@@ -5,7 +5,7 @@ from collections.abc import AsyncGenerator, Callable
 from time import perf_counter
 from typing import Any
 
-from app.core.agent.lead_decision import LeadDecisionPolicy
+from app.core.agent.lead_decision import LeadDecisionCompleted, LeadDecisionPolicy
 from app.core.browser.base import Browser
 from app.core.entities.app_config import AgentConfig
 from app.core.entities.event import (
@@ -13,6 +13,7 @@ from app.core.entities.event import (
     DoneEvent,
     ErrorEvent,
     InteractionEvent,
+    MessageDeltaEvent,
     MessageEvent,
     PlanEvent,
     PlanEventStatus,
@@ -49,6 +50,7 @@ class LeadAgent:
         session_id: str,
         enabled: bool,
         *,
+        streaming_enabled: bool = False,
         llm: LLM | None = None,
         agent_config: AgentConfig | None = None,
         tool_config: ToolConfig | None = None,
@@ -69,6 +71,7 @@ class LeadAgent:
         self._uow = uow_factory()
         self._session_id = session_id
         self._enabled = enabled
+        self._streaming_enabled = streaming_enabled
         self._trace_service = trace_service
         self._running = False
         self._using_legacy = not enabled
@@ -104,6 +107,7 @@ class LeadAgent:
                 a2a_tool=a2a_tool,
                 trace_service=trace_service,
                 skill_draft_tool=skill_draft_tool,
+                streaming_enabled=streaming_enabled,
             )
         self._legacy_flow = legacy_flow
 
@@ -120,6 +124,7 @@ class LeadAgent:
                 trace_service=trace_service,
                 tool_registry=self._legacy_flow._tool_factory.registry,
                 runtime_tool_scope=self._legacy_flow._tool_factory.runtime_scope,
+                streaming_enabled=streaming_enabled,
             )
         self._decision_policy = decision_policy
         self._react_agent = react_agent or getattr(self._legacy_flow, "react", None)
@@ -477,7 +482,21 @@ class LeadAgent:
 
             try:
                 decision_started = perf_counter()
-                decision = await self._decision_policy.decide(message)
+                decision_stream_id: str | None = None
+                decide_stream = getattr(self._decision_policy, "decide_stream", None)
+                if self._streaming_enabled and callable(decide_stream):
+                    decision_result: LeadDecisionCompleted | None = None
+                    async for decision_event in decide_stream(message):
+                        if isinstance(decision_event, MessageDeltaEvent):
+                            yield decision_event
+                        elif isinstance(decision_event, LeadDecisionCompleted):
+                            decision_result = decision_event
+                    if decision_result is None:
+                        raise ValueError("Lead 决策流没有返回完成结果")
+                    decision = decision_result.decision
+                    decision_stream_id = decision_result.stream_id
+                else:
+                    decision = await self._decision_policy.decide(message)
             except Exception as exc:
                 logger.warning("Lead 决策失败，回退 Legacy Planner-ReAct: %s", exc)
                 await self._record_trace(
@@ -523,7 +542,11 @@ class LeadAgent:
             self._using_legacy = False
             await self._prepare_new_message(message)
             yield TitleEvent(title=decision.title)
-            yield MessageEvent(role="assistant", message=decision.answer)
+            yield MessageEvent(
+                role="assistant",
+                message=decision.answer,
+                stream_id=decision_stream_id,
+            )
             await self._record_trace(
                 "record_lead_completion",
                 mode="direct",

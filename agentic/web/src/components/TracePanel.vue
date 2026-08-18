@@ -535,7 +535,8 @@ function stepResultPreview(step: RunStepRecord): string {
                 <span>{{ call.message_count }} messages</span>
                 <span>{{ call.tool_schema_count }} tools</span>
                 <span>{{ call.total_tokens ? `${formatNumber(call.total_tokens)} tokens` : 'tokens -' }}</span>
-                <span>{{ formatElapsed(call.latency_ms) }}</span>
+                <span>首 Token {{ formatElapsed(call.ttft_ms) }}</span>
+                <span>总耗时 {{ formatElapsed(call.latency_ms) }}</span>
               </div>
               <div class="record-split">
                 <section>

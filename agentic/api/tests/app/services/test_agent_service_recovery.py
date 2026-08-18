@@ -11,6 +11,7 @@ from app.core.entities.event import (
     InteractionDecision,
     InteractionResolution,
     InteractionType,
+    MessageDeltaEvent,
     MessageEvent,
 )
 from app.core.entities.session import Session, SessionStatus
@@ -24,6 +25,7 @@ class FakeSessionRepository:
         self.events: List[BaseEvent] = []
         self.status_updates: List[SessionStatus] = []
         self.latest_messages: List[str] = []
+        self.unread_updates: List[int] = []
         self.claim_calls = 0
 
     async def get_by_id_for_user(self, session_id: str, user_id: str) -> Optional[Session]:
@@ -61,6 +63,7 @@ class FakeSessionRepository:
 
     async def update_unread_message_count(self, session_id: str, count: int) -> None:
         assert session_id == self.session.id
+        self.unread_updates.append(count)
 
 
 class FakeTraceRepository:
@@ -173,6 +176,28 @@ class RunningTaskWithTemporaryTimeout:
 
     def __init__(self, event: BaseEvent) -> None:
         self.output_stream = TimeoutThenTailOutputStream(event)
+
+
+class ReplayOutputStream:
+    def __init__(self, events: List[BaseEvent]) -> None:
+        self.items = [
+            (f"output-{index}", event.model_dump_json())
+            for index, event in enumerate(events, start=1)
+        ]
+        self.start_ids: List[Optional[str]] = []
+
+    async def get(self, start_id=None, block_ms=None):
+        self.start_ids.append(start_id)
+        if not self.items:
+            return None, None
+        return self.items.pop(0)
+
+
+class RunningReplayTask:
+    done = False
+
+    def __init__(self, events: List[BaseEvent]) -> None:
+        self.output_stream = ReplayOutputStream(events)
 
 
 def make_service(session: Session) -> tuple[AgentService, FakeSessionRepository, FakeTraceRepository]:
@@ -415,6 +440,64 @@ def test_chat_keeps_output_cursor_after_a_temporary_read_timeout() -> None:
     assert len(events) == 1
     assert isinstance(events[0], DoneEvent)
     assert task.output_stream.start_ids == ["output-1", "output-1"]
+
+
+def test_chat_replays_delta_and_final_from_the_requested_output_cursor() -> None:
+    session = Session(
+        id="session-1",
+        user_id="user-1",
+        task_id="running-task",
+        status=SessionStatus.RUNNING,
+    )
+    service, session_repo, _ = make_service(session)
+    task = RunningReplayTask(
+        [
+            MessageDeltaEvent(
+                stream_id="stream-1",
+                sequence=0,
+                delta="Hel",
+            ),
+            MessageEvent(
+                role="assistant",
+                message="Hello",
+                stream_id="stream-1",
+            ),
+            DoneEvent(),
+        ]
+    )
+
+    async def fake_get_task(_session: Session) -> RunningReplayTask:
+        return task
+
+    service._get_task = fake_get_task  # type: ignore[method-assign]
+
+    async def no_background_unread_update(_session_id: str) -> None:
+        return None
+
+    service._safe_update_unread_count = no_background_unread_update  # type: ignore[method-assign]
+
+    async def run() -> List[BaseEvent]:
+        events = [
+            event
+            async for event in service.chat(
+                session_id=session.id,
+                user_id=session.user_id,
+                latest_event_id="output-0",
+            )
+        ]
+        await asyncio.sleep(0)
+        return events
+
+    events = asyncio.run(run())
+
+    assert [event.type for event in events] == [
+        "message_delta",
+        "message",
+        "done",
+    ]
+    assert task.output_stream.start_ids == ["output-0", "output-1", "output-2"]
+    assert session_repo.events == []
+    assert session_repo.unread_updates == [0, 0]
 
 
 def test_interaction_resolution_stays_in_task_input_but_not_session_history() -> None:

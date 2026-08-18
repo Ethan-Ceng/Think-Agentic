@@ -356,6 +356,7 @@ export type ModelCallRecord = {
   completion_tokens?: number | null
   total_tokens?: number | null
   latency_ms?: number | null
+  ttft_ms?: number | null
   request_preview: Record<string, unknown>
   response_preview: Record<string, unknown>
   error?: string | null
@@ -560,6 +561,7 @@ export type ProjectNameParams = {
 export type ChatMessage = {
   role: 'user' | 'assistant' | 'system'
   message: string
+  stream_id?: string | null
   visible?: boolean
   attachments?: Array<{
     file_id: string
@@ -711,8 +713,20 @@ export type InteractionEvent = {
   [key: string]: unknown
 }
 
+export type MessageDeltaOperation = 'append' | 'reset' | 'abort'
+
+export type MessageDeltaEvent = {
+  role: 'assistant'
+  stream_id: string
+  sequence: number
+  operation: MessageDeltaOperation
+  delta: string
+  [key: string]: unknown
+}
+
 export type SSEEventType =
   | 'message'
+  | 'message_delta'
   | 'title'
   | 'plan'
   | 'step'
@@ -724,6 +738,7 @@ export type SSEEventType =
 
 export type SSEEventData =
   | { type: 'message'; data: ChatMessage }
+  | { type: 'message_delta'; data: MessageDeltaEvent }
   | { type: 'title'; data: { title: string; [key: string]: unknown } }
   | { type: 'plan'; data: PlanEvent }
   | { type: 'step'; data: StepEvent }

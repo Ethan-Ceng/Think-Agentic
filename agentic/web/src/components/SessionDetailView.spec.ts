@@ -403,6 +403,38 @@ describe('SessionDetailView attachment sending', () => {
   })
 })
 
+describe('SessionDetailView streaming answer state', () => {
+  beforeEach(() => {
+    mocks.toastInfo.mockReset()
+    mocks.getBranchFamily.mockReset()
+    mocks.createBranch.mockReset()
+    mocks.stopSession.mockReset()
+  })
+
+  it('hides the thinking indicator once an assistant draft is visible', async () => {
+    mocks.detail = makeDetail({
+      status: 'running',
+      events: [
+        {
+          type: 'message_delta',
+          data: {
+            role: 'assistant',
+            stream_id: 'stream-1',
+            sequence: 0,
+            operation: 'append',
+            delta: 'partial answer',
+          },
+        },
+      ] as unknown as SessionDetail['events'],
+    })
+
+    const { wrapper } = await mountView('/sessions/session-1', 'session-1')
+
+    expect(wrapper.findComponent({ name: 'ThinkingIndicator' }).exists()).toBe(false)
+    expect(wrapper.find('.stub-chat-message').exists()).toBe(true)
+  })
+})
+
 describe('SessionDetailView branch version navigation', () => {
   beforeEach(() => {
     mocks.toastInfo.mockReset()

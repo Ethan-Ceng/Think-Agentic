@@ -10,7 +10,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Literal, List, Union, Optional, Any, Dict, Annotated
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from .file import File
 from .plan import Plan, Step
@@ -128,6 +128,26 @@ class MessageEvent(BaseEvent):
     skills: List[SkillRef] = Field(default_factory=list)  # 本次 Run 手动选择的 Skills
     visible: bool = True  # 是否作为用户可见的对话消息展示
     interaction_response: Optional[InteractionResolution] = None
+    stream_id: Optional[str] = None
+
+
+class MessageDeltaEvent(BaseEvent):
+    """只经实时传输、不作为会话事实持久化的 Assistant 草稿增量。"""
+
+    type: Literal["message_delta"] = "message_delta"
+    role: Literal["assistant"] = "assistant"
+    stream_id: str = Field(min_length=1)
+    delta: str = ""
+    operation: Literal["append", "reset", "abort"] = "append"
+    sequence: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def validate_delta_shape(self) -> "MessageDeltaEvent":
+        if self.operation == "append" and not self.delta:
+            raise ValueError("append 增量不能为空")
+        if self.operation != "append" and self.delta:
+            raise ValueError("reset/abort 增量必须为空")
+        return self
 
 
 class BrowserToolContent(BaseModel):
@@ -235,6 +255,7 @@ Event = Annotated[
         PlanEvent,
         TitleEvent,
         StepEvent,
+        MessageDeltaEvent,
         MessageEvent,
         ToolEvent,
         InteractionEvent,

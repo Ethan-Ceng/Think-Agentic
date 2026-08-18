@@ -24,7 +24,7 @@ from app.core.search.base import SearchEngine
 from app.core.task.base import TaskRunner, Task
 from app.core.entities.app_config import AgentConfig, LLMConfig, MCPConfig, A2AConfig
 from app.core.entities.tool_config import ToolConfig
-from app.core.entities.event import ErrorEvent, Event, MessageEvent, BaseEvent, ToolEvent, ToolEventStatus, \
+from app.core.entities.event import ErrorEvent, Event, MessageDeltaEvent, MessageEvent, BaseEvent, ToolEvent, ToolEventStatus, \
     BrowserToolContent, SearchToolContent, ShellToolContent, FileToolContent, MCPToolContent, A2AToolContent, \
     TitleEvent, WaitEvent, DoneEvent
 from app.core.entities.file import File
@@ -107,6 +107,7 @@ class AgentTaskRunner(TaskRunner):
             tool_config=tool_config,
             session_id=session_id,
             enabled=get_settings().lead_agent_enabled,
+            streaming_enabled=get_settings().token_delta_streaming_enabled,
             json_parser=json_parser,
             browser=browser,
             sandbox=sandbox,
@@ -154,6 +155,28 @@ class AgentTaskRunner(TaskRunner):
             await self._uow.session.add_event(self._session_id, event)
 
         await self._trace_service.project_event(event)
+
+    @staticmethod
+    async def _put_transient_event(task: Task, event: MessageDeltaEvent) -> None:
+        """只写实时输出流，不把草稿增量投影为会话事实。"""
+        event_id = await task.output_stream.put(event.model_dump_json())
+        event.id = event_id
+
+    async def _abort_active_streams(
+            self,
+            task: Task,
+            active_streams: dict[str, int],
+    ) -> None:
+        for stream_id, sequence in list(active_streams.items()):
+            await self._put_transient_event(
+                task,
+                MessageDeltaEvent(
+                    stream_id=stream_id,
+                    sequence=sequence,
+                    operation="abort",
+                ),
+            )
+        active_streams.clear()
 
     async def _on_sandbox_activation(
         self,
@@ -453,6 +476,7 @@ class AgentTaskRunner(TaskRunner):
 
     async def invoke(self, task: Task) -> None:
         """根据传递的任务处理agent消息队列并运行agent流"""
+        active_streams: dict[str, int] = {}
         try:
             logger.info("AgentTaskRunner任务处理开始")
             await self._mcp_tool.initialize(self._mcp_config)
@@ -474,6 +498,7 @@ class AgentTaskRunner(TaskRunner):
                                 task.id,
                             )
                         if next_message is None:
+                            await self._abort_active_streams(task, active_streams)
                             await self._put_and_add_event(
                                 task,
                                 final_done_event or DoneEvent(),
@@ -517,10 +542,26 @@ class AgentTaskRunner(TaskRunner):
 
                 async for flow_event in self._run_flow(message_obj):
                     if isinstance(flow_event, DoneEvent):
+                        await self._abort_active_streams(task, active_streams)
                         pending_done_event = flow_event
                         continue
 
-                    await self._put_and_add_event(task, flow_event)
+                    if isinstance(flow_event, (WaitEvent, ErrorEvent)):
+                        await self._abort_active_streams(task, active_streams)
+
+                    if isinstance(flow_event, MessageDeltaEvent):
+                        await self._put_transient_event(task, flow_event)
+                        if flow_event.operation == "abort":
+                            active_streams.pop(flow_event.stream_id, None)
+                        else:
+                            active_streams[flow_event.stream_id] = flow_event.sequence + 1
+                    else:
+                        await self._put_and_add_event(task, flow_event)
+                        if (
+                            isinstance(flow_event, MessageEvent)
+                            and flow_event.stream_id
+                        ):
+                            active_streams.pop(flow_event.stream_id, None)
 
                     if isinstance(flow_event, TitleEvent):
                         async with self._uow:
@@ -553,6 +594,7 @@ class AgentTaskRunner(TaskRunner):
             async with self._uow:
                 await self._uow.session.reset_processing_next_message(self._session_id)
                 await self._uow.session.update_status(self._session_id, SessionStatus.COMPLETED)
+            await self._abort_active_streams(task, active_streams)
             await self._put_and_add_event(task, DoneEvent())
             raise
         except Exception as e:
@@ -560,6 +602,7 @@ class AgentTaskRunner(TaskRunner):
             async with self._uow:
                 await self._uow.session.reset_processing_next_message(self._session_id)
                 await self._uow.session.update_status(self._session_id, SessionStatus.COMPLETED)
+            await self._abort_active_streams(task, active_streams)
             await self._put_and_add_event(task, ErrorEvent(error=f"AgentTaskRunner出错: {str(e)}"))
         finally:
             await self._cleanup_tools()
