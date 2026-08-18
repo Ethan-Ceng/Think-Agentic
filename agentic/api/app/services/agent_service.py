@@ -30,6 +30,7 @@ from app.core.entities.event import (
     InteractionDecision,
     InteractionEvent,
     InteractionResolution,
+    InteractionStatus,
     MessageDeltaEvent,
     MessageEvent,
     WaitEvent,
@@ -118,17 +119,83 @@ class AgentService:
             self,
             session_id: str,
             user_id: str,
-    ) -> tuple[Session, SessionStatus | None]:
+            *,
+            user_answer: str | None = None,
+    ) -> tuple[Session, SessionStatus | None, InteractionEvent | None]:
         try:
             async with self._uow:
-                return await self._uow.session.claim_execution(
+                if user_answer is not None:
+                    return await self._uow.session.claim_execution_for_user_input(
+                        session_id,
+                        user_id,
+                        answer=user_answer,
+                    )
+                session, previous_status = await self._uow.session.claim_execution(
                     session_id,
                     user_id,
                 )
+                return session, previous_status, None
         except SessionOrganizationNotFoundError as exc:
             raise NotFoundError("任务会话不存在, 请核实后重试") from exc
         except SessionOrganizationConflictError as exc:
             raise ConflictError(str(exc)) from exc
+        except InteractionNotFoundError as exc:
+            raise NotFoundError(str(exc)) from exc
+        except InteractionConflictError as exc:
+            raise ConflictError(str(exc)) from exc
+        except InteractionValidationError as exc:
+            raise BadRequestError(str(exc)) from exc
+
+    @staticmethod
+    def _build_interaction_resolution(
+            resolved: InteractionEvent,
+    ) -> InteractionResolution:
+        """Project one server-validated resolved event into an internal resume command."""
+        if resolved.decision is None:
+            raise ValueError("已解决交互缺少决定")
+        return InteractionResolution(
+            action_id=resolved.action_id,
+            interaction_type=resolved.interaction_type,
+            decision=resolved.decision,
+            tool_call_id=resolved.tool_call_id,
+            function_name=resolved.function_name,
+            function_args=resolved.function_args,
+            tool_name=resolved.tool_name,
+            risk_level=resolved.risk_level,
+            answer=resolved.answer,
+            selected_values=resolved.selected_values,
+            lead_mode=resolved.lead_mode,
+            lead_goal=resolved.lead_goal,
+            lead_language=resolved.lead_language,
+            lead_capabilities=resolved.lead_capabilities,
+            plan_id=resolved.plan_id,
+            step_id=resolved.step_id,
+            lead_replan_count=resolved.lead_replan_count,
+            skills=resolved.skills,
+        )
+
+    @staticmethod
+    def _is_preclaimed_interaction(
+            session: Session,
+            resolution: InteractionResolution | None,
+    ) -> bool:
+        """Recognize the RUNNING state atomically claimed by explicit resolution."""
+        if resolution is None or session.status != SessionStatus.RUNNING:
+            return False
+        latest_interaction = next(
+            (
+                event
+                for event in reversed(session.events)
+                if isinstance(event, InteractionEvent)
+            ),
+            None,
+        )
+        return bool(
+            latest_interaction is not None
+            and latest_interaction.status == InteractionStatus.RESOLVED
+            and latest_interaction.action_id == resolution.action_id
+            and latest_interaction.tool_call_id == resolution.tool_call_id
+        )
 
     async def _create_task(self, session: Session) -> Task:
         """根据传递的会话创建一个新任务"""
@@ -284,27 +351,7 @@ class AgentService:
         except InteractionValidationError as exc:
             raise BadRequestError(str(exc)) from exc
 
-        resolution = InteractionResolution(
-            action_id=resolved.action_id,
-            interaction_type=resolved.interaction_type,
-            decision=resolved.decision,
-            tool_call_id=resolved.tool_call_id,
-            function_name=resolved.function_name,
-            function_args=resolved.function_args,
-            tool_name=resolved.tool_name,
-            risk_level=resolved.risk_level,
-            answer=resolved.answer,
-            selected_values=resolved.selected_values,
-            lead_mode=resolved.lead_mode,
-            lead_goal=resolved.lead_goal,
-            lead_language=resolved.lead_language,
-            lead_capabilities=resolved.lead_capabilities,
-            plan_id=resolved.plan_id,
-            step_id=resolved.step_id,
-            lead_replan_count=resolved.lead_replan_count,
-            skills=resolved.skills,
-        )
-        return resolved, resolution
+        return resolved, self._build_interaction_resolution(resolved)
 
     async def continue_interaction(
             self,
@@ -339,13 +386,24 @@ class AgentService:
         attachments = attachments or []
         skills = skills or []
         previous_status: SessionStatus | None = None
+        routed_interaction: InteractionEvent | None = None
         try:
             # 1. 新 Run 与归档在同一行锁上串行化；只读订阅保持原查询。
             if message:
-                session, previous_status = await self._claim_execution(
+                session, previous_status, routed_interaction = await self._claim_execution(
                     session_id,
                     user_id,
+                    user_answer=(
+                        message
+                        if visible and interaction_response is None
+                        else None
+                    ),
                 )
+                if routed_interaction is not None:
+                    interaction_response = self._build_interaction_resolution(
+                        routed_interaction
+                    )
+                    skills = list(interaction_response.skills)
             else:
                 async with self._uow:
                     session = await self._uow.session.get_by_id_for_user(
@@ -356,8 +414,17 @@ class AgentService:
                 logger.error(f"尝试与不存在的任务会话[{session_id}]对话")
                 raise NotFoundError("任务会话不存在, 请核实后重试")
 
-            # 2.获取对应会话任务
-            task = None if previous_status is not None else await self._get_task(session)
+            # 2.获取对应会话任务。显式 Interaction 已在解决事务中原子领取，
+            # 必须创建新的 continuation Task，不能复用等待前已经结束的 Task。
+            preclaimed_interaction = (
+                previous_status is None
+                and self._is_preclaimed_interaction(session, interaction_response)
+            )
+            task = (
+                None
+                if previous_status is not None or preclaimed_interaction
+                else await self._get_task(session)
+            )
 
             # A running database record without an in-process task can never make progress.
             # Finalize it before accepting a user-triggered recovery run.
@@ -365,15 +432,26 @@ class AgentService:
                 previous_status is None
                 and session.status == SessionStatus.RUNNING
                 and task is None
+                and not preclaimed_interaction
             ):
                 orphaned_event = await self._finalize_orphaned_run(session)
                 if not message:
                     yield orphaned_event
                     return
-                session, previous_status = await self._claim_execution(
+                session, previous_status, routed_interaction = await self._claim_execution(
                     session_id,
                     user_id,
+                    user_answer=(
+                        message
+                        if visible and interaction_response is None
+                        else None
+                    ),
                 )
+                if routed_interaction is not None:
+                    interaction_response = self._build_interaction_resolution(
+                        routed_interaction
+                    )
+                    skills = list(interaction_response.skills)
                 task = None
 
             # 3.判断是否传递了message
@@ -384,11 +462,16 @@ class AgentService:
                     try:
                         task = await self._create_task(session)
                     except Exception:
-                        if previous_status is not None:
+                        if previous_status is not None or preclaimed_interaction:
+                            restore_status = (
+                                SessionStatus.COMPLETED
+                                if interaction_response is not None
+                                else previous_status
+                            )
                             async with self._uow:
                                 await self._uow.session.update_status(
                                     session_id,
-                                    previous_status,
+                                    restore_status,
                                 )
                         raise
                     if not task:
@@ -424,13 +507,21 @@ class AgentService:
                 persisted_message_event = message_event.model_copy(
                     update={"id": event_id, "interaction_response": None}
                 )
-                yield persisted_message_event
                 async with self._uow:
-                    await self._uow.session.add_event(session_id, persisted_message_event)
+                    await self._uow.session.add_event(
+                        session_id,
+                        persisted_message_event,
+                    )
 
-                # 9.执行任务
+                # Start the durable task before exposing the accepted input over SSE.
+                # A client disconnect after the first event must not strand a resolved
+                # interaction without its continuation.
                 await task.invoke()
                 logger.info(f"往会话[{session_id}]输入消息队列写入消息: {message[:50]}...")
+
+                if routed_interaction is not None:
+                    yield routed_interaction
+                yield persisted_message_event
 
             # 10.记录日志展示会话已启动
             logger.info(f"会话[{session_id}]已启动")

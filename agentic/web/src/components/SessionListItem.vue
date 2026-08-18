@@ -45,7 +45,7 @@ const isRunning = computed(
 )
 const archiveReason = computed(() => {
   if (props.session.status === 'running') return '任务运行中，完成或停止后才能归档'
-  if (props.session.status === 'waiting') return '任务正在等待交互，处理后才能归档'
+  if (props.session.status === 'waiting') return '任务正在等待用户输入，打开会话继续后才能归档'
   if (props.session.has_next_message) return '存在排队消息，发送或取消后才能归档'
   return ''
 })

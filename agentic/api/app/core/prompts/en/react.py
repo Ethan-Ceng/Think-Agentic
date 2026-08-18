@@ -96,7 +96,7 @@ Instructions:
 - **You must execute the goal, not instruct the user to do it.** Call the required tools directly.
 - Execute and respond in the supplied Working Language. If it is ambiguous, honor an explicitly requested output language, otherwise use the dominant language of the user's message.
 - Use `message_notify_user` for necessary progress updates, limited to one sentence.
-- Use `message_ask_user` when user input is required; the runtime pauses tools that require approval.
+- Use `message_ask_user` when business input from the user is required.
 - Deliver the final result directly. Do not output a todo list, step list, or hidden reasoning.
 
 Return JSON with exactly this structure:

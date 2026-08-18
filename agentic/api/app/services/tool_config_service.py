@@ -6,7 +6,6 @@ from app.core.tools.api import APITool, validate_api_tool_registration
 from app.core.tools.registry import ToolRegistry
 from app.schemas.tool_config import (
     RuntimeToolPolicy,
-    ToolApprovalSetting,
     ToolBinding,
     ToolBindingsUpdate,
     ToolCapabilitySummary,
@@ -51,31 +50,8 @@ class ToolConfigService:
             registrations=self._redact_registrations(
                 self._list_api_registrations(tool_config)
             ),
-            approval_tools=self._list_builtin_approval_settings(tool_config),
             runtime_policy=tool_config.runtime_policy,
         )
-
-    def _list_builtin_approval_settings(
-        self,
-        tool_config: ToolConfig,
-    ) -> list[ToolApprovalSetting]:
-        settings: list[ToolApprovalSetting] = []
-        for descriptor in self.registry.list_descriptors(tool_config):
-            if not descriptor.provider_id.startswith("builtin."):
-                continue
-            if descriptor.risk_level != "high":
-                continue
-            binding = tool_config.bindings.get(descriptor.tool_id)
-            settings.append(
-                ToolApprovalSetting(
-                    tool_id=descriptor.tool_id,
-                    function_name=descriptor.function_name,
-                    label=descriptor.label,
-                    risk_level="high",
-                    approval=binding.approval if binding else "auto",
-                )
-            )
-        return settings
 
     async def get_tool_config(self, user_id: str) -> ToolConfig:
         config = await self.user_config_service.get_tool_config(user_id)
@@ -87,7 +63,9 @@ class ToolConfigService:
         for tool_id, incoming in update.bindings.items():
             existing = merged_bindings.get(tool_id)
             if existing is None:
-                merged_bindings[tool_id] = incoming
+                merged_bindings[tool_id] = ToolBinding.model_validate(
+                    incoming.model_dump(mode="json")
+                )
                 continue
             merged_bindings[tool_id] = existing.model_copy(
                 update=incoming.model_dump(include=incoming.model_fields_set),
@@ -97,7 +75,9 @@ class ToolConfigService:
             mode=current.mode,
             bindings=merged_bindings,
             registrations=current.registrations,
-            runtime_policy=update.runtime_policy,
+            runtime_policy=RuntimeToolPolicy.model_validate(
+                update.runtime_policy.model_dump(mode="json")
+            ),
         )
         await self.user_config_service.update_tool_config(user_id, updated)
         return await self.list_tools(user_id)

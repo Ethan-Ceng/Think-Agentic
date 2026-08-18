@@ -13,6 +13,12 @@ from app.core.entities.event import (
     MessageDeltaEvent,
     MessageEvent,
 )
+from app.core.entities.memory import Memory
+from app.core.entities.session import (
+    InteractionValidationError,
+    Session,
+    SessionStatus,
+)
 from app.schemas.event import (
     EventMapper,
     InteractionSSEEvent,
@@ -94,6 +100,91 @@ def test_interaction_sse_redacts_sensitive_tool_arguments() -> None:
     assert sse.data.function_args["environment"] == "production"
     assert sse.data.function_args["api_key"] == "******"
     assert sse.data.function_args["headers"]["authorization"] == "******"
+
+
+def test_session_retires_legacy_pending_approval_without_executing_tool() -> None:
+    pending = InteractionEvent(
+        action_id="legacy-action",
+        interaction_type=InteractionType.TOOL_APPROVAL,
+        status=InteractionStatus.PENDING,
+        tool_call_id="call-1",
+        tool_name="shell",
+        function_name="shell_execute",
+        function_args={"command": "private command"},
+        prompt="legacy approval",
+    )
+    session = Session(
+        id="session-1",
+        user_id="user-1",
+        status=SessionStatus.WAITING,
+        events=[pending],
+        memories={
+            "react": Memory(
+                messages=[
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call-1",
+                                "function": {
+                                    "name": "shell_execute",
+                                    "arguments": '{"command":"private command"}',
+                                },
+                            },
+                            {
+                                "id": "call-2",
+                                "function": {
+                                    "name": "message_notify_user",
+                                    "arguments": '{"text":"progress"}',
+                                },
+                            },
+                        ],
+                    }
+                ]
+            )
+        },
+    )
+
+    resolved = session.retire_pending_tool_approval()
+
+    assert resolved is not None
+    assert resolved.status == InteractionStatus.RESOLVED
+    assert resolved.decision == InteractionDecision.REJECT
+    tool_results = session.memories["react"].messages[-2:]
+    assert [message["tool_call_id"] for message in tool_results] == [
+        "call-1",
+        "call-2",
+    ]
+    assert all(message["role"] == "tool" for message in tool_results)
+    assert all("private command" not in message["content"] for message in tool_results)
+    assert session.retire_pending_tool_approval() is None
+
+
+def test_session_rejects_attempt_to_approve_legacy_tool_interaction() -> None:
+    session = Session(
+        id="session-1",
+        user_id="user-1",
+        status=SessionStatus.WAITING,
+        events=[
+            InteractionEvent(
+                action_id="legacy-action",
+                interaction_type=InteractionType.TOOL_APPROVAL,
+                status=InteractionStatus.PENDING,
+                tool_call_id="call-1",
+                tool_name="shell",
+                function_name="shell_execute",
+                function_args={"command": "echo unsafe"},
+                prompt="legacy approval",
+            )
+        ],
+    )
+
+    with pytest.raises(InteractionValidationError, match="已停用"):
+        session.resolve_interaction(
+            action_id="legacy-action",
+            decision=InteractionDecision.APPROVE,
+        )
 
 
 def test_message_delta_and_final_message_round_trip_with_stream_id() -> None:

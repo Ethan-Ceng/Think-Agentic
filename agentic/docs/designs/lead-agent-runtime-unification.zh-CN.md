@@ -15,6 +15,7 @@
 - React 与 Plan 的 Interaction 均持久化最小恢复上下文，恢复时跳过 Decide 并校验原 Tool Call。
 - 当前 `lead_agent_enabled` 默认关闭。离线契约任务集与自动化回归已通过，但尚未使用目标生产模型执行线上/预发布路由准确率与延迟评测；在该证据完成前不默认切流。
 - 本文的 Token Delta Streaming、Durable Runtime 与 Child Agent/A2A 内部委派仍为独立后续工作。
+- 2026-08-18 后续修订：通用 Tool Approval 已移除，`WAITING` 只用于 `ask_user` 等业务输入；正文若提及 Tool Approval，仅表示该设计落地时的历史基线。
 
 ## 一句话结论
 
@@ -479,7 +480,7 @@ async def run_react(
     ...
 ```
 
-- 复用：现有 BaseAgent Tool Loop、Tool Approval、Ask User、RuntimeToolScope。
+- 复用：现有 BaseAgent Tool Loop、Ask User、RuntimeToolScope 与历史 Interaction 读取兼容。
 - 输出：Tool/Interaction/Wait/Message/Error/Done 等既有事件。
 - 禁止：创建用户可见 Plan、调用 Planner Update、调用 Summarizer。
 

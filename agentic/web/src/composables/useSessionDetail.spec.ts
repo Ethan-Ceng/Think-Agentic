@@ -83,7 +83,7 @@ describe('useSessionDetail stream completion', () => {
     const { detail, wrapper } = mountComposable()
     await flushPromises()
 
-    await detail.sendMessage({ message: 'needs approval', attachmentIds: [], skills: [] })
+    await detail.sendMessage({ message: 'needs user input', attachmentIds: [], skills: [] })
     await flushPromises()
 
     expect(detail.streaming.value).toBe(false)
@@ -172,7 +172,7 @@ describe('useSessionDetail stream completion', () => {
     const { detail, wrapper } = mountComposable()
     await flushPromises()
 
-    await detail.resolveInteraction('action-1', { decision: 'approve' })
+    await detail.resolveInteraction('action-1', { decision: 'answer', answer: 'continue' })
     await flushPromises()
 
     expect(detail.session.value?.status).toBe('completed')

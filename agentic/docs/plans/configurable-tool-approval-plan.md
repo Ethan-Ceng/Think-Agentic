@@ -1,5 +1,7 @@
 # 可配置工具审批实施计划
 
+> 历史计划（已替代）：本文只记录 2026-07 已完成但现已退役的实现。当前架构已移除逐工具用户审批；有效设计和迁移证据见 `docs/designs/agent-runtime-hitl-provider-reliability.zh-CN.md` 与 `docs/plans/remove-tool-approval-plan.md`。
+
 ## 关联设计
 
 - 设计文档：`docs/designs/configurable-tool-approval.zh-CN.md`
@@ -7,7 +9,7 @@
 
 ## 当前进度
 
-- 整体状态：`READY_TO_MERGE`
+- 整体状态：`SUPERSEDED_HISTORY`
 - 当前阶段：completed
 - 当前任务：无
 - 已完成：3 / 3

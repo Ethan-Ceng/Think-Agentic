@@ -184,12 +184,12 @@ async def test_react_runs_goal_without_plan_or_step_events() -> None:
 async def test_react_interaction_persists_strategy_context_and_waits() -> None:
     interaction = InteractionEvent(
         action_id="action-1",
-        interaction_type=InteractionType.TOOL_APPROVAL,
+        interaction_type=InteractionType.ASK_USER,
         tool_call_id="call-1",
-        tool_name="search",
-        function_name="search_web",
-        function_args={"query": "source"},
-        prompt="Approve search?",
+        tool_name="message",
+        function_name="message_ask_user",
+        function_args={"text": "Which source should be used?"},
+        prompt="Which source should be used?",
     )
     lead, _, _, _ = make_react_lead([interaction, WaitEvent()])
     skill_ref = SkillRef(
@@ -215,16 +215,17 @@ async def test_react_interaction_persists_strategy_context_and_waits() -> None:
 
 async def test_react_resume_skips_decision_and_continues_original_goal() -> None:
     lead, policy, react, repository = make_react_lead(
-        [MessageEvent(message="Approved result")],
-        session_status=SessionStatus.WAITING,
+        [MessageEvent(message="Answered result")],
+        session_status=SessionStatus.RUNNING,
     )
     resolution = InteractionResolution(
         action_id="action-1",
-        interaction_type=InteractionType.TOOL_APPROVAL,
-        decision=InteractionDecision.APPROVE,
+        interaction_type=InteractionType.ASK_USER,
+        decision=InteractionDecision.ANSWER,
         tool_call_id="call-1",
-        function_name="search_web",
-        function_args={"query": "source"},
+        function_name="message_ask_user",
+        function_args={"text": "Which source should be used?"},
+        answer="Use the primary source",
         lead_mode="react",
         lead_goal="Find the primary source",
         lead_language="en",
@@ -239,22 +240,23 @@ async def test_react_resume_skips_decision_and_continues_original_goal() -> None
     assert policy.decide_calls == 0
     assert react.resume_calls == [resolution]
     assert [event.type for event in events] == ["message", "done"]
-    assert repository.statuses == [SessionStatus.RUNNING]
+    assert repository.statuses == []
 
 
 async def test_inflight_react_resume_ignores_newly_disabled_feature_flag() -> None:
     lead, policy, react, _ = make_react_lead(
-        [MessageEvent(message="Approved result")],
+        [MessageEvent(message="Answered result")],
         session_status=SessionStatus.WAITING,
         enabled=False,
     )
     resolution = InteractionResolution(
         action_id="action-1",
-        interaction_type=InteractionType.TOOL_APPROVAL,
-        decision=InteractionDecision.APPROVE,
+        interaction_type=InteractionType.ASK_USER,
+        decision=InteractionDecision.ANSWER,
         tool_call_id="call-1",
-        function_name="search_web",
-        function_args={"query": "source"},
+        function_name="message_ask_user",
+        function_args={"text": "Which source should be used?"},
+        answer="Use the primary source",
         lead_mode="react",
         lead_goal="Find the primary source",
         lead_language="en",

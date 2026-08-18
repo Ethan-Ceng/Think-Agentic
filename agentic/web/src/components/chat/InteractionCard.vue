@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { AlertTriangle, Check, CircleHelp, Loader2, ShieldAlert, X } from 'lucide-vue-next'
+import { Check, CircleHelp, Loader2, ShieldAlert } from 'lucide-vue-next'
 import type { InteractionEvent, ResolveInteractionParams } from '@/lib/api/types'
 
 const props = withDefaults(defineProps<{
@@ -61,28 +61,11 @@ function submitAnswer() {
   })
 }
 
-function submitApproval(decision: 'approve' | 'reject') {
-  if (!isPending.value || props.busy) return
-  emit('resolve', props.interaction.action_id, { decision })
-}
-
-function redact(value: unknown, key = ''): unknown {
-  if (/token|secret|password|api[_-]?key|authorization/i.test(key)) return '••••••'
-  if (Array.isArray(value)) return value.map((item) => redact(item))
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([entryKey, entryValue]) => [
-        entryKey,
-        redact(entryValue, entryKey),
-      ]),
-    )
-  }
-  return value
-}
-
-const argumentsPreview = computed(() =>
-  JSON.stringify(redact(props.interaction.function_args), null, 2),
-)
+const legacyStatus = computed(() => {
+  if (isPending.value) return '历史调用不会执行，可直接继续输入'
+  if (props.interaction.decision === 'approve') return '只读历史：当时已批准执行'
+  return '只读历史：调用未执行'
+})
 </script>
 
 <template>
@@ -97,17 +80,17 @@ const argumentsPreview = computed(() =>
         <ShieldAlert v-else :size="18" />
       </span>
       <div>
-        <strong>{{ interaction.interaction_type === 'ask_user' ? '需要你的回答' : '需要执行确认' }}</strong>
-        <span>{{ isPending ? 'Agent 已暂停，等待你处理' : '此交互已处理' }}</span>
+        <strong>{{ interaction.interaction_type === 'ask_user' ? '需要你的回答' : '旧工具审批已停用' }}</strong>
+        <span>{{ interaction.interaction_type === 'ask_user' ? (isPending ? (interaction.allow_text ? '可使用问题卡回答，也可直接在输入框回复' : '请在问题卡中选择') : '此交互已处理') : legacyStatus }}</span>
       </div>
-      <span v-if="interaction.risk_level" class="risk-badge" :class="`risk-${interaction.risk_level}`">
+      <span v-if="interaction.interaction_type === 'ask_user' && interaction.risk_level" class="risk-badge" :class="`risk-${interaction.risk_level}`">
         {{ interaction.risk_level === 'high' ? '高风险' : interaction.risk_level === 'medium' ? '中风险' : '低风险' }}
       </span>
     </header>
 
     <div class="interaction-body">
-      <h3>{{ interaction.prompt }}</h3>
-      <p v-if="interaction.description" class="interaction-description">{{ interaction.description }}</p>
+      <h3 v-if="interaction.interaction_type === 'ask_user'">{{ interaction.prompt }}</h3>
+      <p v-if="interaction.interaction_type === 'ask_user' && interaction.description" class="interaction-description">{{ interaction.description }}</p>
 
       <template v-if="interaction.interaction_type === 'ask_user'">
         <div v-if="interaction.options.length" class="interaction-options" role="group" :aria-label="interaction.prompt">
@@ -148,23 +131,10 @@ const argumentsPreview = computed(() =>
       </template>
 
       <template v-else>
-        <div class="tool-summary">
-          <div><span>工具</span><strong>{{ interaction.function_name }}</strong></div>
-          <pre>{{ argumentsPreview }}</pre>
-        </div>
-        <div v-if="isPending" class="interaction-actions approval-actions">
-          <button class="interaction-button danger" type="button" :disabled="busy" @click="submitApproval('reject')">
-            <X :size="15" />拒绝
-          </button>
-          <button class="interaction-button primary" type="button" :disabled="busy" @click="submitApproval('approve')">
-            <Loader2 v-if="busy" class="spin" :size="15" />
-            <Check v-else :size="15" />批准并继续
-          </button>
-        </div>
-        <div v-else class="resolved-summary" :class="{ rejected: interaction.decision === 'reject' }">
-          <AlertTriangle v-if="interaction.decision === 'reject'" :size="16" />
-          <Check v-else :size="16" />
-          <span>{{ interaction.decision === 'reject' ? '已拒绝执行' : '已批准执行' }}</span>
+        <div class="retired-approval-summary">
+          <strong>{{ isPending ? '旧审批机制已移除' : '历史工具调用记录' }}</strong>
+          <p>{{ legacyStatus }}</p>
+          <code>{{ interaction.function_name }}</code>
         </div>
       </template>
 
@@ -203,16 +173,14 @@ const argumentsPreview = computed(() =>
 .interaction-actions { display: flex; justify-content: flex-end; gap: 9px; }
 .interaction-button { display: inline-flex; min-height: 36px; align-items: center; justify-content: center; gap: 6px; padding: 0 13px; border: 1px solid #cbd5e1; border-radius: 9px; background: #fff; color: #334155; cursor: pointer; font-weight: 700; }
 .interaction-button.primary { border-color: #4f46e5; background: #4f46e5; color: #fff; }
-.interaction-button.danger { border-color: #fecaca; color: #b91c1c; }
 .interaction-button:disabled { cursor: not-allowed; opacity: .55; }
-.tool-summary { overflow: hidden; border: 1px solid #e2e8f0; border-radius: 10px; }
-.tool-summary > div { display: flex; gap: 9px; padding: 9px 11px; border-bottom: 1px solid #e2e8f0; font-size: 13px; }
-.tool-summary > div span { color: #64748b; }
-.tool-summary pre { max-height: 220px; margin: 0; overflow: auto; padding: 11px; background: #0f172a; color: #dbeafe; font-size: 12px; line-height: 1.5; }
+.retired-approval-summary { display: flex; flex-direction: column; gap: 6px; padding: 12px; border: 1px solid #fed7aa; border-radius: 10px; background: #fffaf4; color: #7c2d12; }
+.retired-approval-summary p { margin: 0; color: #9a3412; font-size: 13px; }
+.retired-approval-summary code { color: #64748b; font-size: 12px; }
 .resolved-summary { display: flex; align-items: center; gap: 7px; color: #166534; font-size: 13px; font-weight: 650; }
 .resolved-summary.rejected { color: #b45309; }
 .interaction-error { margin: 0; color: #b91c1c; font-size: 12px; }
 .spin { animation: interaction-spin 1s linear infinite; }
 @keyframes interaction-spin { to { transform: rotate(360deg); } }
-@media (max-width: 640px) { .interaction-card { width: 100%; margin-left: 0; } .approval-actions { display: grid; grid-template-columns: 1fr 1fr; } }
+@media (max-width: 640px) { .interaction-card { width: 100%; margin-left: 0; } }
 </style>

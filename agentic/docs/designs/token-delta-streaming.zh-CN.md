@@ -39,7 +39,7 @@ Lead Agent 已将简单请求收敛为一次结构化模型调用，并将单目
 
 - Durable Run/Event/Outbox、进程重启自动恢复和跨进程续传。
 - Local Child Agent、Sub-agent、Reviewer、fan-out/fan-in 或 A2A 架构调整。
-- Sandbox、Tool Approval 或 Side-effect Ledger 重构。
+- Sandbox、平台工具治理或 Side-effect Ledger 重构。
 - 把 Chat Completions 迁移到 Responses API，或增加新的 Provider Registry。
 - 流式展示隐藏推理、内部计划草稿、Tool 参数或原始 JSON。
 - 将每个 Token 保存为 Session Event、Trace Event 或数据库 Message 记录。

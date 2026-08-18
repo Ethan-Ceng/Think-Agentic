@@ -1,14 +1,14 @@
 # Agentic 当前状态
 
-## 2026-07-20 增量：结构化询问与高风险工具审批
+## 2026-08-18 增量：用户等待与工具执行解耦
 
-当前 Chat 执行链路已支持持久化 Human-in-the-loop：Agent 可发出结构化问题或工具审批动作，会话进入 `waiting`；用户处理后创建新 Task，并从 React Memory 中的原 Tool Call 精确继续。Interaction 采用 Session JSONB 追加事件，不新增数据库迁移；所有权、最新 pending、重复提交和并发提交由事务行锁保护。前端提供问题卡、审批卡、历史 resolved 状态和 SSE 恢复，普通输入不能绕过待处理动作。
+当前 Chat 执行链路只在 Agent 缺少用户业务输入时进入 `waiting`。目前 `message_ask_user` 会产生持久化 Interaction/WaitEvent；用户回答后，系统从原 Tool Call 继续。它不是会话关闭，不要求保留活协程，也没有面向用户的“恢复对话”操作。
 
-审批采用分层默认值：Sandbox 内文件读取为低风险，普通写入和替换为中风险，均在 `approval=auto` 时直接执行；Shell 执行、浏览器脚本及其他真正高风险副作用仍进入确认流程。文件工具仍受 Sandbox 路径边界保护，显式 `approval=ask|deny` 可覆盖默认行为。
+通用 `tool_approval` 已从新 Run、公共解决 API、设置页和输入阻塞逻辑中移除。工具能否执行由平台在调用前确定性判定：允许则直接执行，禁止则返回失败 Tool Result。`risk_level` 只用于分类和策略输入，不会触发用户等待。
 
-通用设置现可逐项配置系统高风险工具：`auto` 按全局风险策略、`allow` 始终允许、`ask` 每次确认、`deny` 禁止执行。例如可单独允许 `shell_execute`，同时保留 `browser_console_exec` 的确认。设置使用现有用户 ToolConfig 持久化，不新增数据库迁移，也不追溯改变已创建的 pending interaction。
+历史 `tool_approval` 事件保持只读兼容，但没有批准/拒绝按钮，也不会阻塞新输入。用户继续输入时，服务端在事务领取边界把旧 pending 动作收敛为未执行，并补齐 Memory 中悬空的 Tool Result；旧 Tool Call 永远不会被执行。
 
-整理日期：2026-07-13
+整理日期：2026-08-18
 
 本文是 `agentic` 当前实现基线，用于替代旧的数据库与部署基线文档。结论以当前代码为准，不再沿用旧文档中“用户、工具配置未入库”的说法。
 
@@ -122,13 +122,18 @@ storage
 - `ToolPreflightService`：基于规则判断任务是否缺工具能力。
 - `ToolFactory`：构建当前 Agent 的工具集合。
 - `FilteredTool`：过滤 LLM 可见工具 schema，并阻止禁用工具调用。
+- `ToolConfig v2`：内部使用平台 `execution_policy=allow|deny`；旧审批字段仅在读取时迁移，终端用户写 API 不接受 `approval` 或 `execution_policy`。
 - 自定义 API 工具源注册、测试和运行时加载。
 - 前端 Settings“API Tools”页：只管理自定义 API Provider/operations；系统内置能力不展示、不提供用户开关，由 Registry 内部默认装配，用户通知和询问等基础能力始终可用。
+- `ask_user` 持久化等待和回答；工具调用不会创建面向终端用户的安全审批。
 
-当前没有实现：
+当前有意不提供：
 
-- `approval=ask/deny` 这类确认审批字段。
-- 高风险工具执行前的人类确认流。
+- `approval=ask` 或“高风险工具请用户确认”这类通用终端审批。
+
+仍待实现：
+
+- Provider Execution Class、Capability Grant、租户权限和网络出口策略。
 - 工具调用审计表。
 - MCP 动态工具的完整 tool 级缓存与细粒度治理。
 
@@ -163,7 +168,7 @@ Run / Trace 最小闭环已经开始落地：
 
 - 更细的输入/输出保存策略。
 - 配置变更审计。
-- 高风险工具确认与审批状态关联。
+- 平台执行策略、Capability Grant 与 Tool Trace 关联。
 
 ## 7. API 边界
 
@@ -217,7 +222,7 @@ agentic/docker/LOCAL_DEV.md
 近期不要再优先做“登录/用户隔离/工具可视化是否存在”的讨论，这些已经落地。下一轮真正需要补的是：
 
 1. Run / Trace 审计增强：在最小账本和前端查看之上补脱敏策略、配置变更审计。
-2. 高风险工具确认与审计：在现有启停过滤和 Trace 之上补确认、拒绝、审批记录。
+2. 平台工具治理与审计：补 Execution Class、Capability Grant、外部副作用幂等/对账和确定性拒绝记录，不引入终端用户逐次审批。
 3. Agent Profile：让会话绑定明确的 Agent 身份、提示词、模型、工具策略。
 4. Skill / Runbook：把可复用能力沉淀成独立概念。
 5. Knowledge：文档解析、切分、索引、检索和引用来源。

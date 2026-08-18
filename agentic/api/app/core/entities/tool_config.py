@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 from typing import Any, Dict, List, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ToolBinding(BaseModel):
@@ -10,10 +10,21 @@ class ToolBinding(BaseModel):
 
     enabled: bool = True
     risk_level: str = "low"  # low | medium | high
-    approval: Literal["auto", "allow", "ask", "deny"] = "auto"
+    execution_policy: Literal["allow", "deny"] = "allow"
     params: Dict[str, Any] = Field(default_factory=dict)
 
     model_config = ConfigDict(extra="ignore")
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_approval(cls, data):
+        if not isinstance(data, dict) or "execution_policy" in data:
+            return data
+        migrated = dict(data)
+        migrated["execution_policy"] = (
+            "deny" if migrated.get("approval") == "deny" else "allow"
+        )
+        return migrated
 
 
 class RuntimeToolPolicy(BaseModel):
@@ -23,7 +34,6 @@ class RuntimeToolPolicy(BaseModel):
         default_factory=lambda: ["builtin", "mcp", "a2a", "api"]
     )
     max_tool_iterations: int = Field(default=100, ge=1, le=1000)
-    require_approval_for_high_risk: bool = True
 
     model_config = ConfigDict(extra="ignore")
 
@@ -53,10 +63,20 @@ class ToolRegistration(BaseModel):
 class ToolConfig(BaseModel):
     """工具管理配置"""
 
-    schema_version: str = "tool_config_v1"
+    schema_version: str = "tool_config_v2"
     mode: str = "default_allow"
     bindings: Dict[str, ToolBinding] = Field(default_factory=dict)
     registrations: Dict[str, ToolRegistration] = Field(default_factory=dict)
     runtime_policy: RuntimeToolPolicy = Field(default_factory=RuntimeToolPolicy)
 
     model_config = ConfigDict(extra="allow")
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_schema_version(cls, data):
+        if not isinstance(data, dict):
+            return data
+        migrated = dict(data)
+        if migrated.get("schema_version") in {None, "tool_config_v1"}:
+            migrated["schema_version"] = "tool_config_v2"
+        return migrated

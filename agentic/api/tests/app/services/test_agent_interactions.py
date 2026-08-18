@@ -93,7 +93,9 @@ class FakeSessionRepository:
     async def resolve_interaction(self, session_id, user_id, **kwargs):
         if session_id != self.session.id or user_id != self.session.user_id:
             raise InteractionNotFoundError("session or interaction not found")
-        return self.session.resolve_interaction(**kwargs)
+        resolved = self.session.resolve_interaction(**kwargs)
+        self.session.status = SessionStatus.COMPLETED
+        return resolved
 
 
 class FakeUow:
@@ -216,10 +218,11 @@ async def test_continue_interaction_forwards_persisted_skills() -> None:
     service.chat = fake_chat  # type: ignore[method-assign]
     resolution = InteractionResolution(
         action_id="action-1",
-        interaction_type=InteractionType.TOOL_APPROVAL,
-        decision=InteractionDecision.APPROVE,
+        interaction_type=InteractionType.ASK_USER,
+        decision=InteractionDecision.ANSWER,
         tool_call_id="call-1",
-        function_name="dangerous_write",
+        function_name="message_ask_user",
+        answer="continue",
         skills=[skill_ref],
     )
 

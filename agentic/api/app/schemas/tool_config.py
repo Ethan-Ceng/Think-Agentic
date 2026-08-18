@@ -2,16 +2,37 @@
 # -*- coding: utf-8 -*-
 from typing import Any, Dict, List, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ToolBinding(BaseModel):
     enabled: bool = True
     risk_level: str = "low"
-    approval: Literal["auto", "allow", "ask", "deny"] = "auto"
+    execution_policy: Literal["allow", "deny"] = "allow"
     params: Dict[str, Any] = Field(default_factory=dict)
 
     model_config = ConfigDict(extra="ignore")
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_approval(cls, data):
+        if not isinstance(data, dict) or "execution_policy" in data:
+            return data
+        migrated = dict(data)
+        migrated["execution_policy"] = (
+            "deny" if migrated.get("approval") == "deny" else "allow"
+        )
+        return migrated
+
+
+class ToolBindingUpdate(BaseModel):
+    """Terminal-user fields; platform execution policy is deliberately read-only."""
+
+    enabled: bool = True
+    risk_level: str = "low"
+    params: Dict[str, Any] = Field(default_factory=dict)
+
+    model_config = ConfigDict(extra="forbid")
 
 
 class RuntimeToolPolicy(BaseModel):
@@ -19,9 +40,17 @@ class RuntimeToolPolicy(BaseModel):
         default_factory=lambda: ["builtin", "mcp", "a2a", "api"]
     )
     max_tool_iterations: int = Field(default=100, ge=1, le=1000)
-    require_approval_for_high_risk: bool = True
 
     model_config = ConfigDict(extra="ignore")
+
+
+class RuntimeToolPolicyUpdate(BaseModel):
+    allowed_executor_types: List[str] = Field(
+        default_factory=lambda: ["builtin", "mcp", "a2a", "api"]
+    )
+    max_tool_iterations: int = Field(default=100, ge=1, le=1000)
+
+    model_config = ConfigDict(extra="forbid")
 
 
 class ToolRegistration(BaseModel):
@@ -45,13 +74,23 @@ class ToolRegistration(BaseModel):
 
 
 class ToolConfig(BaseModel):
-    schema_version: str = "tool_config_v1"
+    schema_version: str = "tool_config_v2"
     mode: str = "default_allow"
     bindings: Dict[str, ToolBinding] = Field(default_factory=dict)
     registrations: Dict[str, ToolRegistration] = Field(default_factory=dict)
     runtime_policy: RuntimeToolPolicy = Field(default_factory=RuntimeToolPolicy)
 
     model_config = ConfigDict(extra="allow")
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_schema_version(cls, data):
+        if not isinstance(data, dict):
+            return data
+        migrated = dict(data)
+        if migrated.get("schema_version") in {None, "tool_config_v1"}:
+            migrated["schema_version"] = "tool_config_v2"
+        return migrated
 
 
 class ToolDescriptor(BaseModel):
@@ -75,24 +114,19 @@ class ToolDescriptor(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
-class ToolApprovalSetting(BaseModel):
-    tool_id: str
-    function_name: str
-    label: str
-    risk_level: Literal["low", "medium", "high"]
-    approval: Literal["auto", "allow", "ask", "deny"] = "auto"
-
-
 class ToolListResponse(BaseModel):
     tools: List[ToolDescriptor]
     registrations: List[ToolRegistration] = Field(default_factory=list)
-    approval_tools: List[ToolApprovalSetting] = Field(default_factory=list)
     runtime_policy: RuntimeToolPolicy
 
 
 class ToolBindingsUpdate(BaseModel):
-    bindings: Dict[str, ToolBinding] = Field(default_factory=dict)
-    runtime_policy: RuntimeToolPolicy = Field(default_factory=RuntimeToolPolicy)
+    bindings: Dict[str, ToolBindingUpdate] = Field(default_factory=dict)
+    runtime_policy: RuntimeToolPolicyUpdate = Field(
+        default_factory=RuntimeToolPolicyUpdate
+    )
+
+    model_config = ConfigDict(extra="forbid")
 
 
 class ToolRegistrationCreate(BaseModel):

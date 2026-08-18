@@ -2,10 +2,13 @@
 
 ## 文档状态
 
-- 状态：`DESIGN_READY`
+- 状态：`PARTIALLY_SUPERSEDED`
 - 负责人：Codex
 - 创建日期：2026-07-20
-- 最近更新：2026-07-20
+- 最近更新：2026-08-18
+- 范围修订：`tool_approval` 部分已被 `agent-runtime-hitl-provider-reliability.zh-CN.md` 替代；`ask_user` 和结构化业务输入继续有效。目标架构不再用终端用户逐次审批承担平台安全责任。
+
+> 阅读边界：本文中所有 `tool_approval`、`approve/reject`、`approval=ask` 和审批卡内容仅保留为 2026-07 的历史设计记录，不是当前实现目标。当前有效语义是 `WAITING` 只等待用户业务输入；工具由平台 allow/deny，用户不参与放行。
 
 ## 背景
 

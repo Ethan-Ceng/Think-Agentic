@@ -34,3 +34,9 @@ def test_interaction_resolve_request_rejects_duplicate_or_oversized_values() -> 
             decision=InteractionDecision.ANSWER,
             answer="x" * 10001,
         )
+    for retired_decision in (
+        InteractionDecision.APPROVE,
+        InteractionDecision.REJECT,
+    ):
+        with pytest.raises(ValidationError):
+            ResolveInteractionRequest(decision=retired_decision)

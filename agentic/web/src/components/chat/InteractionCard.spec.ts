@@ -32,7 +32,7 @@ describe('InteractionCard', () => {
     ])
   })
 
-  it('redacts sensitive arguments and emits rejection without arguments', async () => {
+  it('renders a pending legacy approval as non-actionable retired history', () => {
     const approval: InteractionEvent = {
       ...question,
       interaction_type: 'tool_approval',
@@ -45,10 +45,13 @@ describe('InteractionCard', () => {
     }
     const wrapper = mount(InteractionCard, { props: { interaction: approval } })
 
-    expect(wrapper.text()).toContain('production')
+    expect(wrapper.text()).toContain('旧工具审批已停用')
+    expect(wrapper.text()).toContain('可直接继续输入')
+    expect(wrapper.text()).toContain('deploy_release')
+    expect(wrapper.text()).not.toContain('production')
     expect(wrapper.text()).not.toContain('secret-value')
-    await wrapper.get('.interaction-button.danger').trigger('click')
-    expect(wrapper.emitted('resolve')).toEqual([['action-1', { decision: 'reject' }]])
+    expect(wrapper.find('.interaction-button').exists()).toBe(false)
+    expect(wrapper.emitted('resolve')).toBeUndefined()
   })
 
   it('renders resolved history as read only', () => {

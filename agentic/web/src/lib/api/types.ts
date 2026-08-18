@@ -39,7 +39,6 @@ export type ExecutionStatus = 'pending' | 'running' | 'completed' | 'failed'
 export type ToolEventStatus = 'calling' | 'called'
 export type MCPTransport = 'stdio' | 'sse' | 'streamable_http'
 export type ToolRiskLevel = 'low' | 'medium' | 'high'
-export type ToolApprovalPolicy = 'auto' | 'allow' | 'ask' | 'deny'
 export type ToolExecutorType = 'builtin' | 'mcp' | 'a2a' | 'api'
 export type ToolSourceType = 'builtin' | 'mcp' | 'a2a' | 'api'
 
@@ -116,14 +115,12 @@ export type CreateA2AServerParams = {
 export type ToolBinding = {
   enabled: boolean
   risk_level: ToolRiskLevel
-  approval?: ToolApprovalPolicy
   params?: Record<string, unknown>
 }
 
 export type RuntimeToolPolicy = {
   allowed_executor_types: ToolExecutorType[]
   max_tool_iterations: number
-  require_approval_for_high_risk: boolean
 }
 
 export type ToolDescriptor = {
@@ -143,14 +140,6 @@ export type ToolDescriptor = {
   requires_credentials: boolean
   enabled_by_default: boolean
   enabled: boolean
-}
-
-export type ToolApprovalSetting = {
-  tool_id: string
-  function_name: string
-  label: string
-  risk_level: ToolRiskLevel
-  approval: ToolApprovalPolicy
 }
 
 export type ToolRegistration = {
@@ -174,7 +163,6 @@ export type ToolRegistration = {
 export type ToolListData = {
   tools: ToolDescriptor[]
   registrations: ToolRegistration[]
-  approval_tools: ToolApprovalSetting[]
   runtime_policy: RuntimeToolPolicy
 }
 
@@ -637,7 +625,7 @@ export type QueueNextMessageParams = {
 }
 
 export type ResolveInteractionParams = {
-  decision: InteractionDecision
+  decision: 'answer'
   answer?: string
   selected_values?: string[]
 }
@@ -682,6 +670,7 @@ export type ToolEvent = {
   [key: string]: unknown
 }
 
+// tool_approval and approve/reject remain only for persisted history parsing.
 export type InteractionType = 'ask_user' | 'tool_approval'
 export type InteractionStatus = 'pending' | 'resolved'
 export type InteractionDecision = 'answer' | 'approve' | 'reject'

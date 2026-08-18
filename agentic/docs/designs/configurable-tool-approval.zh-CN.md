@@ -1,5 +1,12 @@
 # 可配置工具审批设计
 
+## 文档状态
+
+- 状态：`SUPERSEDED`
+- 最近更新：2026-08-18
+- 替代设计：`agent-runtime-hitl-provider-reliability.zh-CN.md`
+- 说明：本文保留为历史实施记录。面向终端用户的逐工具审批已经从新 Run、公共 API 和前端移除；平台级 Provider Execution Class、Capability Grant、网络出口和完整审计仍由后续批次补齐。
+
 ## 背景
 
 Human-in-the-loop 已支持 `auto | allow | ask | deny`，但当前 UI 只暴露“高风险工具执行前确认”全局开关。`shell_execute` 等系统内置工具被整体标记为高风险，因此用户要么逐次批准，要么关闭全部高风险确认，无法表达“允许 Shell、继续确认浏览器脚本”这类常见偏好。

@@ -181,13 +181,14 @@ class LeadAgent:
             session = await self._uow.session.get_by_id(self._session_id)
         if session is None:
             raise ValueError(f"会话[{self._session_id}]不存在, 请核实后尝试")
-        if session.status != SessionStatus.WAITING:
+        if session.status not in {SessionStatus.WAITING, SessionStatus.RUNNING}:
             raise ValueError(f"会话[{self._session_id}]当前没有等待处理的交互")
-        async with self._uow:
-            await self._uow.session.update_status(
-                self._session_id,
-                SessionStatus.RUNNING,
-            )
+        if session.status == SessionStatus.WAITING:
+            async with self._uow:
+                await self._uow.session.update_status(
+                    self._session_id,
+                    SessionStatus.RUNNING,
+                )
         return session
 
     async def _stream_react(

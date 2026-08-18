@@ -52,7 +52,7 @@ P5 审批、团队、分析等治理增强
 
 - 审计保存策略配置。
 - 配置变更审计。
-- 高风险工具确认与审批记录关联。
+- Execution Class、Capability Grant、平台拒绝与 Trace 记录关联。
 
 ## 2. Agentic 当前事实
 

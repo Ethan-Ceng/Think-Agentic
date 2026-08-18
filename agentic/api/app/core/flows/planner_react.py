@@ -143,7 +143,10 @@ class PlannerReActFlow(BaseFlow):
             raise ValueError(f"会话[{self._session_id}]不存在, 请核实后尝试")
 
         resume_pending = message.interaction_response is not None
-        if resume_pending and session.status != SessionStatus.WAITING:
+        if resume_pending and session.status not in {
+            SessionStatus.WAITING,
+            SessionStatus.RUNNING,
+        }:
             raise ValueError(f"会话[{self._session_id}]当前没有等待处理的交互")
 
         # 2.判断会话的状态是不是空闲
@@ -157,12 +160,15 @@ class PlannerReActFlow(BaseFlow):
             await self.react.roll_back(message)
 
         # 3.如果会话状态等于运行中，则流需要重新规划内容/plan
-        if session.status == SessionStatus.RUNNING:
+        if resume_pending:
+            logger.debug(f"会话[{self._session_id}]继续已解决的交互")
+            self.status = FlowStatus.EXECUTING
+        elif session.status == SessionStatus.RUNNING:
             logger.debug(f"会话[{self._session_id}]处于运行状态并传递了新消息")
             self.status = FlowStatus.PLANNING
 
         # 4.如果会话状态等于等待人类输入，则需要修改流的状态为执行中
-        if session.status == SessionStatus.WAITING:
+        if not resume_pending and session.status == SessionStatus.WAITING:
             logger.debug(f"会话[{self._session_id}]处于等待状态并传递了新消息")
             self.status = FlowStatus.EXECUTING
 

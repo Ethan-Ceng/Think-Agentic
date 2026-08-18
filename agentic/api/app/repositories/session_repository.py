@@ -100,6 +100,16 @@ class SessionRepository(Protocol):
         """原子确认会话未归档，并在新 Run 时占用运行态。"""
         ...
 
+    async def claim_execution_for_user_input(
+            self,
+            session_id: str,
+            user_id: str,
+            *,
+            answer: str,
+    ) -> tuple[Session, Optional[SessionStatus], Optional[InteractionEvent]]:
+        """Route plain user text through a pending Ask while claiming execution."""
+        ...
+
     async def update_runtime_handles(
             self,
             session_id: str,

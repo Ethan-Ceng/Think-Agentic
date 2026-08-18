@@ -1,5 +1,7 @@
 # Agent Runtime Sandbox 懒启动与 Tool Token 优化实施计划
 
+> 历史兼容说明：本文完成时仍存在 Tool Approval，因此正文保留当时的回归证据。该交互现已由 `remove-tool-approval-plan.md` 移除；Lazy Sandbox 的有效契约是平台策略允许后首次真实工具调用才创建 Sandbox，用户不参与放行。
+
 ## 关联设计
 
 - 设计文档：`agentic/docs/designs/knowledge-document-processing.zh-CN.md`

@@ -231,7 +231,7 @@
 5. 新增 `agent_outbox`，保存 event/topic/status/attempt/next_attempt_at；规范 Event 与 Outbox 必须在同一事务提交。
 6. 新增 `agent_interactions` 和 `agent_verification_attempts`；前者保存 action、status、resolution 和 version，后者保存 goal revision、checks、evidence、outcome 和 attempt。
 7. 升级 `run_steps/tool_calls/model_calls` 增加 nullable `execution_id` 与 Snapshot/Plan Revision 关联；历史 Trace 保持可读。
-8. 为 `tool_calls` 增加 `idempotency_key/effect_status/approval_status/result_ref`；`arguments_hash` 保持脱敏审计用途。
+8. 为 `tool_calls` 增加 `idempotency_key/effect_status/policy_decision/capability_grant_ref/result_ref`；`arguments_hash` 保持脱敏审计用途。
 9. 实现事务 Repository：创建聚合、追加顺序 Event、CAS 状态更新、领取 Execution、续租、释放/过期重领、Outbox 领取与完成；业务状态写入不继续扩展 TraceRepository。
 10. 在一次性测试数据库执行 upgrade、数据回填检查、downgrade、再次 upgrade；验证历史 Run/Trace 查询不丢失。
 
@@ -441,7 +441,7 @@
 
 ### 目标
 
-让所有 Durable Tool 调用先经过 Coordinator 的权限、Scope、预算、Approval、幂等和副作用状态检查，并让 ask-user/审批在进程重启后精确恢复。
+让所有 Durable Tool 调用先经过 Coordinator 的权限、Scope、预算、平台策略、幂等和副作用状态检查，并让 ask-user 在进程重启后精确恢复。
 
 ### 涉及文件
 
@@ -464,27 +464,27 @@
 ### 依赖与接口
 
 - 前置任务：Task 3–6。
-- 输入：Tool Command、Function/Arguments Hash、Risk/Approval Policy、Execution Snapshot、Interaction Resolution。
+- 输入：Tool Command、Function/Arguments Hash、Execution Policy、Capability Grant、Execution Snapshot、Interaction Resolution。
 - 输出：稳定 Idempotency Key、Effect 状态机、Durable Interaction、Tool Observation 和恢复/对账规则。
 
 ### 实施步骤
 
-1. 将 Durable Tool Loop 从 `BaseAgent` 的直接 `tool.invoke()` 改为提交 Tool Command；ToolExecutionService 只能执行 Coordinator 已批准且与当前 Snapshot/Scope 匹配的调用。
+1. 将 Durable Tool Loop 从 `BaseAgent` 的直接 `tool.invoke()` 改为提交 Tool Command；ToolExecutionService 只能执行 Coordinator 已按平台策略允许且与当前 Snapshot/Scope 匹配的调用。
 2. 以 `run_id/execution_id/plan_revision/step_id/tool_call_id/function_name/arguments_hash` 生成稳定 Idempotency Key；重复 Command 返回既有结果或当前状态。
-3. 定义 Effect 状态：`prepared → approval_pending → executing → succeeded|failed|unknown → reconciled`；只读/幂等 Tool 可按策略重试，外部副作用为 unknown 时必须等待对账或用户处理。
+3. 定义 Effect 状态：`prepared → policy_checked → executing → succeeded|failed|unknown → reconciled`；只读/幂等 Tool 可按策略重试，外部副作用为 unknown 时进入平台对账或运维处置，不询问终端用户是否批准原调用。
 4. 在真实执行前重新检查 ToolConfig、Runtime Scope、Profile Ceiling、预算和取消状态；Scope 只能缩小 Snapshot 能力。
-5. 将 `message_ask_user` 和高风险 Tool Approval 写入 `agent_interactions`；Session JSONB 只接收兼容投影。
-6. Interaction Resolution 使用 action version 和稳定 Command ID；批准、拒绝或回答只能消费一次，并精确匹配原 Tool Call、Function 和 Arguments Hash。
-7. 保持 Lazy Sandbox 行为：审批前不创建 Sandbox，批准后首次真实调用才激活；附件仍按需物化且不重复。
+5. 只将 `message_ask_user` 等业务输入动作写入 `agent_interactions`；平台策略判定写入 Effect/Trace，Session JSONB 只接收兼容投影。
+6. Interaction Resolution 使用 action version 和稳定 Command ID；回答只能消费一次，并精确匹配原 Tool Call、Function 和 Arguments Hash。
+7. 保持 Lazy Sandbox 行为：策略允许后首次真实调用才激活 Sandbox；附件仍按需物化且不重复。
 8. 保持 MCP/API/外部 A2A 为 Tool Adapter；测试证明它们不会创建本地 Child Execution 或扩大 Profile Catalog。
 9. 在 Tool 执行请求发送前、发送后未回包、结果提交前分别杀死 Worker，验证已知结果不重复执行，unknown 不盲目重试。
 
 ### 验证方式
 
 - 运行：`uv run pytest tests/app/services/test_durable_tool_execution.py tests/app/services/test_durable_interactions.py tests/app/services/test_agent_interactions.py tests/app/core/agent/test_interaction_resume.py tests/app/core/agent/test_runtime_tool_scope.py tests/app/core/agent/test_lazy_attachment_materialization.py tests/app/core/sandbox/test_lazy_sandbox_runtime.py -q`
-- 集成：使用可计数的副作用 Fake Tool 和真实 Lazy Sandbox 执行批准、进程终止、恢复与重复 Resolution，确认副作用最多一次或进入 unknown 待对账。
+- 集成：使用可计数的副作用 Fake Tool 和真实 Lazy Sandbox 执行策略允许/拒绝、进程终止、恢复与重复 Command，确认副作用最多一次或进入 unknown 待对账。
 - 运行：`uv run ruff check app/services/tool_execution_service.py app/services/run_coordinator.py app/core/agent/base.py app/core/tools/filter.py app/core/tools/scope.py app/services/agent_service.py app/controllers/session.py tests/app/services/test_durable_tool_execution.py tests/app/services/test_durable_interactions.py`
-- 预期：退出 0；审批恢复精确一次，unknown 不自动重试，外部 A2A 仍是 Tool Call 而不是本地 Execution。
+- 预期：退出 0；ask-user 恢复精确一次，平台拒绝不会执行，unknown 不自动重试，外部 A2A 仍是 Tool Call 而不是本地 Execution。
 
 ### 完成条件
 
@@ -648,7 +648,7 @@
 
 1. 启动仓库开发 PostgreSQL/Redis，升级到迁移头并运行后端全量测试、Ruff、核心模块编译和 diff 检查。
 2. 运行前端全量测试、类型检查和生产构建；验证 Durable/Legacy 会话混合历史、SSE cursor 和 TracePanel。
-3. 执行简单文本、Search、Shell/File、Browser、Skill、MCP、外部 A2A、ask-user、Tool Approval 和 next-message 的真实路径。
+3. 执行简单文本、Search、Shell/File、Browser、Skill、MCP、外部 A2A、ask-user、平台 allow/deny 和 next-message 的真实路径；确认工具策略不会产生用户审批。
 4. 在 Run 准备、计划提交、模型调用、Tool prepared、Tool executing、Tool result、waiting_user、verifying 等边界终止 Worker/API 进程并恢复。
 5. 停止并恢复 Redis，验证数据库扫描、Outbox 重试和 SSE 补拉；客户端断线时确认 Run 不被取消。
 6. 修改用户模型/Tool/Skill 配置后恢复旧 Run，验证继续使用原 Snapshot；新 Run 使用新 Snapshot。

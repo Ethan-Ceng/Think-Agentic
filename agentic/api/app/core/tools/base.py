@@ -104,8 +104,8 @@ class BaseTool:
         """返回当前函数的有效风险等级；未受治理包装的工具默认低风险。"""
         return "low"
 
-    def get_approval_policy(self, tool_name: str) -> Literal["allow", "ask", "deny"]:
-        """返回当前函数的有效执行策略；普通工具默认允许。"""
+    def get_execution_policy(self, tool_name: str) -> Literal["allow", "deny"]:
+        """返回当前函数的平台执行策略；普通工具默认允许。"""
         return "allow"
 
     async def invoke(self, tool_name: str, **kwargs) -> ToolResult:

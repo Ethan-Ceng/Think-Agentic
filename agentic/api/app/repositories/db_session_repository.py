@@ -18,6 +18,8 @@ from app.core.entities.event import (
     BaseEvent,
     InteractionDecision,
     InteractionEvent,
+    InteractionStatus,
+    InteractionType,
     MessageEvent,
 )
 from app.core.entities.file import File
@@ -25,6 +27,7 @@ from app.core.entities.memory import Memory
 from app.core.entities.session import (
     BranchContextMessage,
     BranchOperation,
+    InteractionConflictError,
     InteractionNotFoundError,
     NextMessage,
     NextMessageConflictError,
@@ -593,11 +596,14 @@ class DBSessionRepository(SessionRepository):
             set_committed_value(record, field_name, value)
         return record.to_domain()
 
-    async def claim_execution(
+    async def _claim_execution(
             self,
             session_id: str,
             user_id: str,
-    ) -> tuple[Session, Optional[SessionStatus]]:
+            *,
+            user_answer: Optional[str] = None,
+            resolve_pending_ask: bool = False,
+    ) -> tuple[Session, Optional[SessionStatus], Optional[InteractionEvent]]:
         """Serialize starting a Run with archive transitions on the same row lock."""
         result = await self.db_session.execute(
             select(SessionModel)
@@ -616,12 +622,84 @@ class DBSessionRepository(SessionRepository):
             )
 
         if record.status == SessionStatus.RUNNING.value:
-            return record.to_domain(), None
+            if resolve_pending_ask:
+                session = record.to_domain()
+                latest_interaction = next(
+                    (
+                        event
+                        for event in reversed(session.events)
+                        if isinstance(event, InteractionEvent)
+                    ),
+                    None,
+                )
+                if (
+                    latest_interaction is not None
+                    and latest_interaction.interaction_type == InteractionType.ASK_USER
+                    and latest_interaction.status == InteractionStatus.RESOLVED
+                ):
+                    raise InteractionConflictError("当前回答正在继续处理")
+            return record.to_domain(), None, None
 
         previous_status = SessionStatus(record.status)
+        resolved: Optional[InteractionEvent] = None
+        if previous_status == SessionStatus.WAITING:
+            session = record.to_domain()
+            pending = session.get_pending_interaction()
+            if (
+                resolve_pending_ask
+                and pending is not None
+                and pending.interaction_type == InteractionType.ASK_USER
+            ):
+                resolved = session.resolve_interaction(
+                    action_id=pending.action_id,
+                    decision=InteractionDecision.ANSWER,
+                    answer=user_answer,
+                )
+                record.events = [
+                    event.model_dump(mode="json")
+                    for event in session.events
+                ]
+            retired = session.retire_pending_tool_approval()
+            if retired is not None:
+                record.events = [
+                    event.model_dump(mode="json")
+                    for event in session.events
+                ]
+                record.memories = {
+                    agent_name: memory.model_dump(mode="json")
+                    for agent_name, memory in session.memories.items()
+                }
+                # If task construction fails, restore a state that accepts a
+                # normal message instead of recreating a wait with no action.
+                previous_status = SessionStatus.COMPLETED
         record.status = SessionStatus.RUNNING.value
         await self.db_session.flush()
-        return record.to_domain(), previous_status
+        return record.to_domain(), previous_status, resolved
+
+    async def claim_execution(
+            self,
+            session_id: str,
+            user_id: str,
+    ) -> tuple[Session, Optional[SessionStatus]]:
+        session, previous_status, _ = await self._claim_execution(
+            session_id,
+            user_id,
+        )
+        return session, previous_status
+
+    async def claim_execution_for_user_input(
+            self,
+            session_id: str,
+            user_id: str,
+            *,
+            answer: str,
+    ) -> tuple[Session, Optional[SessionStatus], Optional[InteractionEvent]]:
+        return await self._claim_execution(
+            session_id,
+            user_id,
+            user_answer=answer,
+            resolve_pending_ask=True,
+        )
 
     async def update_runtime_handles(
             self,
@@ -869,6 +947,7 @@ class DBSessionRepository(SessionRepository):
             selected_values=selected_values,
         )
         record.events = [event.model_dump(mode="json") for event in session.events]
+        record.status = SessionStatus.RUNNING.value
         return resolved
 
     async def add_file(self, session_id: str, file: File) -> None:

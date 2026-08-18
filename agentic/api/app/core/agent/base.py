@@ -525,35 +525,22 @@ class BaseAgent(ABC):
             function_name: str,
             function_args: Dict[str, Any],
     ) -> InteractionEvent:
-        if function_name == "message_ask_user":
-            return InteractionEvent(
-                action_id=str(uuid.uuid4()),
-                interaction_type=InteractionType.ASK_USER,
-                status=InteractionStatus.PENDING,
-                tool_call_id=tool_call_id,
-                tool_name=tool.name,
-                function_name=function_name,
-                function_args=function_args,
-                prompt=str(function_args.get("text") or "请提供更多信息"),
-                description=function_args.get("description"),
-                options=self._interaction_options(function_args),
-                allow_multiple=bool(function_args.get("allow_multiple", False)),
-                allow_text=bool(function_args.get("allow_text", True)),
-                placeholder=function_args.get("placeholder"),
-            )
-
+        if function_name != "message_ask_user":
+            raise RuntimeError("只有业务输入请求可以创建 Interaction")
         return InteractionEvent(
             action_id=str(uuid.uuid4()),
-            interaction_type=InteractionType.TOOL_APPROVAL,
+            interaction_type=InteractionType.ASK_USER,
             status=InteractionStatus.PENDING,
             tool_call_id=tool_call_id,
             tool_name=tool.name,
             function_name=function_name,
             function_args=function_args,
-            prompt=f"确认执行高风险工具：{function_name}",
-            description="该工具可能修改数据、文件或运行环境，请确认后继续。",
-            allow_text=False,
-            risk_level=tool.get_risk_level(function_name),
+            prompt=str(function_args.get("text") or "请提供更多信息"),
+            description=function_args.get("description"),
+            options=self._interaction_options(function_args),
+            allow_multiple=bool(function_args.get("allow_multiple", False)),
+            allow_text=bool(function_args.get("allow_text", True)),
+            placeholder=function_args.get("placeholder"),
         )
 
     async def _continue_tool_loop(
@@ -587,8 +574,7 @@ class BaseAgent(ABC):
                     status=ToolEventStatus.CALLING,
                 )
 
-                approval_policy = tool.get_approval_policy(function_name)
-                if function_name == "message_ask_user" or approval_policy == "ask":
+                if function_name == "message_ask_user":
                     yield self._build_interaction_event(
                         tool,
                         tool_call_id,
@@ -597,7 +583,8 @@ class BaseAgent(ABC):
                     )
                     return
 
-                if approval_policy == "deny":
+                execution_policy = tool.get_execution_policy(function_name)
+                if execution_policy == "deny":
                     result = ToolResult(
                         success=False,
                         message="工具策略已禁止执行该调用。",
@@ -683,9 +670,14 @@ class BaseAgent(ABC):
             )
         elif resolution.interaction_type == InteractionType.TOOL_APPROVAL:
             if resolution.decision == InteractionDecision.APPROVE:
-                result = await self._invoke_tool(tool, function_name, function_args)
+                raise RuntimeError(
+                    "工具审批机制已停用，历史工具调用不能批准执行"
+                )
             elif resolution.decision == InteractionDecision.REJECT:
-                result = ToolResult(success=False, message="用户拒绝执行该工具调用。")
+                result = ToolResult(
+                    success=False,
+                    message="工具审批机制已停用；历史工具调用未执行。",
+                )
             else:
                 raise RuntimeError("无法恢复交互：审批决定无效")
         else:

@@ -68,9 +68,8 @@ class FilteredTool(BaseTool):
             return "low"
         return risk_level
 
-    def get_approval_policy(self, tool_name: str) -> Literal["allow", "ask", "deny"]:
-        # Message interactions have their own structured pause/resume protocol and
-        # must never recursively request approval for requesting approval/input.
+    def get_execution_policy(self, tool_name: str) -> Literal["allow", "deny"]:
+        """Resolve the deterministic platform policy without user approval."""
         if tool_name in {"message_notify_user", "message_ask_user"}:
             return "allow"
 
@@ -79,14 +78,7 @@ class FilteredTool(BaseTool):
             self.name,
             tool_name,
         )
-        if binding.approval != "auto":
-            return binding.approval
-        if (
-            self.tool_config.runtime_policy.require_approval_for_high_risk
-            and self.get_risk_level(tool_name) == "high"
-        ):
-            return "ask"
-        return "allow"
+        return binding.execution_policy
 
     def _is_enabled(self, function_name: str) -> bool:
         return self.registry.is_function_enabled(

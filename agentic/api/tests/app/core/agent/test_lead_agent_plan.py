@@ -145,12 +145,12 @@ class FakeReactAgent:
         if outcome == "wait":
             yield InteractionEvent(
                 action_id="action-1",
-                interaction_type=InteractionType.TOOL_APPROVAL,
+                interaction_type=InteractionType.ASK_USER,
                 tool_call_id="call-1",
-                tool_name="search",
-                function_name="search_web",
-                function_args={"query": "source"},
-                prompt="Approve search?",
+                tool_name="message",
+                function_name="message_ask_user",
+                function_args={"text": "Which source should be used?"},
+                prompt="Which source should be used?",
             )
             yield WaitEvent()
             return
@@ -299,7 +299,7 @@ async def test_plan_interaction_resumes_exact_step_without_new_decision() -> Non
         event.plan for event in pending_events if isinstance(event, PlanEvent)
     )
     repository.session.latest_plan = created_plan
-    repository.session.status = SessionStatus.WAITING
+    repository.session.status = SessionStatus.RUNNING
 
     assert pending.lead_mode == "plan"
     assert pending.plan_id == created_plan.id
@@ -307,10 +307,11 @@ async def test_plan_interaction_resumes_exact_step_without_new_decision() -> Non
     resolution = InteractionResolution(
         action_id=pending.action_id,
         interaction_type=pending.interaction_type,
-        decision=InteractionDecision.APPROVE,
+        decision=InteractionDecision.ANSWER,
         tool_call_id=pending.tool_call_id,
         function_name=pending.function_name,
         function_args=pending.function_args,
+        answer="Use the primary source",
         lead_mode=pending.lead_mode,
         lead_goal=pending.lead_goal,
         lead_language=pending.lead_language,
@@ -351,11 +352,12 @@ async def test_plan_resume_preserves_replan_limit() -> None:
     repository.session.status = SessionStatus.WAITING
     resolution = InteractionResolution(
         action_id="action-2",
-        interaction_type=InteractionType.TOOL_APPROVAL,
-        decision=InteractionDecision.APPROVE,
+        interaction_type=InteractionType.ASK_USER,
+        decision=InteractionDecision.ANSWER,
         tool_call_id="call-2",
-        function_name="search_web",
-        function_args={"query": "repair"},
+        function_name="message_ask_user",
+        function_args={"text": "Which repair path?"},
+        answer="Use the safe repair path",
         lead_mode="plan",
         lead_goal=plan.goal,
         lead_language=plan.language,

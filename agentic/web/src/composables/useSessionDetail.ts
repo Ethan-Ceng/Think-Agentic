@@ -134,11 +134,16 @@ export function useSessionDetail(
     }
 
     if (evToAppend.type === 'interaction') {
-      const interaction = evToAppend.data as { status?: string }
-      session.value = session.value
-        ? { ...session.value, status: interaction.status === 'pending' ? 'waiting' : 'running' }
-        : null
-      if (interaction.status === 'pending') streaming.value = false
+      const interaction = evToAppend.data as {
+        interaction_type?: string
+        status?: string
+      }
+      if (interaction.interaction_type === 'ask_user') {
+        session.value = session.value
+          ? { ...session.value, status: interaction.status === 'pending' ? 'waiting' : 'running' }
+          : null
+        if (interaction.status === 'pending') streaming.value = false
+      }
     }
 
     if (evToAppend.type === 'wait') {

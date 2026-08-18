@@ -143,6 +143,20 @@ class Session(BaseModel):
 
         return None
 
+    def get_pending_interaction(self) -> Optional[InteractionEvent]:
+        """Return the current pending action from append-only interaction history."""
+        latest_by_action: Dict[str, InteractionEvent] = {}
+        for event in self.events:
+            if isinstance(event, InteractionEvent):
+                latest_by_action[event.action_id] = event
+
+        pending = [
+            event
+            for event in latest_by_action.values()
+            if event.status == InteractionStatus.PENDING
+        ]
+        return pending[-1] if pending else None
+
     def resolve_interaction(
             self,
             action_id: str,
@@ -164,12 +178,8 @@ class Session(BaseModel):
         if target.status != InteractionStatus.PENDING:
             raise InteractionConflictError("交互动作已经解决")
 
-        pending = [
-            event
-            for event in latest_by_action.values()
-            if event.status == InteractionStatus.PENDING
-        ]
-        if not pending or pending[-1].action_id != action_id:
+        pending = self.get_pending_interaction()
+        if pending is None or pending.action_id != action_id:
             raise InteractionConflictError("交互动作已不是当前待处理动作")
         if self.status != SessionStatus.WAITING:
             raise InteractionConflictError("会话当前不在等待交互状态")
@@ -187,8 +197,10 @@ class Session(BaseModel):
             if not answer and not selected_values:
                 raise InteractionValidationError("回答不能为空")
         elif target.interaction_type == InteractionType.TOOL_APPROVAL:
-            if decision not in {InteractionDecision.APPROVE, InteractionDecision.REJECT}:
-                raise InteractionValidationError("工具审批决定无效")
+            if decision != InteractionDecision.REJECT:
+                raise InteractionValidationError(
+                    "工具审批机制已停用，历史调用不能批准执行"
+                )
             if answer or selected_values:
                 raise InteractionValidationError("工具审批不能携带回答内容")
 
@@ -203,4 +215,24 @@ class Session(BaseModel):
             selected_values=selected_values,
         )
         self.events.append(resolved)
+        return resolved
+
+    def retire_pending_tool_approval(self) -> Optional[InteractionEvent]:
+        """Safely retire the current legacy approval before a normal new Run."""
+        target = self.get_pending_interaction()
+        if target is None:
+            return None
+        if target.interaction_type != InteractionType.TOOL_APPROVAL:
+            return None
+
+        resolved = self.resolve_interaction(
+            action_id=target.action_id,
+            decision=InteractionDecision.REJECT,
+        )
+        reason = "通用工具审批机制已停用；历史工具调用未执行。"
+        for memory in self.memories.values():
+            memory.close_pending_tool_calls(
+                target.tool_call_id,
+                reason=reason,
+            )
         return resolved

@@ -33,67 +33,37 @@ vi.mock('@/composables/useToast', () => ({
 const toolData = {
   tools: [],
   registrations: [],
-  approval_tools: [
-    {
-      tool_id: 'builtin.shell.shell_execute',
-      function_name: 'shell_execute',
-      label: '执行 Shell 命令',
-      risk_level: 'high',
-      approval: 'auto',
-    },
-    {
-      tool_id: 'builtin.browser.browser_console_exec',
-      function_name: 'browser_console_exec',
-      label: '执行浏览器脚本',
-      risk_level: 'high',
-      approval: 'ask',
-    },
-  ],
   runtime_policy: {
     allowed_executor_types: ['builtin', 'mcp', 'a2a', 'api'],
     max_tool_iterations: 100,
-    require_approval_for_high_risk: true,
   },
 }
 
-describe('SettingsGeneralPanel approval settings', () => {
+describe('SettingsGeneralPanel runtime settings', () => {
   beforeEach(() => {
     mocks.getAgentConfig.mockResolvedValue({})
     mocks.updateAgentConfig.mockResolvedValue({})
     mocks.listTools.mockResolvedValue(structuredClone(toolData))
-    mocks.updateBindings.mockImplementation(async ({ bindings, runtime_policy }) => ({
+    mocks.updateBindings.mockImplementation(async ({ runtime_policy }) => ({
       ...structuredClone(toolData),
-      approval_tools: toolData.approval_tools.map((item) => ({
-        ...item,
-        approval: bindings[item.tool_id]?.approval ?? item.approval,
-      })),
       runtime_policy,
     }))
   })
 
-  it('saves a persistent per-tool approval without changing other tools', async () => {
+  it('does not render or submit terminal-user approval settings', async () => {
     const wrapper = mount(SettingsGeneralPanel)
     await flushPromises()
 
-    expect(wrapper.text()).toContain('执行 Shell 命令')
-
-    const selects = wrapper.findAllComponents({ name: 'ElSelect' })
-    expect(selects).toHaveLength(2)
-    selects[0].vm.$emit('update:modelValue', 'allow')
-    await wrapper.vm.$nextTick()
-    expect(wrapper.text()).toContain('始终允许会跳过后续确认')
+    expect(wrapper.text()).not.toContain('高风险工具执行前确认')
+    expect(wrapper.text()).not.toContain('系统工具审批')
+    expect(wrapper.find('.tool-approval-settings').exists()).toBe(false)
 
     await wrapper.vm.save()
 
     expect(mocks.updateBindings).toHaveBeenCalledWith({
-      bindings: {
-        'builtin.shell.shell_execute': {
-          enabled: true,
-          risk_level: 'high',
-          approval: 'allow',
-        },
-      },
+      bindings: {},
       runtime_policy: toolData.runtime_policy,
     })
+    expect(JSON.stringify(mocks.updateBindings.mock.calls[0]?.[0])).not.toContain('approval')
   })
 })

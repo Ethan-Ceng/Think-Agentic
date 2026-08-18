@@ -332,6 +332,75 @@ describe('SessionDetailView archived state', () => {
   })
 })
 
+describe('SessionDetailView interaction blocking', () => {
+  beforeEach(() => {
+    mocks.getBranchFamily.mockReset()
+    mocks.getBranchFamily.mockResolvedValue(null)
+  })
+
+  function pendingInteraction(
+    interactionType: 'ask_user' | 'tool_approval',
+    allowText = true,
+  ): NonNullable<SessionDetail['events']>[number] {
+    return {
+      type: 'interaction',
+      data: {
+        action_id: 'action-1',
+        interaction_type: interactionType,
+        status: 'pending',
+        tool_call_id: 'call-1',
+        tool_name: interactionType === 'ask_user' ? 'message' : 'shell',
+        function_name:
+          interactionType === 'ask_user' ? 'message_ask_user' : 'shell_execute',
+        function_args: {},
+        prompt: interactionType === 'ask_user' ? '请选择环境' : '旧审批',
+        options: [],
+        allow_multiple: false,
+        allow_text: allowText,
+        selected_values: [],
+      },
+    }
+  }
+
+  it('allows a composer reply while a text ask_user is pending', async () => {
+    mocks.detail = makeDetail({
+      status: 'waiting',
+      events: [pendingInteraction('ask_user')],
+    })
+
+    const { wrapper } = await mountView('/sessions/session-1', 'session-1')
+
+    expect(wrapper.get('.stub-chat-input').attributes('data-disabled')).toBe('false')
+    expect(wrapper.text()).toContain('可直接在输入框回复')
+    wrapper.unmount()
+  })
+
+  it('keeps the composer blocked for an options-only ask_user', async () => {
+    mocks.detail = makeDetail({
+      status: 'waiting',
+      events: [pendingInteraction('ask_user', false)],
+    })
+
+    const { wrapper } = await mountView('/sessions/session-1', 'session-1')
+
+    expect(wrapper.get('.stub-chat-input').attributes('data-disabled')).toBe('true')
+    wrapper.unmount()
+  })
+
+  it('allows a normal message when only a legacy tool approval is pending', async () => {
+    mocks.detail = makeDetail({
+      status: 'waiting',
+      events: [pendingInteraction('tool_approval')],
+    })
+
+    const { wrapper } = await mountView('/sessions/session-1', 'session-1')
+
+    expect(wrapper.get('.stub-chat-input').attributes('data-disabled')).toBe('false')
+    expect(wrapper.text()).toContain('旧审批已停用，可继续输入')
+    wrapper.unmount()
+  })
+})
+
 describe('SessionDetailView attachment sending', () => {
   beforeEach(() => {
     mocks.toastInfo.mockReset()

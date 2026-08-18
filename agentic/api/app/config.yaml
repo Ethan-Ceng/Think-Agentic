@@ -13,7 +13,7 @@ mcp_config:
 a2a_config:
   a2a_servers: []
 tool_config:
-  schema_version: tool_config_v1
+  schema_version: tool_config_v2
   mode: default_allow
   bindings: {}
   registrations: {}

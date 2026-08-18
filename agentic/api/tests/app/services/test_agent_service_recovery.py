@@ -9,7 +9,9 @@ from app.core.entities.event import (
     DoneEvent,
     ErrorEvent,
     InteractionDecision,
+    InteractionEvent,
     InteractionResolution,
+    InteractionStatus,
     InteractionType,
     MessageDeltaEvent,
     MessageEvent,
@@ -27,6 +29,7 @@ class FakeSessionRepository:
         self.latest_messages: List[str] = []
         self.unread_updates: List[int] = []
         self.claim_calls = 0
+        self.user_input_claims: List[str] = []
 
     async def get_by_id_for_user(self, session_id: str, user_id: str) -> Optional[Session]:
         if session_id == self.session.id and user_id == self.session.user_id:
@@ -43,6 +46,35 @@ class FakeSessionRepository:
         previous_status = session.status
         session.status = SessionStatus.RUNNING
         return session, previous_status
+
+    async def claim_execution_for_user_input(
+        self,
+        session_id: str,
+        user_id: str,
+        *,
+        answer: str,
+    ):
+        self.user_input_claims.append(answer)
+        session = await self.get_by_id_for_user(session_id, user_id)
+        if session is None:
+            return None, None, None
+        if session.status == SessionStatus.RUNNING:
+            return session, None, None
+        previous_status = session.status
+        resolved = None
+        pending = session.get_pending_interaction()
+        if (
+            session.status == SessionStatus.WAITING
+            and pending is not None
+            and pending.interaction_type == InteractionType.ASK_USER
+        ):
+            resolved = session.resolve_interaction(
+                action_id=pending.action_id,
+                decision=InteractionDecision.ANSWER,
+                answer=answer,
+            )
+        session.status = SessionStatus.RUNNING
+        return session, previous_status, resolved
 
     async def update_status(self, session_id: str, status: SessionStatus) -> None:
         assert session_id == self.session.id
@@ -501,7 +533,33 @@ def test_chat_replays_delta_and_final_from_the_requested_output_cursor() -> None
 
 
 def test_interaction_resolution_stays_in_task_input_but_not_session_history() -> None:
-    session = Session(id="session-1", user_id="user-1", status=SessionStatus.WAITING)
+    resolution = InteractionResolution(
+        action_id="action-1",
+        interaction_type=InteractionType.ASK_USER,
+        decision=InteractionDecision.ANSWER,
+        tool_call_id="call-1",
+        function_name="message_ask_user",
+        function_args={"text": "Provide the missing value"},
+        answer="must-not-persist",
+    )
+    resolved = InteractionEvent(
+        action_id=resolution.action_id,
+        interaction_type=resolution.interaction_type,
+        status=InteractionStatus.RESOLVED,
+        tool_call_id=resolution.tool_call_id,
+        tool_name="message",
+        function_name=resolution.function_name,
+        function_args=resolution.function_args,
+        prompt="Provide the missing value",
+        decision=resolution.decision,
+        answer=resolution.answer,
+    )
+    session = Session(
+        id="session-1",
+        user_id="user-1",
+        status=SessionStatus.RUNNING,
+        events=[resolved],
+    )
     service, session_repo, _ = make_service(session)
     task = CompletedTask()
 
@@ -513,14 +571,6 @@ def test_interaction_resolution_stays_in_task_input_but_not_session_history() ->
 
     service._get_task = fake_get_task  # type: ignore[method-assign]
     service._create_task = fake_create_task  # type: ignore[method-assign]
-    resolution = InteractionResolution(
-        action_id="action-1",
-        interaction_type=InteractionType.TOOL_APPROVAL,
-        decision=InteractionDecision.APPROVE,
-        tool_call_id="call-1",
-        function_name="dangerous_write",
-        function_args={"api_key": "must-not-persist"},
-    )
 
     async def run() -> List[BaseEvent]:
         return [
@@ -541,3 +591,229 @@ def test_interaction_resolution_stays_in_task_input_but_not_session_history() ->
     assert events[0].interaction_response is None
     assert session_repo.events[0].interaction_response is None
     assert "must-not-persist" not in session_repo.events[0].model_dump_json()
+
+
+def test_preclaimed_interaction_task_failure_releases_running_state() -> None:
+    resolution = InteractionResolution(
+        action_id="action-1",
+        interaction_type=InteractionType.ASK_USER,
+        decision=InteractionDecision.ANSWER,
+        tool_call_id="call-1",
+        function_name="message_ask_user",
+        answer="yes",
+    )
+    resolved = InteractionEvent(
+        action_id=resolution.action_id,
+        interaction_type=resolution.interaction_type,
+        status=InteractionStatus.RESOLVED,
+        tool_call_id=resolution.tool_call_id,
+        tool_name="message",
+        function_name=resolution.function_name,
+        prompt="Continue?",
+        decision=resolution.decision,
+        answer=resolution.answer,
+    )
+    session = Session(
+        id="session-1",
+        user_id="user-1",
+        status=SessionStatus.RUNNING,
+        events=[resolved],
+    )
+    service, session_repo, _ = make_service(session)
+
+    async def fake_get_task(_session: Session) -> None:
+        return None
+
+    async def fail_create_task(_session: Session):
+        raise RuntimeError("task construction failed")
+
+    service._get_task = fake_get_task  # type: ignore[method-assign]
+    service._create_task = fail_create_task  # type: ignore[method-assign]
+
+    async def run() -> List[BaseEvent]:
+        return [
+            event
+            async for event in service.chat(
+                session_id=session.id,
+                user_id=session.user_id,
+                message="Resolve interaction action-1",
+                visible=False,
+                interaction_response=resolution,
+            )
+        ]
+
+    events = asyncio.run(run())
+
+    assert len(events) == 1
+    assert isinstance(events[0], ErrorEvent)
+    assert session.status == SessionStatus.COMPLETED
+    assert session_repo.status_updates == [SessionStatus.COMPLETED]
+
+
+def test_plain_user_reply_resolves_pending_ask_and_resumes_exact_interaction() -> None:
+    skill = {
+        "source": "personal",
+        "skill_id": "skill-1",
+        "name": "report-writer",
+    }
+    pending = InteractionEvent(
+        action_id="action-1",
+        interaction_type=InteractionType.ASK_USER,
+        status=InteractionStatus.PENDING,
+        tool_call_id="call-1",
+        tool_name="message",
+        function_name="message_ask_user",
+        function_args={"text": "Which city?", "allow_text": True},
+        prompt="Which city?",
+        allow_text=True,
+        lead_mode="react",
+        lead_goal="Find the weather",
+        lead_language="en",
+        lead_capabilities=["search"],
+        skills=[skill],
+    )
+    session = Session(
+        id="session-1",
+        user_id="user-1",
+        status=SessionStatus.WAITING,
+        events=[pending],
+    )
+    service, session_repo, _ = make_service(session)
+    task = CompletedTask()
+
+    async def fake_create_task(_session: Session) -> CompletedTask:
+        return task
+
+    service._create_task = fake_create_task  # type: ignore[method-assign]
+
+    async def run() -> List[BaseEvent]:
+        events = [
+            event
+            async for event in service.chat(
+                session_id=session.id,
+                user_id=session.user_id,
+                message="Shanghai",
+            )
+        ]
+        await asyncio.sleep(0)
+        return events
+
+    events = asyncio.run(run())
+    queued = MessageEvent.model_validate_json(task.input_stream.payloads[0])
+
+    assert session_repo.user_input_claims == ["Shanghai"]
+    assert isinstance(events[0], InteractionEvent)
+    assert events[0].status == InteractionStatus.RESOLVED
+    assert events[0].answer == "Shanghai"
+    assert isinstance(events[1], MessageEvent)
+    assert events[1].message == "Shanghai"
+    assert queued.interaction_response is not None
+    assert queued.interaction_response.action_id == pending.action_id
+    assert queued.interaction_response.tool_call_id == pending.tool_call_id
+    assert queued.interaction_response.answer == "Shanghai"
+    assert [item.name for item in queued.interaction_response.skills] == [
+        "report-writer"
+    ]
+    assert queued.skills == queued.interaction_response.skills
+    assert session_repo.events == [events[1]]
+    assert session_repo.events[0].interaction_response is None
+
+
+def test_plain_reply_task_creation_failure_does_not_recreate_resolved_wait() -> None:
+    pending = InteractionEvent(
+        action_id="action-1",
+        interaction_type=InteractionType.ASK_USER,
+        status=InteractionStatus.PENDING,
+        tool_call_id="call-1",
+        tool_name="message",
+        function_name="message_ask_user",
+        function_args={"text": "Which city?", "allow_text": True},
+        prompt="Which city?",
+        allow_text=True,
+        lead_mode="react",
+        lead_goal="Find the weather",
+        lead_language="en",
+    )
+    session = Session(
+        id="session-1",
+        user_id="user-1",
+        status=SessionStatus.WAITING,
+        events=[pending],
+    )
+    service, session_repo, _ = make_service(session)
+
+    async def fail_create_task(_session: Session):
+        raise RuntimeError("task construction failed")
+
+    service._create_task = fail_create_task  # type: ignore[method-assign]
+
+    async def run() -> List[BaseEvent]:
+        events = [
+            event
+            async for event in service.chat(
+                session_id=session.id,
+                user_id=session.user_id,
+                message="Shanghai",
+            )
+        ]
+        await asyncio.sleep(0)
+        return events
+
+    events = asyncio.run(run())
+
+    assert len(events) == 1
+    assert isinstance(events[0], ErrorEvent)
+    assert "task construction failed" in events[0].error
+    assert session.status == SessionStatus.COMPLETED
+    assert session.events[-1].status == InteractionStatus.RESOLVED
+    assert session.events[-1].answer == "Shanghai"
+    assert session_repo.status_updates == [SessionStatus.COMPLETED]
+
+
+def test_plain_reply_is_durable_before_the_first_sse_event() -> None:
+    pending = InteractionEvent(
+        action_id="action-1",
+        interaction_type=InteractionType.ASK_USER,
+        status=InteractionStatus.PENDING,
+        tool_call_id="call-1",
+        tool_name="message",
+        function_name="message_ask_user",
+        function_args={"text": "Which city?", "allow_text": True},
+        prompt="Which city?",
+        allow_text=True,
+        lead_mode="react",
+        lead_goal="Find the weather",
+        lead_language="en",
+    )
+    session = Session(
+        id="session-1",
+        user_id="user-1",
+        status=SessionStatus.WAITING,
+        events=[pending],
+    )
+    service, session_repo, _ = make_service(session)
+    task = CompletedTask()
+
+    async def fake_create_task(_session: Session) -> CompletedTask:
+        return task
+
+    service._create_task = fake_create_task  # type: ignore[method-assign]
+
+    async def run() -> BaseEvent:
+        stream = service.chat(
+            session_id=session.id,
+            user_id=session.user_id,
+            message="Shanghai",
+        )
+        first = await anext(stream)
+        await stream.aclose()
+        await asyncio.sleep(0)
+        return first
+
+    first = asyncio.run(run())
+
+    assert isinstance(first, InteractionEvent)
+    assert task.done is True
+    assert len(session_repo.events) == 1
+    assert isinstance(session_repo.events[0], MessageEvent)
+    assert session_repo.events[0].message == "Shanghai"

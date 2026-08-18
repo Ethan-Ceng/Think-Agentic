@@ -1,10 +1,19 @@
 import asyncio
+import json
 from datetime import datetime
 
 import pytest
 
-from app.core.entities.event import MessageEvent
+from app.core.entities.event import (
+    InteractionDecision,
+    InteractionEvent,
+    InteractionStatus,
+    InteractionType,
+    MessageEvent,
+)
 from app.core.entities.session import (
+    InteractionConflictError,
+    InteractionValidationError,
     NextMessage,
     Session,
     SessionOrganizationConflictError,
@@ -57,6 +66,8 @@ def _record(
     project_id: str | None = None,
     archived_at: datetime | None = None,
     latest_message_at: datetime | None = None,
+    events=None,
+    memories=None,
 ) -> SessionModel:
     now = datetime.now()
     return SessionModel(
@@ -70,9 +81,9 @@ def _record(
         unread_message_count=0,
         latest_message="latest",
         latest_message_at=latest_message_at or now,
-        events=[],
+        events=events or [],
         files=[],
-        memories={},
+        memories=memories or {},
         context_seed=[],
         status=status,
         next_message=next_message,
@@ -292,6 +303,205 @@ def test_execution_claim_serializes_new_runs_with_archiving():
                 "user-1",
                 archived=True,
             )
+
+    asyncio.run(scenario())
+
+
+def test_execution_claim_retires_legacy_approval_and_repairs_memory():
+    async def scenario():
+        pending = InteractionEvent(
+            action_id="legacy-action",
+            interaction_type=InteractionType.TOOL_APPROVAL,
+            status=InteractionStatus.PENDING,
+            tool_call_id="call-1",
+            tool_name="shell",
+            function_name="shell_execute",
+            function_args={"command": "private command"},
+            prompt="legacy approval",
+        )
+        record = _record(
+            status=SessionStatus.WAITING.value,
+            events=[pending.model_dump(mode="json")],
+            memories={
+                "react": {
+                    "messages": [
+                        {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "call-1",
+                                    "function": {
+                                        "name": "shell_execute",
+                                        "arguments": '{"command":"private command"}',
+                                    },
+                                }
+                            ],
+                        }
+                    ]
+                }
+            },
+        )
+        fake = _FakeDBSession(_Result(scalar=record), _Result(scalar=record))
+        repository = DBSessionRepository(fake)
+
+        claimed, previous_status = await repository.claim_execution(
+            "session-1",
+            "user-1",
+        )
+        replay, replay_previous_status = await repository.claim_execution(
+            "session-1",
+            "user-1",
+        )
+
+        assert previous_status == SessionStatus.COMPLETED
+        assert claimed.status == SessionStatus.RUNNING
+        assert replay_previous_status is None
+        assert replay.status == SessionStatus.RUNNING
+        resolved = InteractionEvent.model_validate(record.events[-1])
+        assert resolved.status == InteractionStatus.RESOLVED
+        assert resolved.decision == InteractionDecision.REJECT
+        tool_message = record.memories["react"]["messages"][-1]
+        assert tool_message["role"] == "tool"
+        assert tool_message["tool_call_id"] == "call-1"
+        result = json.loads(tool_message["content"])
+        assert result["success"] is False
+        assert "private command" not in tool_message["content"]
+        assert len(record.events) == 2
+        assert len(record.memories["react"]["messages"]) == 2
+
+    asyncio.run(scenario())
+
+
+def test_user_input_claim_resolves_pending_text_question_atomically():
+    async def scenario():
+        pending = InteractionEvent(
+            action_id="ask-action",
+            interaction_type=InteractionType.ASK_USER,
+            status=InteractionStatus.PENDING,
+            tool_call_id="call-ask",
+            tool_name="message",
+            function_name="message_ask_user",
+            function_args={"text": "Which city?", "allow_text": True},
+            prompt="Which city?",
+            allow_text=True,
+        )
+        record = _record(
+            status=SessionStatus.WAITING.value,
+            events=[pending.model_dump(mode="json")],
+        )
+        fake = _FakeDBSession(
+            _Result(scalar=record),
+            _Result(scalar=record),
+            _Result(scalar=record),
+        )
+        repository = DBSessionRepository(fake)
+
+        claimed, previous_status, resolved = (
+            await repository.claim_execution_for_user_input(
+                "session-1",
+                "user-1",
+                answer="Shanghai",
+            )
+        )
+        with pytest.raises(InteractionConflictError, match="正在继续处理"):
+            await repository.claim_execution_for_user_input(
+                "session-1",
+                "user-1",
+                answer="Shanghai",
+            )
+        record.events.append(
+            MessageEvent(
+                role="user",
+                message="Shanghai",
+            ).model_dump(mode="json")
+        )
+        with pytest.raises(InteractionConflictError, match="正在继续处理"):
+            await repository.claim_execution_for_user_input(
+                "session-1",
+                "user-1",
+                answer="Shanghai",
+            )
+
+        assert previous_status == SessionStatus.WAITING
+        assert claimed.status == SessionStatus.RUNNING
+        assert resolved is not None
+        assert resolved.action_id == pending.action_id
+        assert resolved.status == InteractionStatus.RESOLVED
+        assert resolved.decision == InteractionDecision.ANSWER
+        assert resolved.answer == "Shanghai"
+        assert InteractionEvent.model_validate(record.events[-2]) == resolved
+        assert len(record.events) == 3
+        assert fake.flush_count == 1
+
+    asyncio.run(scenario())
+
+
+def test_user_input_claim_rejects_text_for_options_only_question_without_mutation():
+    async def scenario():
+        pending = InteractionEvent(
+            action_id="ask-action",
+            interaction_type=InteractionType.ASK_USER,
+            status=InteractionStatus.PENDING,
+            tool_call_id="call-ask",
+            tool_name="message",
+            function_name="message_ask_user",
+            function_args={"text": "Choose", "allow_text": False},
+            prompt="Choose",
+            allow_text=False,
+        )
+        record = _record(
+            status=SessionStatus.WAITING.value,
+            events=[pending.model_dump(mode="json")],
+        )
+        fake = _FakeDBSession(_Result(scalar=record))
+        repository = DBSessionRepository(fake)
+
+        with pytest.raises(InteractionValidationError):
+            await repository.claim_execution_for_user_input(
+                "session-1",
+                "user-1",
+                answer="typed answer",
+            )
+
+        assert record.status == SessionStatus.WAITING.value
+        assert record.events == [pending.model_dump(mode="json")]
+        assert fake.flush_count == 0
+
+    asyncio.run(scenario())
+
+
+def test_explicit_interaction_resolution_claims_continuation_atomically():
+    async def scenario():
+        pending = InteractionEvent(
+            action_id="ask-action",
+            interaction_type=InteractionType.ASK_USER,
+            status=InteractionStatus.PENDING,
+            tool_call_id="call-ask",
+            tool_name="message",
+            function_name="message_ask_user",
+            function_args={"text": "Choose", "allow_text": False},
+            prompt="Choose",
+            options=[{"value": "staging", "label": "Staging"}],
+            allow_text=False,
+        )
+        record = _record(
+            status=SessionStatus.WAITING.value,
+            events=[pending.model_dump(mode="json")],
+        )
+        repository = DBSessionRepository(_FakeDBSession(_Result(scalar=record)))
+
+        resolved = await repository.resolve_interaction(
+            "session-1",
+            "user-1",
+            action_id=pending.action_id,
+            decision=InteractionDecision.ANSWER,
+            selected_values=["staging"],
+        )
+
+        assert resolved.status == InteractionStatus.RESOLVED
+        assert record.status == SessionStatus.RUNNING.value
+        assert InteractionEvent.model_validate(record.events[-1]) == resolved
 
     asyncio.run(scenario())
 

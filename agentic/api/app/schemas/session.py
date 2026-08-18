@@ -183,7 +183,7 @@ class BranchFamilyResponse(BaseModel):
 
 class ChatRequest(BaseModel):
     """聊天请求"""
-    message: Optional[str] = None
+    message: Optional[str] = Field(default=None, max_length=10000)
     attachments: Optional[List[str]] = Field(default_factory=list)
     skills: List[SkillRef] = Field(default_factory=list)
     event_id: Optional[str] = None
@@ -210,9 +210,9 @@ class ResumeSessionRequest(BaseModel):
 
 
 class ResolveInteractionRequest(BaseModel):
-    """Resolve a structured question or tool approval action."""
+    """Resolve a structured business-input question."""
 
-    decision: InteractionDecision
+    decision: Literal[InteractionDecision.ANSWER]
     answer: Optional[str] = Field(default=None, max_length=10000)
     selected_values: List[str] = Field(default_factory=list, max_length=50)
 

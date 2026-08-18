@@ -161,10 +161,17 @@ const hasStreamingAssistantDraft = computed(() =>
 const pendingInteraction = computed(() => {
   for (let i = timeline.value.length - 1; i >= 0; i--) {
     const item = timeline.value[i]
-    if (item.kind === 'interaction' && item.data.status === 'pending') return item.data
+    if (
+      item.kind === 'interaction' &&
+      item.data.interaction_type === 'ask_user' &&
+      item.data.status === 'pending'
+    ) return item.data
   }
   return null
 })
+const pendingInteractionBlocksComposer = computed(
+  () => Boolean(pendingInteraction.value && !pendingInteraction.value.allow_text),
+)
 const latestRecoverableErrorId = computed(() => {
   if (detail.session.value?.status !== 'completed') return null
   for (let i = timeline.value.length - 1; i >= 0; i--) {
@@ -186,7 +193,10 @@ const runningStateLabel = computed(() => {
     return `响应中断：${detail.error.value.message}`
   }
   if (detail.session.value?.status === 'waiting') {
-    return '等待你的回复'
+    if (!pendingInteraction.value) return '旧审批已停用，可继续输入'
+    return pendingInteraction.value.allow_text
+      ? '等待你的回复 · 可直接在输入框回复或使用问题卡'
+      : '等待你在问题卡中选择'
   }
   if (detail.session.value?.status === 'running') {
     return '正在生成回复'
@@ -201,7 +211,9 @@ const branchDisabledReason = computed(() => {
     return '任务执行中，完成后才能从历史消息创建分支'
   }
   if (detail.session.value?.status === 'waiting') {
-    return '请先处理当前待确认操作'
+    return pendingInteraction.value
+      ? '请先回答当前问题'
+      : '请先发送一条新消息，使旧审批安全结束'
   }
   if (detail.session.value?.next_message) {
     return '请先发送或取消已排队的下一条消息'
@@ -1153,7 +1165,7 @@ async function handleStop() {
               :is-running="detail.session.value.status === 'running'"
               :disabled="
                 isArchived ||
-                Boolean(pendingInteraction) ||
+                pendingInteractionBlocksComposer ||
                 (detail.session.value.status === 'completed' &&
                   Boolean(detail.session.value.next_message))
               "

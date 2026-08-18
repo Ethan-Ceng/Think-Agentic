@@ -10,6 +10,8 @@ from typing import List, Dict, Any, Optional
 
 from pydantic import BaseModel, Field
 
+from .tool_result import ToolResult
+
 logger = logging.getLogger(__name__)
 
 
@@ -41,6 +43,50 @@ class Memory(BaseModel):
     def roll_back(self) -> None:
         """回滚记忆，删除最后一条消息"""
         self.messages = self.messages[:-1]
+
+    def close_pending_tool_calls(
+            self,
+            expected_tool_call_id: str,
+            *,
+            reason: str,
+    ) -> List[str]:
+        """Close a legacy assistant tool-call tail without executing any tool.
+
+        OpenAI-compatible providers require one tool result for every tool call
+        in the assistant message before another user message can be appended.
+        The expected id prevents an unrelated memory tail from being changed.
+        """
+        last_message = self.get_last_message()
+        if not last_message or last_message.get("role") != "assistant":
+            return []
+
+        tool_calls = last_message.get("tool_calls") or []
+        call_ids = [
+            tool_call.get("id")
+            for tool_call in tool_calls
+            if tool_call.get("id")
+        ]
+        if expected_tool_call_id not in call_ids:
+            return []
+
+        result_content = ToolResult(
+            success=False,
+            message=reason,
+        ).model_dump_json()
+        closed: List[str] = []
+        for tool_call in tool_calls:
+            tool_call_id = tool_call.get("id")
+            if not tool_call_id:
+                continue
+            function_name = (tool_call.get("function") or {}).get("name")
+            self.add_message({
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "function_name": function_name,
+                "content": result_content,
+            })
+            closed.append(tool_call_id)
+        return closed
 
     def compact(self) -> None:
         """记忆压缩，将记忆中已经执行的工具(搜索/网页源码获取/浏览器访问结果等)这类已经执行过的消息进行压缩检索"""

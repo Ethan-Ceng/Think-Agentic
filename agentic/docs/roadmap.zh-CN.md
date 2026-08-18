@@ -51,7 +51,7 @@ Planner / ReAct 执行内核
 
 ## 4. 推荐实施顺序
 
-对比 `llmops` 后，当前优先级需要前移的是 Run / Trace 最小账本。原因是内置工具治理和自定义 API 工具源已经进入运行时，但还缺少稳定的 `agent_runs`、`run_steps`、`tool_calls`、`model_calls` 和 `trace_events` 来支撑复盘、审计和后续审批。
+对比 `llmops` 后，当前优先级需要前移的是 Run / Trace 最小账本。原因是内置工具治理和自定义 API 工具源已经进入运行时，但还缺少稳定的 `agent_runs`、`run_steps`、`tool_calls`、`model_calls` 和 `trace_events` 来支撑复盘、审计和平台策略治理。
 
 详细落地调研见：[run-trace-tooling-research.zh-CN.md](run-trace-tooling-research.zh-CN.md)。
 
@@ -79,7 +79,7 @@ trace_events
 - 调用了哪些工具？
 - 工具输入输出摘要是什么？
 - 调用了哪些模型，token、耗时、失败原因是什么？
-- 是否发生确认、拒绝或失败？
+- 是否发生用户业务询问、平台拒绝或执行失败？
 - 最终产物在哪里？
 
 落地方式应贴合 `agentic` 当前实现：
@@ -94,7 +94,7 @@ trace_events
 
 - 审计保存策略配置。
 - 工具配置变更审计。
-- 高风险工具确认与 Trace/审批记录关联。
+- Execution Class、Capability Grant、平台拒绝与 Trace 关联。
 
 ### Phase 2：Agent Profile
 
@@ -223,7 +223,7 @@ knowledge_bindings
 - 访问 token。
 - 是否允许上传文件。
 - 是否展示工具过程。
-- 是否允许高风险工具。
+- 允许的 Execution Class 与 Capability Grant。
 
 ### Phase 6：治理增强
 
@@ -231,8 +231,9 @@ knowledge_bindings
 
 建议能力：
 
-- 高风险工具执行确认。
-- `approval=ask/deny` 或等价策略。
+- Execution Class 与 Capability Grant。
+- 平台确定性的 `allow/deny`、租户授权和网络出口策略。
+- 外部副作用幂等、对账和运维处置。
 - 工具调用审计日志。
 - 配置变更审计。
 - API key 加密存储。

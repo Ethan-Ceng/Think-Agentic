@@ -1,5 +1,7 @@
 # Lead Agent Runtime Unification 实施计划
 
+> 后续边界修订：本计划中的 Tool Approval 测试是实施当时的历史基线。当前新 Run 不再产生工具审批，`WAITING` 只用于用户业务输入；有效迁移见 `remove-tool-approval-plan.md`。
+
 ## 关联设计
 
 - 设计文档：`agentic/docs/designs/lead-agent-runtime-unification.zh-CN.md`
@@ -192,7 +194,7 @@
 2. React 最终响应直接转换为用户可见 `MessageEvent`，不再经过 Step 总结或 Plan 总结。
 3. 为持久化 Interaction 增加最小执行上下文，使恢复时可以确定回到 React Goal，而不是错误读取历史 Plan。
 4. 审批/提问恢复继续验证原 Tool Call，并沿用相同 Memory；拒绝、错误和等待事件原样上送。
-5. 增加工具成功、工具失败、Ask User、Tool Approval、Skill 选中和附件输入回归。
+5. 增加工具成功、工具失败、Ask User、历史 Interaction 读取、Skill 选中和附件输入回归。
 
 ### 验证方式
 

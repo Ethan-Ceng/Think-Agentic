@@ -106,15 +106,16 @@ class QueueLlm:
 class RiskyTool(BaseTool):
     name = "risky"
 
-    def __init__(self) -> None:
+    def __init__(self, policy: str = "ask") -> None:
         super().__init__()
         self.calls: list[dict] = []
+        self.policy = policy
 
     def get_risk_level(self, tool_name: str):
         return "high"
 
-    def get_approval_policy(self, tool_name: str):
-        return "ask"
+    def get_execution_policy(self, tool_name: str):
+        return self.policy
 
     @tool(
         name="dangerous_write",
@@ -170,68 +171,52 @@ async def collect(generator) -> list:
     return [event async for event in generator]
 
 
-async def test_high_risk_tool_pauses_before_execution_and_resumes_exact_call() -> None:
+async def test_high_risk_tool_executes_without_creating_approval_interaction() -> None:
     repository = MemoryRepository()
     risky = RiskyTool()
     arguments = {"path": "/tmp/report.md", "content": "safe"}
-    first_llm = QueueLlm([tool_call_response("dangerous_write", arguments)])
-
-    pending_events = await collect(build_agent(repository, first_llm, [risky]).invoke("write it"))
-    pending = next(event for event in pending_events if isinstance(event, InteractionEvent))
-
-    assert pending.interaction_type == InteractionType.TOOL_APPROVAL
-    assert pending.function_args == arguments
-    assert pending.risk_level == "high"
-    assert risky.calls == []
-
-    resumed_llm = QueueLlm([{"role": "assistant", "content": "completed"}])
-    resumed_agent = build_agent(repository, resumed_llm, [risky])
-    resolved = InteractionResolution(
-        action_id=pending.action_id,
-        interaction_type=pending.interaction_type,
-        decision=InteractionDecision.APPROVE,
-        tool_call_id=pending.tool_call_id,
-        function_name=pending.function_name,
-        function_args=pending.function_args,
+    llm = QueueLlm(
+        [
+            tool_call_response("dangerous_write", arguments),
+            {"role": "assistant", "content": "completed"},
+        ]
     )
-    resumed_events = await collect(resumed_agent.resume_interaction(resolved))
+
+    events = await collect(build_agent(repository, llm, [risky]).invoke("write it"))
 
     assert risky.calls == [arguments]
     called = next(
         event
-        for event in resumed_events
+        for event in events
         if isinstance(event, ToolEvent) and event.status == ToolEventStatus.CALLED
     )
     assert called.function_result and called.function_result.success is True
-    assert any(isinstance(event, MessageEvent) and event.message == "completed" for event in resumed_events)
+    assert not any(isinstance(event, InteractionEvent) for event in events)
+    assert not any(isinstance(event, WaitEvent) for event in events)
+    assert any(isinstance(event, MessageEvent) and event.message == "completed" for event in events)
 
 
-async def test_rejected_tool_never_executes_and_returns_rejection_to_model() -> None:
+async def test_platform_denied_tool_never_executes_and_returns_failure_to_model() -> None:
     repository = MemoryRepository()
-    risky = RiskyTool()
+    risky = RiskyTool(policy="deny")
     arguments = {"path": "/tmp/report.md", "content": "safe"}
-    pending_events = await collect(
-        build_agent(repository, QueueLlm([tool_call_response("dangerous_write", arguments)]), [risky]).invoke(
-            "write it"
-        )
+    llm = QueueLlm(
+        [
+            tool_call_response("dangerous_write", arguments),
+            {"role": "assistant", "content": "I cannot write it."},
+        ]
     )
-    pending = next(event for event in pending_events if isinstance(event, InteractionEvent))
-
-    resumed_llm = QueueLlm([{"role": "assistant", "content": "I will not write it."}])
-    resolution = InteractionResolution(
-        action_id=pending.action_id,
-        interaction_type=pending.interaction_type,
-        decision=InteractionDecision.REJECT,
-        tool_call_id=pending.tool_call_id,
-        function_name=pending.function_name,
-        function_args=pending.function_args,
-    )
-    events = await collect(build_agent(repository, resumed_llm, [risky]).resume_interaction(resolution))
+    events = await collect(build_agent(repository, llm, [risky]).invoke("write it"))
 
     assert risky.calls == []
-    called = next(event for event in events if isinstance(event, ToolEvent))
+    called = next(
+        event
+        for event in events
+        if isinstance(event, ToolEvent) and event.status == ToolEventStatus.CALLED
+    )
     assert called.function_result and called.function_result.success is False
-    assert "拒绝" in (called.function_result.message or "")
+    assert "禁止" in (called.function_result.message or "")
+    assert not any(isinstance(event, InteractionEvent) for event in events)
 
 
 async def test_structured_ask_user_pauses_and_answer_resumes_as_tool_result() -> None:
@@ -282,19 +267,17 @@ async def test_resume_rejects_tampered_arguments_before_tool_execution() -> None
     repository = MemoryRepository()
     risky = RiskyTool()
     arguments = {"path": "/tmp/report.md", "content": "safe"}
-    pending_events = await collect(
-        build_agent(repository, QueueLlm([tool_call_response("dangerous_write", arguments)]), [risky]).invoke(
-            "write it"
-        )
+    tool_call = tool_call_response("dangerous_write", arguments)
+    repository.memories[("session-1", "react")] = Memory(
+        messages=[tool_call]
     )
-    pending = next(event for event in pending_events if isinstance(event, InteractionEvent))
     resolution = InteractionResolution(
-        action_id=pending.action_id,
-        interaction_type=pending.interaction_type,
+        action_id="legacy-action",
+        interaction_type=InteractionType.TOOL_APPROVAL,
         decision=InteractionDecision.APPROVE,
-        tool_call_id=pending.tool_call_id,
-        function_name=pending.function_name,
-        function_args={**pending.function_args, "path": "/tmp/tampered.md"},
+        tool_call_id="call-1",
+        function_name="dangerous_write",
+        function_args={**arguments, "path": "/tmp/tampered.md"},
     )
 
     with pytest.raises(RuntimeError, match="参数"):
@@ -305,19 +288,48 @@ async def test_resume_rejects_tampered_arguments_before_tool_execution() -> None
     assert risky.calls == []
 
 
-async def test_react_step_waits_without_duplicate_prompt_and_resumes_current_step() -> None:
+async def test_legacy_approval_can_never_execute_a_tool() -> None:
     repository = MemoryRepository()
     risky = RiskyTool()
     arguments = {"path": "/tmp/report.md", "content": "safe"}
+    repository.memories[("session-1", "react")] = Memory(
+        messages=[tool_call_response("dangerous_write", arguments)]
+    )
+    resolution = InteractionResolution(
+        action_id="legacy-action",
+        interaction_type=InteractionType.TOOL_APPROVAL,
+        decision=InteractionDecision.APPROVE,
+        tool_call_id="call-1",
+        function_name="dangerous_write",
+        function_args=arguments,
+    )
+
+    with pytest.raises(RuntimeError, match="已停用"):
+        await collect(
+            build_agent(repository, QueueLlm([]), [risky]).resume_interaction(
+                resolution
+            )
+        )
+
+    assert risky.calls == []
+
+
+async def test_react_step_waits_without_duplicate_prompt_and_resumes_current_step() -> None:
+    repository = MemoryRepository()
+    arguments = {
+        "text": "选择环境",
+        "options": [{"value": "staging", "label": "预发布"}],
+        "allow_text": False,
+    }
     plan = Plan(language="en", steps=[Step(description="write report")])
     step = plan.steps[0]
 
-    pending_llm = QueueLlm([tool_call_response("dangerous_write", arguments)])
+    pending_llm = QueueLlm([tool_call_response("message_ask_user", arguments)])
     pending_events = await collect(
         build_agent(
             repository,
             pending_llm,
-            [risky],
+            [MessageTool()],
         ).execute_step(plan, step, Message(message="write it"))
     )
     pending = next(event for event in pending_events if isinstance(event, InteractionEvent))
@@ -337,10 +349,12 @@ async def test_react_step_waits_without_duplicate_prompt_and_resumes_current_ste
     resolution = InteractionResolution(
         action_id=pending.action_id,
         interaction_type=pending.interaction_type,
-        decision=InteractionDecision.APPROVE,
+        decision=InteractionDecision.ANSWER,
         tool_call_id=pending.tool_call_id,
         function_name=pending.function_name,
         function_args=pending.function_args,
+        answer="预发布",
+        selected_values=["staging"],
     )
     resumed_llm = QueueLlm(
         [{"role": "assistant", "content": json.dumps(completed_step)}]
@@ -349,13 +363,12 @@ async def test_react_step_waits_without_duplicate_prompt_and_resumes_current_ste
         build_agent(
             repository,
             resumed_llm,
-            [risky],
+            [MessageTool()],
         ).resume_step(plan, step, resolution)
     )
 
     assert step.status == ExecutionStatus.COMPLETED
     assert step.success is True
-    assert risky.calls == [arguments]
     assert "You are LingShu" in pending_llm.calls[0][0]["content"]
     assert "You are LingShu" in resumed_llm.calls[0][0]["content"]
     assert any(isinstance(event, MessageEvent) and event.message == "written" for event in resumed_events)
@@ -432,7 +445,7 @@ class LazyApprovalSandbox:
         return True
 
 
-async def test_shell_approval_starts_lazy_sandbox_once_and_restores_exact_legacy_call() -> None:
+async def test_shell_executes_without_approval_and_starts_lazy_sandbox_once() -> None:
     repository = MemoryRepository()
     LazyApprovalSandbox.reset()
 
@@ -468,29 +481,6 @@ async def test_shell_approval_starts_lazy_sandbox_once_and_restores_exact_legacy
         ],
     )
     step = plan.steps[0]
-    pending_llm = QueueLlm(
-        [tool_call_response("shell_execute", arguments)]
-    )
-    pending_events = await collect(
-        build_agent(
-            repository,
-            pending_llm,
-            tools,
-            tool_registry=factory.registry,
-            runtime_tool_scope=factory.runtime_scope,
-        ).execute_step(plan, step, Message(message="run it"))
-    )
-    pending = next(
-        event
-        for event in pending_events
-        if isinstance(event, InteractionEvent)
-    )
-
-    assert LazyApprovalSandbox.create_calls == 0
-    assert repository.sandbox_claims == []
-
-    # Simulate a historical waiting Step that predates persisted capabilities.
-    step.capabilities = []
     completed_step = {
         "id": step.id,
         "description": step.description,
@@ -499,26 +489,20 @@ async def test_shell_approval_starts_lazy_sandbox_once_and_restores_exact_legacy
         "result": "done",
         "attachments": [],
     }
-    resumed_llm = QueueLlm(
-        [{"role": "assistant", "content": json.dumps(completed_step)}]
+    run_llm = QueueLlm(
+        [
+            tool_call_response("shell_execute", arguments),
+            {"role": "assistant", "content": json.dumps(completed_step)},
+        ]
     )
-    resolution = InteractionResolution(
-        action_id=pending.action_id,
-        interaction_type=pending.interaction_type,
-        decision=InteractionDecision.APPROVE,
-        tool_call_id=pending.tool_call_id,
-        function_name=pending.function_name,
-        function_args=pending.function_args,
-    )
-
-    await collect(
+    events = await collect(
         build_agent(
             repository,
-            resumed_llm,
+            run_llm,
             tools,
             tool_registry=factory.registry,
             runtime_tool_scope=factory.runtime_scope,
-        ).resume_step(plan, step, resolution)
+        ).execute_step(plan, step, Message(message="run it"))
     )
 
     sandbox = LazyApprovalSandbox.instances["sandbox-1"]
@@ -529,12 +513,18 @@ async def test_shell_approval_starts_lazy_sandbox_once_and_restores_exact_legacy
     assert repository.sandbox_claims == [
         ("session-1", "sandbox-1", None),
     ]
-    resumed_tool_names = {
+    assert not any(isinstance(event, InteractionEvent) for event in events)
+    assert step.status == ExecutionStatus.COMPLETED
+    followup_tool_names = {
         schema["function"]["name"]
-        for schema in resumed_llm.call_kwargs[0]["tools"]
+        for schema in run_llm.call_kwargs[1]["tools"]
     }
-    assert resumed_tool_names == {
+    assert followup_tool_names == {
         "message_ask_user",
         "message_notify_user",
         "shell_execute",
+        "shell_kill_process",
+        "shell_read_output",
+        "shell_wait_process",
+        "shell_write_input",
     }
