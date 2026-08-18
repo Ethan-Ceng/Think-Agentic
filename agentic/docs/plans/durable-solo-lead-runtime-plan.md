@@ -4,6 +4,7 @@
 
 - 设计文档：`docs/autonomous-agent-upgrade-architecture.zh-CN.md`
 - 前置计划：`agentic/docs/plans/agent-runtime-lazy-sandbox-plan.md`
+- 前置计划：`agentic/docs/plans/lead-agent-runtime-unification-plan.md`（先稳定 Lead 顶层接口与 Direct/ReAct/Plan 行为，再接入 Durable Harness）
 - 开发分支：`feature/durable-solo-lead-runtime`（实施开始时从最新 `develop` 创建）
 - 实施基线：当前 `develop`；保留用户已有改动，不混入本批
 - 后续计划：本地 Child Execution 与有界并行、Project Memory 与 ContextCompiler
@@ -24,7 +25,7 @@
 本批包含：
 
 - 代码内置的四 Profile Registry，以及新 Run 的只读 Effective Snapshot；只允许 `lead` 创建 Execution。
-- 统一 `AgentHarness` 门面；第一阶段用适配器承载现有 `PlannerReActFlow`，保持用户行为稳定。
+- 统一 `AgentHarness` 门面；第一阶段用适配器承载已稳定的 `LeadAgent`，保持 Direct/ReAct/Plan 与 Legacy 回退行为稳定。
 - Durable Run、初始 Goal Revision、Root Lead Execution、规范 Event、Outbox、Lease、Interaction、Tool Side-effect Ledger 和 Verification Attempt。
 - RunCoordinator 唯一状态写入、数据库 Worker、Safe Point 恢复、可重放 SSE 和现有 Session/Trace 单向投影。
 - 现有 Tool、Skill、Lazy Sandbox、附件、HITL、MCP、外部 A2A、下一条消息、分支与文件行为的兼容验证。
@@ -37,7 +38,7 @@
 - Agent Definition CRUD、发布、版本运营、Root Agent 选择或多 Agent 管理页面。
 - Lead、Worker 或 Specialist 之间使用 A2A；A2A 仅继续作为外部 Tool Adapter。
 - Steering 的多 Revision 产品交互；本批只创建不可覆盖的初始 Goal Revision，并为后续追加 Revision 保留数据契约。
-- 基于评测的 Direct/ReAct 自动路由优化；本批先让 Harness 适配现有 Plan-ReAct 行为，避免把行为变化与耐久性切换混在一起。
+- 继续调整 Direct/ReAct/Plan 路由阈值或 Prompt；本批只让 Harness 适配前置计划已经稳定的 Lead 行为，避免把新的行为变化与耐久性切换混在一起。
 
 ## 全局约束
 
@@ -135,13 +136,13 @@
 待 Task 1 执行后填写实际命令、退出状态、关键结果和 Asia/Shanghai 时间。
 ```
 
-## Task 2：建立统一 AgentHarness 与现有 Planner-ReAct 适配器
+## Task 2：建立统一 AgentHarness 与 LeadAgent 适配器
 
 状态：pending
 
 ### 目标
 
-让 Lead 的模型决策和执行策略统一经过 `AgentHarness`，同时用纯适配器承载现有 `PlannerReActFlow`，不在本任务改变现有用户行为。
+让 Lead 的模型决策和执行策略统一经过 `AgentHarness`，同时用纯适配器承载前置计划交付的 `LeadAgent`，不在本任务继续改变路由或用户行为。
 
 ### 涉及文件
 
@@ -149,11 +150,11 @@
 - `agentic/api/app/core/agent/runtime/observations.py`（新建）
 - `agentic/api/app/core/agent/runtime/ports.py`（新建）
 - `agentic/api/app/core/agent/runtime/harness.py`（新建）
-- `agentic/api/app/core/agent/runtime/planner_react_adapter.py`（新建）
+- `agentic/api/app/core/agent/runtime/lead_agent_adapter.py`（新建）
 - `agentic/api/app/core/agent/agent_task_runner.py`
 - `agentic/api/app/core/flows/planner_react.py`
 - `agentic/api/tests/app/core/agent/test_agent_harness.py`（新建）
-- `agentic/api/tests/app/core/agent/test_planner_react_harness_adapter.py`（新建）
+- `agentic/api/tests/app/core/agent/test_lead_agent_harness_adapter.py`（新建）
 - `agentic/api/tests/app/core/agent/test_agent_task_runner_completion.py`
 - `agentic/api/tests/app/core/agent/test_skill_runtime_context.py`
 
@@ -161,28 +162,28 @@
 
 - 前置任务：Task 1。
 - 输入：Lead Snapshot、Goal、公开 Plan/Step、Tool/Skill/Interaction Observation、预算与取消状态。
-- 输出：`AgentHarness.observe_decide()`、结构化 Decision/Command、`PlanReActStrategyAdapter` 和不依赖 ORM/Provider SDK 的 Harness Port。
+- 输出：`AgentHarness.observe_decide()`、结构化 Decision/Command、`LeadAgentStrategyAdapter` 和不依赖 ORM/Provider SDK 的 Harness Port。
 
 ### 实施步骤
 
 1. 定义可持久化的 Observation、Decision Summary 和 Command 类型；类型中不得出现隐藏推理字段或 Provider SDK 对象。
-2. 定义 Direct、ReAct、Plan-ReAct、Verify 和 Repair 模式接口；本批兼容策略固定选择 Plan-ReAct，非兼容模式在未实现时必须明确拒绝而不是静默降级。
-3. 用 `PlanReActStrategyAdapter` 包装现有 Flow；只有该适配器可直接构造 `PlannerAgent/ReActAgent`，Lead/Profile 不形成新的运行类层次。
+2. 定义 Direct、ReAct、Plan、Verify 和 Repair 模式接口；本批保留前置 Lead 的既有策略选择，不调整 Decide Prompt、路由阈值或回退条件。
+3. 用 `LeadAgentStrategyAdapter` 包装现有 Lead 顶层接口；Durable Runtime 不直接构造 `PlannerAgent/ReActAgent/PlannerReActFlow`，也不复制 Lead 状态机。
 4. 将 `AgentTaskRunner` 的 Flow 调用改为依赖 Harness Port；保留 Skill Runtime、Tool Scope、Lazy Sandbox、附件与事件形状。
 5. 禁止 Harness 导入 ORM、Session Repository、FastAPI、Redis Client 或具体 LLM Provider；所有外部动作只返回 Command。
-6. 增加架构测试，限制 Planner/ReAct 的直接构造位置，并证明 `lead` Snapshot 驱动同一 Harness。
+6. 增加架构测试，限制 Lead 顶层入口的构造位置，并证明 `lead` Snapshot 驱动同一 Harness。
 7. 运行现有 Planner、ReAct、Skill、分支上下文和完成路径回归，确认适配器没有改变 Plan/Step/Message/Tool 事件顺序。
 
 ### 验证方式
 
-- 运行：`uv run pytest tests/app/core/agent/test_agent_harness.py tests/app/core/agent/test_planner_react_harness_adapter.py tests/app/core/agent/test_agent_task_runner_completion.py tests/app/core/agent/test_skill_runtime_context.py tests/app/core/agent/test_branch_context_seed.py -q`
-- 运行：`uv run ruff check app/core/agent/runtime app/core/agent/agent_task_runner.py app/core/flows/planner_react.py tests/app/core/agent/test_agent_harness.py tests/app/core/agent/test_planner_react_harness_adapter.py`
-- 运行：`uv run python -m py_compile app/core/agent/runtime/commands.py app/core/agent/runtime/observations.py app/core/agent/runtime/ports.py app/core/agent/runtime/harness.py app/core/agent/runtime/planner_react_adapter.py`
-- 预期：退出 0；现有 Flow 行为不回归，Harness 无基础设施依赖，Planner/ReAct 只作为内部策略适配器存在。
+- 运行：`uv run pytest tests/app/core/agent/test_agent_harness.py tests/app/core/agent/test_lead_agent_harness_adapter.py tests/app/core/agent/test_agent_task_runner_completion.py tests/app/core/agent/test_skill_runtime_context.py tests/app/core/agent/test_branch_context_seed.py -q`
+- 运行：`uv run ruff check app/core/agent/runtime app/core/agent/agent_task_runner.py app/core/agent/lead.py tests/app/core/agent/test_agent_harness.py tests/app/core/agent/test_lead_agent_harness_adapter.py`
+- 运行：`uv run python -m py_compile app/core/agent/runtime/commands.py app/core/agent/runtime/observations.py app/core/agent/runtime/ports.py app/core/agent/runtime/harness.py app/core/agent/runtime/lead_agent_adapter.py`
+- 预期：退出 0；Lead 三策略与 Legacy 回退行为不回归，Harness 无基础设施依赖，Planner/ReAct 继续只作为 Lead 内部策略存在。
 
 ### 完成条件
 
-- Lead 的所有后续耐久执行都可以通过同一个 Harness Port 驱动，而不要求重写现有 Planner/ReAct 行为。
+- Lead 的所有后续耐久执行都可以通过同一个 Harness Port 驱动，而不要求复制或重写现有 Direct/ReAct/Plan 行为。
 
 ### 执行结果
 
@@ -388,7 +389,7 @@
 - `agentic/api/app/core/agent/runtime/execution_adapter.py`（新建）
 - `agentic/api/app/core/agent/runtime/checkpoint.py`（新建）
 - `agentic/api/app/core/agent/runtime/harness.py`
-- `agentic/api/app/core/agent/runtime/planner_react_adapter.py`
+- `agentic/api/app/core/agent/runtime/lead_agent_adapter.py`
 - `agentic/api/app/core/agent/agent_task_runner.py`
 - `agentic/api/app/core/agent/base.py`
 - `agentic/api/app/core/flows/planner_react.py`
@@ -417,7 +418,7 @@
 ### 验证方式
 
 - 运行：`uv run pytest tests/app/core/agent/test_durable_lead_execution.py tests/app/core/agent/test_durable_checkpoint_recovery.py tests/app/core/agent/test_hidden_reasoning_redaction.py tests/app/core/agent/test_agent_task_runner_completion.py tests/app/core/agent/test_skill_runtime_context.py -q`
-- 运行：`uv run ruff check app/core/agent/runtime/execution_adapter.py app/core/agent/runtime/checkpoint.py app/core/agent/runtime/harness.py app/core/agent/runtime/planner_react_adapter.py app/core/agent/agent_task_runner.py app/core/agent/base.py app/core/flows/planner_react.py tests/app/core/agent/test_durable_lead_execution.py tests/app/core/agent/test_durable_checkpoint_recovery.py tests/app/core/agent/test_hidden_reasoning_redaction.py`
+- 运行：`uv run ruff check app/core/agent/runtime/execution_adapter.py app/core/agent/runtime/checkpoint.py app/core/agent/runtime/harness.py app/core/agent/runtime/lead_agent_adapter.py app/core/agent/agent_task_runner.py app/core/agent/lead.py app/core/agent/base.py tests/app/core/agent/test_durable_lead_execution.py tests/app/core/agent/test_durable_checkpoint_recovery.py tests/app/core/agent/test_hidden_reasoning_redaction.py`
 - 预期：退出 0；在每个声明的 Safe Point 杀死并重建 Worker 后，Lead 从数据库继续，且持久化内容不含隐藏推理。
 
 ### 完成条件
@@ -689,7 +690,7 @@
 | 日期 | 变更内容 | 原因 | 影响任务 | 是否影响设计 |
 | --- | --- | --- | --- | --- |
 | 2026-08-17 | 从总体自主 Agent 架构中拆出 Durable Solo Lead 首批计划 | 先建立唯一 Lead、状态权威与恢复基础，再引入 Child 并行和 Project Memory | Task 1–10 | 否 |
-| 2026-08-17 | Harness 首批固定适配现有 Plan-ReAct，不同时启用自动 Direct/ReAct 路由 | 隔离行为优化与耐久性迁移风险，确保可比较和可回滚 | Task 2、6、10 | 否 |
+| 2026-08-18 | Harness 首批固定适配前置计划交付的 LeadAgent，不在 Durable 批次继续调整路由 | 隔离已经验证的行为优化与耐久性迁移风险，确保可比较和可回滚 | Task 2、6、10 | 否 |
 | 2026-08-17 | Registry 包含四个固定 Profile，但本批只允许 Root Lead Execution | 提前固定产品拓扑，同时避免在状态权威建立前引入并行 Child | Task 1、3–5、10 | 否 |
 
 ## 最终验证

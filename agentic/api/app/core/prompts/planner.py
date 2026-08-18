@@ -17,8 +17,7 @@ PLANNER_SYSTEM_PROMPT = """
 
 # 创建Plan规划提示词模板，内部有message+attachments占位符
 CREATE_PLAN_PROMPT = """
-你现在正在根据用户的消息创建一个计划:
-{message}
+你现在正在根据用户的消息创建一个计划。
 
 注意：
 - **你必须使用用户消息中使用的语言来执行任务**
@@ -90,8 +89,7 @@ Capability Catalog（仅包含能力摘要，不包含 Tool 参数 Schema）:
 
 # 更新Plan规划提示词模板，内部有plan和step占位符
 UPDATE_PLAN_PROMPT = """
-你正在更新计划，你需要根据步骤的执行结果来更新计划：
-{step}
+你正在更新计划，需要根据步骤的执行结果调整后续步骤。
 
 注意：
 - 你可以删除、添加或者修改计划步骤，但不要改变计划目标 (goal)

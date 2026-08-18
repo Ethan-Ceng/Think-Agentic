@@ -294,6 +294,14 @@ class AgentService:
             risk_level=resolved.risk_level,
             answer=resolved.answer,
             selected_values=resolved.selected_values,
+            lead_mode=resolved.lead_mode,
+            lead_goal=resolved.lead_goal,
+            lead_language=resolved.lead_language,
+            lead_capabilities=resolved.lead_capabilities,
+            plan_id=resolved.plan_id,
+            step_id=resolved.step_id,
+            lead_replan_count=resolved.lead_replan_count,
+            skills=resolved.skills,
         )
         return resolved, resolution
 
@@ -310,6 +318,7 @@ class AgentService:
             message=f"Resolve interaction {resolution.action_id}",
             visible=False,
             interaction_response=resolution,
+            skills=resolution.skills,
         ):
             yield event
 

@@ -7,12 +7,12 @@
 """
 # ReActAgent系统提示词模板
 REACT_SYSTEM_PROMPT = """
-You are a task execution agent, and you need to complete the following steps:
-1. Analyze Events: Understand user needs and current state, focusing on latest user messages and execution results
-2. Select Tools: Choose next tool call based on current state, task planning, at least one tool call per iteration
-3. Wait for Execution: Selected tool action will be executed by sandbox environment
-4. Iterate: Choose only one tool call per iteration, patiently repeat above steps until task completion
-5. Submit Results: Send the result to user, result must be detailed and specific
+You are a task execution agent. Complete the task as follows:
+1. Analyze events: Understand the user's need and current state, focusing on the latest message and execution results.
+2. Select tools: Choose the next required tool based on the current state and task goal.
+3. Wait for execution: The runtime executes the selected tool action.
+4. Iterate: Prefer one tool call per iteration and repeat patiently until the task is complete.
+5. Submit results: Deliver a detailed, concrete result to the user.
 """
 
 # 执行子步骤提示词模板，包含message、attachments、language、step
@@ -21,15 +21,15 @@ You are executing the task:
 {step}
 
 Note:
-- **It you that to do the task, not the user**
-- **You must use the language provided by user's message to execute the task**
-- You must use message_notify_user tool to notify users within one sentence:
+- **You must execute the task, not instruct the user to do it.** Call the required tools directly.
+- **Execute and respond in the supplied Working Language.**
+- Use `message_notify_user` to notify the user within one sentence:
     - What tools you are going to use and what you are going to do with them
     - What you have done by tools
     - What you are going to do or have done within one sentence
-- If you need to ask user for input or take control of the browser, you must use message_ask_user tool to ask user for input
-- Don't tell how to do the task, determine by yourself.
-- Deliver the final result to user not the todo list, advice or plan
+- If you need user input or browser control, use `message_ask_user`.
+- Determine how to complete the task yourself.
+- Deliver the final result, not a todo list, advice, or a plan.
 
 Return format requirements:
 - Must return JSON format that complies with the following TypeScript interface
@@ -46,6 +46,10 @@ interface Response {{
 
   /** Task result, empty if no result to deliver **/
   result: string;
+  /** Whether new facts or blockers require Lead to revise the remaining plan **/
+  needs_replan: boolean;
+  /** A short reason when replanning is required, otherwise null **/
+  replan_reason: string | null;
 }}
 ```
 
@@ -53,15 +57,18 @@ EXAMPLE JSON OUTPUT:
 {{
     "success": true,
     "result": "We have finished the task",
+    "needs_replan": false,
+    "replan_reason": null,
     "attachments": [
         "/home/ubuntu/file1.md",
         "/home/ubuntu/file2.md"
-    ],
+    ]
 }}
 
 Input:
 - message: the user's message, use this language for all text output
 - attachments: the user's attachments
+- language: the current working language
 - task: the task to execute
 
 Output:
@@ -78,6 +85,34 @@ Working Language:
 
 Task:
 {step}
+"""
+
+
+GOAL_EXECUTION_PROMPT = """
+You are directly completing one goal; do not create or display a task plan:
+{goal}
+
+Instructions:
+- **You must execute the goal, not instruct the user to do it.** Call the required tools directly.
+- Execute and respond in the supplied Working Language. If it is ambiguous, honor an explicitly requested output language, otherwise use the dominant language of the user's message.
+- Use `message_notify_user` for necessary progress updates, limited to one sentence.
+- Use `message_ask_user` when user input is required; the runtime pauses tools that require approval.
+- Deliver the final result directly. Do not output a todo list, step list, or hidden reasoning.
+
+Return JSON with exactly this structure:
+{{
+  "message": "final result for the user",
+  "attachments": ["/path/to/generated-file"]
+}}
+
+User message:
+{message}
+
+Attachments:
+{attachments}
+
+Working language:
+{language}
 """
 
 # 汇总总结提示词模板，将历史信息进行相应的总结

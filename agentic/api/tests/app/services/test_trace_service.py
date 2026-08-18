@@ -224,6 +224,50 @@ def test_trace_service_projects_run_step_tool_and_model_call() -> None:
     asyncio.run(run())
 
 
+def test_trace_service_records_lead_strategy_lifecycle() -> None:
+    repo = FakeTraceRepository()
+    service = TraceService(uow_factory=lambda: FakeUow(repo))
+
+    async def run() -> None:
+        input_event = MessageEvent(role="user", message="research")
+        await service.start_run(
+            user_id="user-1",
+            session_id="session-1",
+            task_id="task-1",
+            input_event=input_event,
+        )
+        await service.record_lead_decision(
+            mode="plan",
+            reason_code="plan_selected",
+            latency_ms=17,
+        )
+        await service.record_lead_replan(
+            count=1,
+            step_id="step-1",
+            reason_code="step_failed",
+        )
+        await service.record_lead_completion(
+            mode="plan",
+            status="completed",
+            replan_count=1,
+        )
+
+    asyncio.run(run())
+
+    events = {event["event_type"]: event["payload"] for event in repo.events}
+    assert events["lead.strategy_selected"] == {
+        "mode": "plan",
+        "reason_code": "plan_selected",
+        "decision_latency_ms": 17,
+    }
+    assert events["lead.replanned"]["count"] == 1
+    assert events["lead.completed"] == {
+        "mode": "plan",
+        "status": "completed",
+        "replan_count": 1,
+    }
+
+
 def test_trace_service_projects_interaction_without_sensitive_arguments() -> None:
     repo = FakeTraceRepository()
     service = TraceService(uow_factory=lambda: FakeUow(repo))

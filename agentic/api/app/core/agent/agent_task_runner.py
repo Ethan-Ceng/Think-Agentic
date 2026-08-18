@@ -33,7 +33,8 @@ from app.core.entities.search import SearchResults
 from app.core.entities.session import NextMessage, SessionStatus
 from app.core.entities.tool_result import ToolResult
 from app.repositories.uow import IUnitOfWork
-from app.core.flows.planner_react import PlannerReActFlow
+from app.core.agent.lead import LeadAgent
+from app.core.config import get_settings
 from app.core.tools.a2a import A2ATool
 from app.core.tools.mcp import MCPTool
 from app.services.trace_service import TraceService
@@ -99,12 +100,13 @@ class AgentTaskRunner(TaskRunner):
         self._sandbox_runtime.set_activation_observer(
             self._on_sandbox_activation
         )
-        self._flow = PlannerReActFlow(
+        self._flow = LeadAgent(
             uow_factory=uow_factory,
             llm=llm,
             agent_config=agent_config,
             tool_config=tool_config,
             session_id=session_id,
+            enabled=get_settings().lead_agent_enabled,
             json_parser=json_parser,
             browser=browser,
             sandbox=sandbox,

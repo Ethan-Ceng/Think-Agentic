@@ -5,7 +5,16 @@
 - 状态：`DESIGN_READY`
 - 负责人：Agentic Runtime
 - 创建日期：2026-08-17
-- 最近更新：2026-08-17
+- 最近更新：2026-08-18
+
+## 当前实现状态
+
+- 已在 `feature/lead-agent-runtime-unification` 分支完成 Lead 顶层门面、严格决策契约以及 Direct、React、Plan 三策略实现。
+- `AgentTaskRunner` 只构造 `LeadAgent`；Legacy `PlannerReActFlow` 仅作为 Feature Flag 关闭或决策异常时的内部回退策略保留。
+- Direct 复用首轮决策答案；React 无 Plan/Step；Plan 成功步骤只做确定性状态投影，失败或 `needs_replan` 才调用 Planner，且只在 Plan 终止时 Finalize。
+- React 与 Plan 的 Interaction 均持久化最小恢复上下文，恢复时跳过 Decide 并校验原 Tool Call。
+- 当前 `lead_agent_enabled` 默认关闭。离线契约任务集与自动化回归已通过，但尚未使用目标生产模型执行线上/预发布路由准确率与延迟评测；在该证据完成前不默认切流。
+- 本文的 Token Delta Streaming、Durable Runtime 与 Child Agent/A2A 内部委派仍为独立后续工作。
 
 ## 一句话结论
 
@@ -530,10 +539,30 @@ lead_base
 规则：
 
 - 不创建一个同时包含所有路由、计划、工具、总结细则的超级 Prompt。
+- Decide 发生在可靠工作语言产生之前，因此使用精简的中英双语规则，不通过字符启发式在 `prompts/` 与 `prompts/en/` 之间切换；用户消息、附件和 Capability Catalog 仍只注入一次，控制首轮 Token。
+- 所有用户可见字段优先遵循用户明确指定的输出语言；未明确指定时使用最新用户消息的主要语言。React Goal 同样接收已决策的 `language` 并保留双语兜底说明。
 - Decide Prompt 只负责选择最小充分策略并生成对应判别结构。
 - Direct 的 `answer` 是最终答案；Plan 的 `message` 只是复杂任务启动说明，两者不得复用同一字段语义。
 - Prompt 不再规定“不可拆分必须返回一个 Step”；不可拆分但需要工具应返回 React。
 - Prompt 不再使用空 Steps 表示不可行。不可行请求应返回 Direct 解释、可行动错误，或在需要更多信息时进入明确询问路径。
+
+### Prompt Locale 路由补充设计
+
+对照 `mooc-manus/api` 后确认，其 `prompts/en` 只是平行英文资产；Planner/ReAct 仍固定导入主目录中文 Prompt，配置、UI 和启动脚本不存在运行时 locale 选择。Agentic 不照搬这一未接线状态，而是把 Prompt Locale 纳入 Lead Runtime。
+
+可选方案：
+
+| 方案 | 实现 | 优点 | 缺点 |
+| --- | --- | --- | --- |
+| A. 所有活跃 Prompt 中英并列 | 每次调用都发送双语规则 | 无选择状态，改动小 | 执行阶段 Token 稳定增加；两套目录仍无职责 |
+| B. Runtime Prompt Catalog | Decide 双语；得到 language 后选择 `zh/en` Prompt Pack | 真正使用英文资产；执行 Prompt 更短；同实例支持中英会话 | 需要处理持久化 Memory 中的 System Prompt |
+| C. 部署期全局 Locale | 环境变量决定整套 imports | 最简单、Token 最小 | 一个实例不能同时服务中英文用户；切换需重启 |
+
+推荐方案 B。Lead Decide 发生在可靠语言产生前，继续使用精简双语规则；`DirectDecision/ReactDecision/PlanDecision.language` 产生后，Planner、React Goal、Step 和 Finalizer 通过 Prompt Catalog 选择模板。Legacy Planner 首轮只在尚无 Plan language 时根据用户消息选择 Prompt，随后也使用 Plan language。
+
+BaseAgent 不重写持久化 Memory，而是在每次构造 LLM messages 时，用当前 Runtime System Prompt 替换消息视图中的第一个 system content。这样不会迁移历史 Memory，也不会因同一 Session 前一轮使用另一种语言而拿到错误 System Prompt。HITL Resume 不做新语言检测，直接使用 Interaction 中持久化的 `lead_language` 或 Plan `language`。
+
+首期只支持两个 Prompt Locale：中文标签（`zh`、`zh-CN`、`Chinese`、中文/汉语）映射 `zh`；英文标签（`en`、`en-US`、`English`、英文/英语）映射 `en`。其他语言使用英文指令模板，但用户可见输出仍遵循原始 `language` 字段，不把 Prompt Locale 当作输出语言。
 
 ## 事件与前端兼容
 
@@ -732,6 +761,9 @@ lead.strategy_selected
 - [ ] `success=false` 的 Step 不会被标记为 `completed`。
 - [ ] Plan 策略最多调用一次 Finalize；Direct/React 零 Finalize。
 - [ ] Decide/Plan 阶段不接收完整 Tool Schema，React/Step 只看到 Scope 内工具。
+- [ ] Lead Decide 与 React Goal 的关键模式、语言和输出约束中英对齐；英文输入不会因只有中文新增规则而丢失路由或回复语言约束。
+- [ ] `prompts/en` 被生产代码通过 Prompt Catalog 使用；英文 Plan/React 的 LLM messages 不包含整套中文执行 Prompt。
+- [ ] 同一 Agent Memory 先后执行中英文 Run 时，每次 LLM 调用看到与当前 Run 匹配的 System Prompt；HITL Resume 保持暂停前语言。
 - [ ] 高风险审批、Ask User、拒绝、刷新和 Interaction Resume 回归通过。
 - [ ] Skill 自动/手动选择、Capability 过滤、附件、Branch Context Seed 和 Trace 回归通过。
 - [ ] Direct 事件流只包含必要的 Title、Message、Done，前端不依赖空 Plan。

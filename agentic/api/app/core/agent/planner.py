@@ -12,12 +12,11 @@ from typing import Optional, AsyncGenerator
 from app.core.entities.event import BaseEvent, MessageEvent, PlanEvent, PlanEventStatus
 from app.core.entities.message import Message
 from app.core.entities.plan import Plan, Step
-from app.core.prompts.planner import (
-    PLANNER_SYSTEM_PROMPT,
-    CREATE_PLAN_PROMPT,
-    UPDATE_PLAN_PROMPT,
+from app.core.prompts.catalog import (
+    PromptLocale,
+    get_planner_prompts,
+    infer_prompt_locale,
 )
-from app.core.prompts.system import SYSTEM_PROMPT
 from .base import BaseAgent
 
 """
@@ -41,12 +40,13 @@ ReActAgent:
 """
 
 logger = logging.getLogger(__name__)
+_DEFAULT_PROMPTS = get_planner_prompts(PromptLocale.ZH)
 
 
 class PlannerAgent(BaseAgent):
     """规划Agent，用于将用户的任务/需求拆解成多个子步骤"""
     name: str = "planner"
-    _system_prompt: str = SYSTEM_PROMPT + PLANNER_SYSTEM_PROMPT
+    _system_prompt: str = _DEFAULT_PROMPTS.system
     _format: Optional[str] = "json_object"
     _tool_choice: Optional[str] = "none"
 
@@ -76,8 +76,10 @@ class PlannerAgent(BaseAgent):
     async def create_plan(self, message: Message) -> AsyncGenerator[BaseEvent, None]:
         """根据用户传递的消息创建计划/规划，迭代返回对应的事件"""
         self.set_runtime_tool_scope([])
+        prompts = get_planner_prompts(infer_prompt_locale(message.message))
+        self.set_runtime_system_prompt(prompts.system)
         # 1.根据用户传递的消息生成创建plan的提示词
-        query = CREATE_PLAN_PROMPT.format(
+        query = prompts.create.format(
             message=message.message,
             attachments="\n".join(message.attachments),
             capability_catalog=self._capability_catalog(),
@@ -104,8 +106,10 @@ class PlannerAgent(BaseAgent):
     async def update_plan(self, plan: Plan, step: Step) -> AsyncGenerator[BaseEvent, None]:
         """根据传递的原始规划+子步骤更新事件"""
         self.set_runtime_tool_scope([])
+        prompts = get_planner_prompts(plan.language)
+        self.set_runtime_system_prompt(prompts.system)
         # 1.使用plan+step创建更新Plan提示词
-        query = UPDATE_PLAN_PROMPT.format(
+        query = prompts.update.format(
             plan=plan.model_dump_json(),
             step=step.model_dump_json(),
             capability_catalog=self._capability_catalog(),
@@ -128,10 +132,24 @@ class PlannerAgent(BaseAgent):
 
                 # 7.查询旧计划中第一个未完成的计划
                 first_pending_index = None
-                for idx, step in enumerate(plan.steps):
-                    if not step.done:
+                for idx, candidate in enumerate(plan.steps):
+                    if not candidate.done:
                         first_pending_index = idx
                         break
+
+                # 失败发生在最后一步时，仍允许把修复步骤追加到失败历史之后。
+                if first_pending_index is None and (
+                    not step.success or step.needs_replan
+                ):
+                    current_index = next(
+                        (
+                            idx
+                            for idx, current in enumerate(plan.steps)
+                            if current.id == step.id
+                        ),
+                        len(plan.steps) - 1,
+                    )
+                    first_pending_index = current_index + 1
 
                 # 8.判断是否有未完成的步骤，如果有则执行更新
                 if first_pending_index is not None:

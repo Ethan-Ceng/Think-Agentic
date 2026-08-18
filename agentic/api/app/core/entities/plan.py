@@ -30,6 +30,8 @@ class Step(BaseModel):
     success: bool = False  # 是否执行成功
     attachments: List[str] = Field(default_factory=list)  # 附件列表信息
     capabilities: List[str] = Field(default_factory=list)  # 当前步骤所需能力组
+    needs_replan: bool = False  # 新事实或阻塞是否要求调整后续计划
+    replan_reason: Optional[str] = None  # 可观测的重规划原因摘要
 
     @field_validator("capabilities")
     @classmethod

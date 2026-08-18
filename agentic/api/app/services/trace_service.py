@@ -182,6 +182,86 @@ class TraceService:
 
         await self._write(write)
 
+    async def _record_lead_event(
+        self,
+        event_type: str,
+        payload: Dict[str, Any],
+    ) -> None:
+        if not self.run_id:
+            return
+
+        async def write(uow: IUnitOfWork) -> None:
+            await uow.trace.append_event(
+                self._trace_event_data(
+                    event_type=event_type,
+                    payload=payload,
+                )
+            )
+
+        await self._write(write)
+
+    async def record_lead_decision(
+        self,
+        *,
+        mode: str,
+        reason_code: str,
+        latency_ms: int,
+    ) -> None:
+        await self._record_lead_event(
+            "lead.strategy_selected",
+            {
+                "mode": mode,
+                "reason_code": reason_code,
+                "decision_latency_ms": max(0, int(latency_ms)),
+            },
+        )
+
+    async def record_lead_fallback(
+        self,
+        *,
+        reason_code: str,
+        error_type: str = "",
+    ) -> None:
+        await self._record_lead_event(
+            "lead.fallback",
+            {
+                "reason_code": reason_code,
+                "error_type": error_type,
+            },
+        )
+
+    async def record_lead_replan(
+        self,
+        *,
+        count: int,
+        step_id: str,
+        reason_code: str,
+    ) -> None:
+        await self._record_lead_event(
+            "lead.replanned",
+            {
+                "count": max(0, int(count)),
+                "step_id": step_id,
+                "reason_code": reason_code,
+            },
+        )
+
+    async def record_lead_completion(
+        self,
+        *,
+        mode: str,
+        status: str,
+        replan_count: int = 0,
+    ) -> None:
+        await self._record_lead_event(
+            "lead.completed",
+            {
+                "mode": mode,
+                "status": status,
+                "replan_count": max(0, int(replan_count)),
+            },
+        )
+
     async def project_event(self, event: BaseEvent) -> None:
         """Project one runtime event into trace tables."""
         if not self.run_id or not self.trace_id or not self.session_id:

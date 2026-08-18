@@ -12,18 +12,20 @@ You are a task planner agent, and you need to create or update a plan for the ta
 2. Determine what tools you need to use to complete the task
 3. Determine the working language based on the user's message
 4. Generate the plan's goal and steps
+5. Select only the capability groups each step actually needs from the Capability Catalog
 """
 
 # 创建Plan规划提示词模板，内部有message+attachments占位符
 CREATE_PLAN_PROMPT = """
-You are now creating a plan based on the user's message:
-{message}
+You are now creating a plan based on the user's message.
 
 Note:
 - **You must use the language provided by user's message to execute the task**
 - Your plan must be simple and concise, don't add any unnecessary details.
-- Your steps must be atomic and independent, and the next executor can execute them one by one use the tools.
+- Your steps must be atomic and independent so the executor can complete them one by one with tools.
 - You need to determine whether a task can be broken down into multiple steps. If it can, return multiple steps; otherwise, return a single step.
+- Each step's `capabilities` must use groups from the Capability Catalog below; return an empty array when no tool is needed.
+- Do not include a capability merely because it might be useful; declare only what that step actually needs.
 
 Return format requirements:
 - Must return JSON format that complies with the following TypeScript interface
@@ -43,6 +45,8 @@ interface CreatePlanResponse {{
     id: string;
     /** Step description */
     description: string;
+    /** Capability groups required by this step; empty when no tool is needed */
+    capabilities: string[];
   }}>;
   /** Plan goal generated based on the context */
   goal: string;
@@ -60,7 +64,8 @@ EXAMPLE JSON OUTPUT:
     "steps": [
         {{
             "id": "1",
-            "description": "Step 1 description"
+            "description": "Step 1 description",
+            "capabilities": []
         }}
     ]
 }}
@@ -78,21 +83,24 @@ User message:
 
 Attachments:
 {attachments}
+
+Capability Catalog (capability summaries only, without Tool parameter schemas):
+{capability_catalog}
 """
 
 # 更新Plan规划提示词模板，内部有plan和step占位符
 UPDATE_PLAN_PROMPT = """
-You are updating the plan, you need to update the plan based on the step execution result:
-{step}
+You are updating the plan based on the step execution result.
 
 Note:
 - You can delete, add or modify the plan steps, but don't change the plan goal
 - Don't change the description if the change is small
 - Only re-plan the following uncompleted steps, don't change the completed steps
-- Output the step id start with the id of first uncompleted step, re-plan the following steps
+- Start output step IDs from the first incomplete step and re-plan only the following steps
 - Delete the step if it is completed or not necessary
 - Carefully read the step result to determine if it is successful, if not, change the following steps
 - According to the step result, you need to update the plan steps accordingly
+- Each new step's `capabilities` must use groups from the Capability Catalog below; return an empty array when no tool is needed.
 
 Return format requirements:
 - Must return JSON format that complies with the following TypeScript interface
@@ -107,6 +115,8 @@ interface UpdatePlanResponse {{
     id: string;
     /** Step description */
     description: string;
+    /** Capability groups required by this step; empty when no tool is needed */
+    capabilities: string[];
   }}>;
 }}
 ```
@@ -116,7 +126,8 @@ EXAMPLE JSON OUTPUT:
     "steps": [
         {{
             "id": "1",
-            "description": "Step 1 description"
+            "description": "Step 1 description",
+            "capabilities": []
         }}
     ]
 }}
@@ -134,4 +145,7 @@ Step:
 
 Plan:
 {plan}
+
+Capability Catalog (capability summaries only, without Tool parameter schemas):
+{capability_catalog}
 """

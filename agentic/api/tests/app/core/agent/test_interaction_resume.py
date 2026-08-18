@@ -12,6 +12,8 @@ from app.core.entities.event import (
     InteractionResolution,
     InteractionType,
     MessageEvent,
+    StepEvent,
+    StepEventStatus,
     ToolEvent,
     ToolEventStatus,
     WaitEvent,
@@ -307,13 +309,14 @@ async def test_react_step_waits_without_duplicate_prompt_and_resumes_current_ste
     repository = MemoryRepository()
     risky = RiskyTool()
     arguments = {"path": "/tmp/report.md", "content": "safe"}
-    plan = Plan(language="zh-CN", steps=[Step(description="write report")])
+    plan = Plan(language="en", steps=[Step(description="write report")])
     step = plan.steps[0]
 
+    pending_llm = QueueLlm([tool_call_response("dangerous_write", arguments)])
     pending_events = await collect(
         build_agent(
             repository,
-            QueueLlm([tool_call_response("dangerous_write", arguments)]),
+            pending_llm,
             [risky],
         ).execute_step(plan, step, Message(message="write it"))
     )
@@ -339,10 +342,13 @@ async def test_react_step_waits_without_duplicate_prompt_and_resumes_current_ste
         function_name=pending.function_name,
         function_args=pending.function_args,
     )
+    resumed_llm = QueueLlm(
+        [{"role": "assistant", "content": json.dumps(completed_step)}]
+    )
     resumed_events = await collect(
         build_agent(
             repository,
-            QueueLlm([{"role": "assistant", "content": json.dumps(completed_step)}]),
+            resumed_llm,
             [risky],
         ).resume_step(plan, step, resolution)
     )
@@ -350,7 +356,38 @@ async def test_react_step_waits_without_duplicate_prompt_and_resumes_current_ste
     assert step.status == ExecutionStatus.COMPLETED
     assert step.success is True
     assert risky.calls == [arguments]
+    assert "You are LingShu" in pending_llm.calls[0][0]["content"]
+    assert "You are LingShu" in resumed_llm.calls[0][0]["content"]
     assert any(isinstance(event, MessageEvent) and event.message == "written" for event in resumed_events)
+
+
+async def test_react_step_marks_structured_failure_as_failed() -> None:
+    repository = MemoryRepository()
+    plan = Plan(language="en", steps=[Step(description="attempt task")])
+    step = plan.steps[0]
+    failed_step = {
+        "id": step.id,
+        "description": step.description,
+        "status": "failed",
+        "success": False,
+        "result": "could not complete",
+        "attachments": [],
+    }
+
+    events = await collect(
+        build_agent(
+            repository,
+            QueueLlm([{"role": "assistant", "content": json.dumps(failed_step)}]),
+            [],
+        ).execute_step(plan, step, Message(message="try it"))
+    )
+
+    assert step.status == ExecutionStatus.FAILED
+    assert any(
+        isinstance(event, StepEvent)
+        and event.status == StepEventStatus.FAILED
+        for event in events
+    )
 
 
 class LazyApprovalSandbox:

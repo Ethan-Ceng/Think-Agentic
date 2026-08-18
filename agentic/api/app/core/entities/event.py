@@ -82,6 +82,14 @@ class InteractionResolution(BaseModel):
     risk_level: Optional[Literal["low", "medium", "high"]] = None
     answer: Optional[str] = None
     selected_values: List[str] = Field(default_factory=list)
+    lead_mode: Optional[Literal["react", "plan"]] = None
+    lead_goal: Optional[str] = None
+    lead_language: Optional[str] = None
+    lead_capabilities: List[str] = Field(default_factory=list)
+    plan_id: Optional[str] = None
+    step_id: Optional[str] = None
+    lead_replan_count: int = Field(default=0, ge=0)
+    skills: List[SkillRef] = Field(default_factory=list)
 
 
 class BaseEvent(BaseModel):
@@ -195,6 +203,14 @@ class InteractionEvent(BaseEvent):
     decision: Optional[InteractionDecision] = None
     answer: Optional[str] = None
     selected_values: List[str] = Field(default_factory=list)
+    lead_mode: Optional[Literal["react", "plan"]] = None
+    lead_goal: Optional[str] = None
+    lead_language: Optional[str] = None
+    lead_capabilities: List[str] = Field(default_factory=list)
+    plan_id: Optional[str] = None
+    step_id: Optional[str] = None
+    lead_replan_count: int = Field(default=0, ge=0)
+    skills: List[SkillRef] = Field(default_factory=list)
 
 
 class WaitEvent(BaseEvent):

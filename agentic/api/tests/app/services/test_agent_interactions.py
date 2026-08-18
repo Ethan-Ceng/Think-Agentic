@@ -4,6 +4,7 @@ from app.core.entities.event import (
     InteractionDecision,
     InteractionEvent,
     InteractionOption,
+    InteractionResolution,
     InteractionStatus,
     InteractionType,
 )
@@ -14,6 +15,7 @@ from app.core.entities.session import (
     Session,
     SessionStatus,
 )
+from app.core.entities.skill import SkillRef, SkillSource
 from app.schemas.exceptions import ConflictError, NotFoundError
 from app.services.agent_service import AgentService
 
@@ -121,6 +123,14 @@ def make_service(session: Session) -> AgentService:
 
 async def test_service_returns_server_owned_resolution_and_hides_cross_user_actions() -> None:
     pending = pending_question()
+    pending.skills = [
+        SkillRef(
+            source=SkillSource.PERSONAL,
+            skill_id="skill-1",
+            name="report-writer",
+        )
+    ]
+    pending.lead_replan_count = 1
     session = Session(
         id="session-1",
         user_id="user-1",
@@ -141,6 +151,8 @@ async def test_service_returns_server_owned_resolution_and_hides_cross_user_acti
     assert payload.tool_call_id == pending.tool_call_id
     assert payload.function_name == pending.function_name
     assert payload.function_args == pending.function_args
+    assert payload.skills == pending.skills
+    assert payload.lead_replan_count == 1
 
     hidden_service = make_service(Session(
         id="session-2",
@@ -183,3 +195,42 @@ async def test_service_maps_duplicate_resolution_to_conflict() -> None:
             decision=InteractionDecision.ANSWER,
             selected_values=["staging"],
         )
+
+
+async def test_continue_interaction_forwards_persisted_skills() -> None:
+    service = make_service(
+        Session(id="session-1", user_id="user-1", status=SessionStatus.WAITING)
+    )
+    skill_ref = SkillRef(
+        source=SkillSource.PERSONAL,
+        skill_id="skill-1",
+        name="report-writer",
+    )
+    captured = {}
+
+    async def fake_chat(**kwargs):
+        captured.update(kwargs)
+        if False:
+            yield None
+
+    service.chat = fake_chat  # type: ignore[method-assign]
+    resolution = InteractionResolution(
+        action_id="action-1",
+        interaction_type=InteractionType.TOOL_APPROVAL,
+        decision=InteractionDecision.APPROVE,
+        tool_call_id="call-1",
+        function_name="dangerous_write",
+        skills=[skill_ref],
+    )
+
+    events = [
+        event
+        async for event in service.continue_interaction(
+            session_id="session-1",
+            user_id="user-1",
+            resolution=resolution,
+        )
+    ]
+
+    assert events == []
+    assert captured["skills"] == [skill_ref]

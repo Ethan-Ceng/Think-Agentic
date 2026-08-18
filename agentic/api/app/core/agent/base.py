@@ -74,6 +74,7 @@ class BaseAgent(ABC):
         self._tools = tools
         self._trace_service = trace_service
         self._skill_runtime_context = skill_runtime_context or SkillRuntimeContext()
+        self._runtime_system_prompt: Optional[str] = None
         self._tool_registry = tool_registry
         self._runtime_tool_scope = runtime_tool_scope or next(
             (
@@ -87,6 +88,10 @@ class BaseAgent(ABC):
     def set_skill_runtime_context(self, context: SkillRuntimeContext) -> None:
         """Replace the transient per-run Skill context without touching Memory."""
         self._skill_runtime_context = context
+
+    def set_runtime_system_prompt(self, prompt: str | None) -> None:
+        """Override the System Prompt in this run's LLM view, not persisted Memory."""
+        self._runtime_system_prompt = prompt
 
     def get_available_tool_names(self) -> set[str]:
         """Return both tool-group and callable names used by Skill constraints."""
@@ -114,6 +119,23 @@ class BaseAgent(ABC):
     def _get_llm_messages(self) -> List[Dict[str, Any]]:
         """Build one model-call view with transient context after the base prompt."""
         messages = [message.copy() for message in self._memory.get_messages()]
+        if self._runtime_system_prompt:
+            system_index = next(
+                (
+                    index
+                    for index, message in enumerate(messages)
+                    if message.get("role") == "system"
+                ),
+                None,
+            )
+            runtime_system = {
+                "role": "system",
+                "content": self._runtime_system_prompt,
+            }
+            if system_index is None:
+                messages.insert(0, runtime_system)
+            else:
+                messages[system_index] = runtime_system
         prompt_block = self._skill_runtime_context.prompt_block
         if not prompt_block:
             return messages

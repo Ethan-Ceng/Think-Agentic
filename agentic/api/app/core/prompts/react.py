@@ -45,6 +45,10 @@ interface Response {{
 
   /** 任务结果文本，如果没有结果需要交付则留空 **/
   result: string;
+  /** 新事实或阻塞是否要求 Lead 调整后续计划 **/
+  needs_replan: boolean;
+  /** 需要重规划时给出简短原因，否则为空 **/
+  replan_reason: string | null;
 }}
 ```
 
@@ -52,6 +56,8 @@ JSON 输出示例：
 {{
     "success": true,
     "result": "我们已经完成了数据清洗任务，并生成了摘要。",
+    "needs_replan": false,
+    "replan_reason": null,
     "attachments": [
         "/home/ubuntu/file1.md",
         "/home/ubuntu/file2.md"
@@ -78,6 +84,34 @@ JSON 输出示例：
 
 任务(task):
 {step}
+"""
+
+
+GOAL_EXECUTION_PROMPT = """
+你正在直接完成一个单一目标，不需要创建或展示任务计划：
+{goal}
+
+注意事项：
+- **是你来执行这个目标，而不是用户。**需要工具时直接调用工具完成。
+- 必须使用用户消息中使用的语言（Working Language）执行和回复。
+- 必须使用 `message_notify_user` 工具通报必要进度，内容限制在一句话以内。
+- 需要用户输入时使用 `message_ask_user`；需要审批的工具会由运行时暂停。
+- 直接交付最终结果，不输出待办事项、步骤清单或内部推理。
+
+最终返回符合以下结构的 JSON：
+{{
+  "message": "交付给用户的最终结果",
+  "attachments": ["/path/to/generated-file"]
+}}
+
+用户消息(message)：
+{message}
+
+附件(attachments)：
+{attachments}
+
+工作语言(language)：
+{language}
 """
 
 # 汇总总结提示词模板，将历史信息进行相应的总结
