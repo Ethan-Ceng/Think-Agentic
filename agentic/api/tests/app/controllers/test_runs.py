@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.controllers.runs import (
+    get_run_execution,
     list_run_events,
     list_run_model_calls,
     list_run_tool_calls,
@@ -35,6 +36,20 @@ class FakeTraceService:
         self.calls.append(("models", user_id, run_id, after, limit))
         return {"model_calls": [{"id": "model-2"}], "next_cursor": "model-2", "has_more": False}
 
+    async def get_execution_view(
+        self, user_id, run_id, *, after=None, limit=200, detail="summary"
+    ):
+        self.calls.append(("execution", user_id, run_id, after, limit))
+        return {
+            "schema_version": 1,
+            "run": {"run_id": run_id},
+            "nodes": [],
+            "next_cursor": after,
+            "has_more": False,
+            "trace_complete": True,
+            "detail": detail,
+        }
+
 
 async def test_trace_subresources_forward_independent_cursors_and_limits() -> None:
     service = FakeTraceService()
@@ -61,12 +76,23 @@ async def test_trace_subresources_forward_independent_cursors_and_limits() -> No
         current_user=user,
         service=service,
     )
+    execution = await get_run_execution(
+        run_id="run-1",
+        after=8,
+        limit=13,
+        detail="detail",
+        current_user=user,
+        service=service,
+    )
 
     assert service.calls == [
         ("events", "user-1", "run-1", 7, 10),
         ("tools", "user-1", "run-1", "tool-1", 11),
         ("models", "user-1", "run-1", "model-1", 12),
+        ("execution", "user-1", "run-1", 8, 13),
     ]
     assert events.data["next_cursor"] == 8
     assert tools.data["next_cursor"] == "tool-2"
     assert models.data["next_cursor"] == "model-2"
+    assert execution.data["next_cursor"] == 8
+    assert execution.data["detail"] == "detail"

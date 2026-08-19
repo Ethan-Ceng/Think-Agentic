@@ -2,6 +2,7 @@ import { get } from './fetch'
 import type {
   RunDetailData,
   RunEventsData,
+  RunExecutionView,
   RunListData,
   RunModelCallsData,
   RunToolCallsData,
@@ -17,19 +18,32 @@ export const runsApi = {
     return get<RunDetailData>(`/runs/${runId}`)
   },
 
+  getExecution: (
+    runId: string,
+    params?: { after?: number; limit?: number; detail?: 'summary' | 'detail' },
+  ): Promise<RunExecutionView> => {
+    return get<RunExecutionView>(`/runs/${runId}/execution`, params)
+  },
+
   listSkills: (runId: string): Promise<RunSkill[]> => {
     return get<RunSkill[]>(`/runs/${runId}/skills`)
   },
 
-  listEvents: (runId: string): Promise<RunEventsData> => {
-    return get<RunEventsData>(`/runs/${runId}/events`)
+  listEvents: (runId: string, params?: { after?: number; limit?: number }): Promise<RunEventsData> => {
+    return get<RunEventsData>(`/runs/${runId}/events`, params)
   },
 
-  listToolCalls: (runId: string): Promise<RunToolCallsData> => {
-    return get<RunToolCallsData>(`/runs/${runId}/tool-calls`)
+  listToolCalls: (
+    runId: string,
+    params?: { after?: string; limit?: number },
+  ): Promise<RunToolCallsData> => {
+    return get<RunToolCallsData>(`/runs/${runId}/tool-calls`, params)
   },
 
-  listModelCalls: (runId: string): Promise<RunModelCallsData> => {
-    return get<RunModelCallsData>(`/runs/${runId}/model-calls`)
+  listModelCalls: (
+    runId: string,
+    params?: { after?: string; limit?: number },
+  ): Promise<RunModelCallsData> => {
+    return get<RunModelCallsData>(`/runs/${runId}/model-calls`, params)
   },
 }

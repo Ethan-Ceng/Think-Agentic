@@ -11,9 +11,9 @@
 ## 当前进度
 
 - 整体状态：`IN_PROGRESS`
-- 当前阶段：T2 RunExecutionView contract
-- 当前任务：Task 2
-- 已完成：1 / 5
+- 当前阶段：T3 Chat execution experience
+- 当前任务：Task 3
+- 已完成：2 / 5
 - 阻塞问题：无
 - 最近更新时间：2026-08-19（Asia/Shanghai）
 
@@ -36,6 +36,7 @@
 | 2026-08-19（Asia/Shanghai） | `PLAN_READY` | 无 | 最终设计已确认，分支、四阶段提交边界和验证命令已确定 |
 | 2026-08-19（Asia/Shanghai） | `IN_PROGRESS` | Task 1 | 计划文档已提交，开始 Trace 安全、游标、分页与迁移实现 |
 | 2026-08-19（Asia/Shanghai） | `IN_PROGRESS` | Task 2 | T1 安全投影、游标分页和非破坏性迁移已完成并验证，进入统一 Execution View 合同与 API |
+| 2026-08-19（Asia/Shanghai） | `IN_PROGRESS` | Task 3 | T2 版本化节点合同、Planner 投影和增量 execution API 已完成，进入聊天页实时执行详情 |
 
 ## Task 1：T1 Trace 安全、游标、分页与迁移
 
@@ -101,7 +102,7 @@
 
 ## Task 2：T2 RunExecutionView 合同与增量 API
 
-状态：in_progress
+状态：completed
 
 ### 目标
 
@@ -153,15 +154,18 @@
 
 ### 执行结果
 
-待执行。
+已新增版本化 `RunExecutionView/ExecutionNode` 合同、纯 `ExecutionViewAssembler` 和 `GET /runs/{run_id}/execution`。Plan 事件生成稳定 Planner/Step 节点，重复 Tool/Model/Interaction 节点按 cursor 覆盖；历史 v1 安全降级并设置 `trace_complete=false`。前端已增加同构类型、增量 API 客户端和独立 cursor 参数。
 
 ### 验证证据
 
-待执行。
+- `uv run pytest tests/app/services/test_execution_view.py tests/app/services/test_trace_service.py tests/app/services/test_skill_trace.py tests/app/integration/test_skill_runtime_flow.py tests/app/controllers/test_runs.py -q`：21 passed。
+- `uv run ruff check`（T2 后端实现与测试文件）：All checks passed。
+- `pnpm test:run -- src/lib/api/runs.spec.ts`：1 file / 2 tests passed。
+- `pnpm type-check`：退出 0。
 
 ## Task 3：T3 聊天页思考与执行详情
 
-状态：pending
+状态：in_progress
 
 ### 目标
 

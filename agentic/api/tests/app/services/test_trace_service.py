@@ -10,12 +10,14 @@ from app.core.entities.event import (
     InteractionResolution,
     InteractionType,
     MessageEvent,
+    PlanEvent,
+    PlanEventStatus,
     StepEvent,
     StepEventStatus,
     ToolEvent,
     ToolEventStatus,
 )
-from app.core.entities.plan import Step
+from app.core.entities.plan import ExecutionStatus, Plan, Step
 from app.core.entities.tool_config import ToolConfig
 from app.core.entities.tool_result import ToolResult
 from app.core.task.base import RunCancellationContext, RunCancellationReason
@@ -593,6 +595,57 @@ def test_trace_records_tool_schema_bytes_without_persisting_full_schema() -> Non
         assert started["payload"]["provider_ids"] == ["builtin.search"]
         assert started["payload"]["tool_ids"] == ["builtin.search.search_web"]
         assert started["payload"]["tool_scope_excluded_count"] == 26
+
+    asyncio.run(run())
+
+
+def test_trace_service_exposes_incremental_execution_view_and_plan_revision() -> None:
+    repo = FakeTraceRepository()
+    service = TraceService(uow_factory=lambda: FakeUow(repo))
+
+    async def run() -> None:
+        run_id = await service.start_run(
+            user_id="user-1",
+            session_id="session-1",
+            task_id="task-1",
+            input_event=MessageEvent(id="input-plan", role="user", message="upgrade"),
+        )
+        plan = Plan(
+            id="plan-1",
+            title="升级",
+            goal="展示执行过程",
+            status=ExecutionStatus.RUNNING,
+            steps=[Step(id="step-1", description="检查实现")],
+        )
+        await service.project_event(
+            PlanEvent(id="plan-event-1", plan=plan, status=PlanEventStatus.CREATED)
+        )
+        await service.record_lead_replan(
+            count=1,
+            step_id="step-1",
+            reason_code="new_fact",
+        )
+        plan.steps[0].status = ExecutionStatus.COMPLETED
+        plan.steps[0].success = True
+        plan.steps[0].result = "完成"
+        await service.project_event(
+            PlanEvent(id="plan-event-2", plan=plan, status=PlanEventStatus.UPDATED)
+        )
+
+        first = await service.get_execution_view(
+            "user-1", run_id, limit=2, detail="summary"
+        )
+        second = await service.get_execution_view(
+            "user-1", run_id, after=first["next_cursor"], limit=10, detail="detail"
+        )
+
+        assert first["has_more"] is True
+        assert all(node["cursor"] <= first["next_cursor"] for node in first["nodes"])
+        assert all(node["cursor"] > first["next_cursor"] for node in second["nodes"])
+        plan_node = next(node for node in second["nodes"] if node["node_id"] == "plan:plan-1")
+        assert plan_node["metrics"]["revision"] == 2
+        assert plan_node["metrics"]["replan_count"] == 1
+        assert repo.steps[f"{run_id}:step-1"]["step_index"] == 0
 
     asyncio.run(run())
 

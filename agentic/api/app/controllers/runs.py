@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """Run/trace query controller."""
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, Query
 
@@ -61,6 +61,26 @@ async def list_run_events(
             run_id,
             after=after,
             limit=limit,
+        )
+    )
+
+
+@router.get("/{run_id}/execution", summary="获取运行执行链")
+async def get_run_execution(
+    run_id: str,
+    after: Optional[int] = Query(default=None, ge=0),
+    limit: int = Query(default=200, ge=1, le=500),
+    detail: Literal["summary", "detail"] = "summary",
+    current_user: User = Depends(get_current_user),
+    service: TraceService = Depends(get_trace_service),
+) -> Response[dict]:
+    return Response.success(
+        data=await service.get_execution_view(
+            current_user.id,
+            run_id,
+            after=after,
+            limit=limit,
+            detail=detail,
         )
     )
 

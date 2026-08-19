@@ -47,9 +47,24 @@ class DBTraceRepository(TraceRepository):
         if record is None:
             record = RunStepModel(**data)
             self.db_session.add(record)
+            await self.db_session.flush()
             return record.id
 
-        for key, value in self._with_updated_at(data).items():
+        next_data = self._with_updated_at(data)
+        if record.status in {"completed", "failed"} and next_data.get("status") in {
+            "pending",
+            "running",
+            "started",
+        }:
+            for key in (
+                "status",
+                "success",
+                "result_summary",
+                "error",
+                "finished_at",
+            ):
+                next_data.pop(key, None)
+        for key, value in next_data.items():
             setattr(record, key, value)
         return record.id
 

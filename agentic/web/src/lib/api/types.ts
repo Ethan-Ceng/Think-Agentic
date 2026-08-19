@@ -385,7 +385,13 @@ export type TraceEventRecord = {
   session_id: string
   event_id?: string | null
   event_type: string
-  source: string
+  ingest_seq?: number
+  schema_version?: number
+  node_id?: string
+  parent_node_id?: string | null
+  visibility?: 'user'
+  summary?: string
+  source?: string
   payload: Record<string, unknown>
   created_at: string
   [key: string]: unknown
@@ -424,14 +430,113 @@ export type {
 
 export type RunEventsData = {
   events: TraceEventRecord[]
+  next_cursor: number | null
+  has_more: boolean
 }
 
 export type RunToolCallsData = {
   tool_calls: ToolCallRecord[]
+  next_cursor: string | null
+  has_more: boolean
 }
 
 export type RunModelCallsData = {
   model_calls: ModelCallRecord[]
+  next_cursor: string | null
+  has_more: boolean
+}
+
+export type ExecutionNodeKind =
+  | 'run'
+  | 'strategy'
+  | 'plan'
+  | 'step'
+  | 'model'
+  | 'tool'
+  | 'skill'
+  | 'interaction'
+  | 'error'
+  | 'completion'
+
+export type ExecutionPhase = 'decide' | 'plan' | 'execute' | 'wait' | 'respond' | 'finalize'
+export type ExecutionNodeStatus =
+  | 'pending'
+  | 'running'
+  | 'waiting'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled'
+export type ExecutionDetailKind = 'tool' | 'model' | 'step' | 'interaction'
+
+export type ExecutionMetrics = {
+  prompt_tokens?: number | null
+  completion_tokens?: number | null
+  total_tokens?: number | null
+  ttft_ms?: number | null
+  message_count?: number | null
+  tool_schema_count?: number | null
+  tool_schema_bytes?: number | null
+  step_count?: number | null
+  completed_steps?: number | null
+  tool_count?: number | null
+  model_count?: number | null
+  replan_count?: number | null
+  revision?: number | null
+  decision_latency_ms?: number | null
+}
+
+export type ExecutionFailure = {
+  code: string
+  category: string
+  scope: string
+  source: string
+  message: string
+  retryable: boolean
+  recovery_actions: string[]
+  provider_id?: string | null
+  tool_call_id?: string | null
+  debug_id: string
+}
+
+export type ExecutionNode = {
+  node_id: string
+  parent_node_id?: string | null
+  kind: ExecutionNodeKind
+  phase: ExecutionPhase
+  status: ExecutionNodeStatus
+  title: string
+  summary: string
+  cursor: number
+  started_at?: string | null
+  finished_at?: string | null
+  latency_ms?: number | null
+  metrics: ExecutionMetrics
+  failure?: ExecutionFailure | null
+  detail_kind?: ExecutionDetailKind | null
+  detail_id?: string | null
+}
+
+export type RunExecutionOverview = {
+  run_id: string
+  session_id: string
+  input_event_id?: string | null
+  status: ExecutionNodeStatus
+  mode?: 'direct' | 'react' | 'plan' | null
+  summary: string
+  started_at?: string | null
+  finished_at?: string | null
+  latency_ms?: number | null
+  metrics: ExecutionMetrics
+}
+
+export type RunExecutionView = {
+  schema_version: number
+  run: RunExecutionOverview
+  nodes: ExecutionNode[]
+  next_cursor: number | null
+  has_more: boolean
+  trace_complete: boolean
+  warnings: string[]
 }
 
 export type FileInfo = {

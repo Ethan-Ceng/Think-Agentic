@@ -35,7 +35,9 @@ from app.core.tools.registry import ToolRegistry
 from app.core.task.base import RunCancellationContext
 from app.repositories.uow import IUnitOfWork
 from app.schemas.exceptions import NotFoundError
+from app.schemas.run_execution import execution_view_to_dict
 from app.schemas.skill import SkillSelectionRequest, SkillSelectionResult
+from app.services.execution_view import ExecutionViewAssembler
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +88,8 @@ class TraceService:
         self._active_plan_id: str | None = None
         self._active_step_id: str | None = None
         self._active_run_step_id: str | None = None
+        self._plan_revisions: Dict[str, int] = {}
+        self._replan_count = 0
         self._tool_started_at: Dict[str, datetime] = {}
         self._terminal_failed = False
 
@@ -109,6 +113,8 @@ class TraceService:
         self._active_plan_id = None
         self._active_step_id = None
         self._active_run_step_id = None
+        self._plan_revisions = {}
+        self._replan_count = 0
         self._tool_started_at = {}
         self._terminal_failed = False
         now = datetime.now()
@@ -267,6 +273,7 @@ class TraceService:
         step_id: str,
         reason_code: str,
     ) -> None:
+        self._replan_count = max(self._replan_count, max(0, int(count)))
         await self._record_lead_event(
             "lead.replanned",
             {
@@ -620,6 +627,41 @@ class TraceService:
             "has_more": len(records) > limit,
         }
 
+    async def get_execution_view(
+        self,
+        user_id: str,
+        run_id: str,
+        *,
+        after: int | None = None,
+        limit: int = 200,
+        detail: str = "summary",
+    ) -> Dict[str, Any]:
+        """Return safe execution-node updates after the supplied Trace cursor."""
+        limit = max(1, min(limit, 500))
+        uow = self._uow_factory()
+        async with uow:
+            run = await self._require_run(uow, user_id, run_id)
+            records = await uow.trace.list_trace_events(
+                run_id,
+                after=after,
+                limit=limit + 1,
+            )
+        page = records[:limit]
+        events = [
+            projected
+            for item in page
+            if (projected := _public_trace_event(item)) is not None
+        ]
+        next_cursor = page[-1].get("ingest_seq") if page else after
+        view = ExecutionViewAssembler().assemble(
+            run=_public_run(run),
+            events=events,
+            next_cursor=int(next_cursor) if next_cursor is not None else None,
+            has_more=len(records) > limit,
+            detail=detail,
+        )
+        return execution_view_to_dict(view)
+
     async def list_tool_calls(
         self,
         user_id: str,
@@ -695,6 +737,18 @@ class TraceService:
             self._active_plan_id = event.plan.id
         event_type = _event_type(event)
         payload = _event_payload(event)
+        if isinstance(event, PlanEvent):
+            revision = self._plan_revisions.get(event.plan.id, 0)
+            if event.status.value in {"created", "updated"}:
+                revision += 1
+            revision = max(1, revision)
+            self._plan_revisions[event.plan.id] = revision
+            payload.update(
+                {
+                    "revision": revision,
+                    "replan_count": self._replan_count,
+                }
+            )
         if isinstance(event, ToolEvent):
             metadata = self._tool_metadata(event)
             failure = (
@@ -728,6 +782,8 @@ class TraceService:
 
         if isinstance(event, StepEvent):
             await self._project_step(uow, event)
+        elif isinstance(event, PlanEvent):
+            await self._project_plan_steps(uow, event)
         elif isinstance(event, ToolEvent):
             await self._project_tool_call(uow, event)
         elif isinstance(event, MessageEvent):
@@ -757,6 +813,30 @@ class TraceService:
                         "finished_at": event.created_at,
                     },
                 )
+
+    async def _project_plan_steps(self, uow: IUnitOfWork, event: PlanEvent) -> None:
+        """Materialize Planner steps so detail references remain stable."""
+        for index, step in enumerate(event.plan.steps):
+            terminal = step.status.value in {"completed", "failed"}
+            await uow.trace.upsert_step(
+                self.run_id,
+                step.id,
+                {
+                    "run_id": self.run_id,
+                    "session_id": self.session_id,
+                    "event_id": event.id,
+                    "step_id": step.id,
+                    "step_index": index,
+                    "title": _preview(step.description, 120),
+                    "description": _preview(step.description, 300),
+                    "status": step.status.value,
+                    "success": step.success,
+                    "result_summary": _preview(step.result or "", 300),
+                    "error": "Step failed" if step.error else None,
+                    "attachments": [],
+                    "finished_at": event.created_at if terminal else None,
+                },
+            )
 
     async def _project_step(self, uow: IUnitOfWork, event: StepEvent) -> None:
         terminal = event.status in {StepEventStatus.COMPLETED, StepEventStatus.FAILED}
@@ -1308,6 +1388,8 @@ def _safe_plan_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
                 "goal",
                 "status",
                 "event_status",
+                "revision",
+                "replan_count",
             ),
             "steps": steps,
         }
