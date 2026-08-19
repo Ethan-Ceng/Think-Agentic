@@ -13,6 +13,7 @@ from app.core.entities.app_config import (
 from app.core.entities.session import Session
 from app.core.entities.tool_config import ToolConfig
 from app.core.sandbox.runtime import LazySandboxRuntime
+from app.core.tools.a2a_runtime import A2AProviderRuntime
 from app.services.agent_service import AgentService
 
 
@@ -92,7 +93,10 @@ class FakeUserConfigService:
         )
 
 
-def make_service() -> tuple[AgentService, RecordingSessionRepository]:
+def make_service(
+    *,
+    a2a_provider_runtime: A2AProviderRuntime | None = None,
+) -> tuple[AgentService, RecordingSessionRepository]:
     RecordingSandboxClass.reset()
     RecordingTask.created_runners = []
     session_repo = RecordingSessionRepository()
@@ -106,6 +110,7 @@ def make_service() -> tuple[AgentService, RecordingSessionRepository]:
         json_parser=object(),
         search_engine=object(),
         file_storage=object(),
+        a2a_provider_runtime=a2a_provider_runtime,
     )
     return service, session_repo
 
@@ -145,3 +150,26 @@ def test_existing_handle_is_not_restored_until_sandbox_capability_is_used() -> N
     assert existing.browser_calls == 0
     runtime = RecordingTask.created_runners[0]._sandbox_runtime
     assert runtime.is_activated is False
+
+
+def test_task_runner_receives_shared_a2a_runtime_without_activating_it() -> None:
+    shared_runtime = A2AProviderRuntime(
+        snapshot_ttl_seconds=30.0,
+        snapshot_stale_seconds=30.0,
+        snapshot_max_entries=8,
+        discovery_timeout_seconds=1.0,
+        invoke_timeout_seconds=1.0,
+        response_max_bytes=1024,
+    )
+    service, _ = make_service(a2a_provider_runtime=shared_runtime)
+
+    asyncio.run(
+        service._create_task(Session(id="session-1", user_id="user-1"))
+    )
+
+    runner = RecordingTask.created_runners[0]
+    assert runner._a2a_tool._runtime is shared_runtime
+    assert runner._a2a_tool.runtime_active is False
+    asyncio.run(runner._a2a_tool.cleanup())
+    assert shared_runtime.client_created is False
+    asyncio.run(shared_runtime.close())

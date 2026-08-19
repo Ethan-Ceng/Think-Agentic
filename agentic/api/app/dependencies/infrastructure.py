@@ -16,6 +16,7 @@ from app.repositories.file_app_config_repository import FileAppConfigRepository
 from app.services.skill_workspace_service import SkillWorkspaceService
 from app.services.bundled_skill_service import BundledSkillService
 from app.services.user_config_service import UserConfigService
+from app.core.tools.a2a_runtime import A2AProviderRuntime
 from app.core.tools.mcp import MCPClientManager
 from app.core.tools.provider_runtime import MCPProviderPool
 
@@ -88,6 +89,18 @@ def get_mcp_provider_pool() -> MCPProviderPool:
         ),
         backoff_base_seconds=settings.mcp_provider_backoff_base_seconds,
         backoff_max_seconds=settings.mcp_provider_backoff_max_seconds,
+    )
+
+
+@lru_cache
+def get_a2a_provider_runtime() -> A2AProviderRuntime:
+    return A2AProviderRuntime(
+        snapshot_ttl_seconds=settings.a2a_card_snapshot_ttl_seconds,
+        snapshot_stale_seconds=settings.a2a_card_snapshot_stale_seconds,
+        snapshot_max_entries=settings.a2a_card_snapshot_max_entries,
+        discovery_timeout_seconds=settings.a2a_card_discovery_timeout_seconds,
+        invoke_timeout_seconds=settings.a2a_invoke_timeout_seconds,
+        response_max_bytes=settings.a2a_response_max_bytes,
     )
 
 

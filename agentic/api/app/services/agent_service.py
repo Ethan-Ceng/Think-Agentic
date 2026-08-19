@@ -56,6 +56,7 @@ from app.core.agent.agent_task_runner import AgentTaskRunner
 from app.services.user_config_service import UserConfigService
 from app.services.bundled_skill_service import BundledSkillService
 from app.services.skill_workspace_service import SkillWorkspaceService
+from app.core.tools.a2a_runtime import A2AProviderRuntime
 from app.core.tools.provider_runtime import MCPProviderPool
 
 logger = logging.getLogger(__name__)
@@ -92,6 +93,7 @@ class AgentService:
             skill_package_storage: SkillPackageStorage | None = None,
             bundled_skill_service: BundledSkillService | None = None,
             skill_workspace_service: SkillWorkspaceService | None = None,
+            a2a_provider_runtime: A2AProviderRuntime | None = None,
             mcp_provider_pool: MCPProviderPool | None = None,
     ) -> None:
         """构造函数，完成Agent服务初始化"""
@@ -107,6 +109,7 @@ class AgentService:
         self._skill_package_storage = skill_package_storage
         self._bundled_skill_service = bundled_skill_service
         self._skill_workspace_service = skill_workspace_service
+        self._a2a_provider_runtime = a2a_provider_runtime
         self._mcp_provider_pool = mcp_provider_pool
         logger.info("AgentService初始化成功")
 
@@ -241,6 +244,7 @@ class AgentService:
             skill_package_storage=self._skill_package_storage,
             bundled_skill_service=self._bundled_skill_service,
             skill_workspace_service=self._skill_workspace_service,
+            a2a_provider_runtime=self._a2a_provider_runtime,
             mcp_provider_pool=self._mcp_provider_pool,
         )
 

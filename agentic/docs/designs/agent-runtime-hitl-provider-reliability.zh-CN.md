@@ -7,7 +7,7 @@
 - 创建日期：2026-08-18
 - 最近更新：2026-08-19
 - 前置设计：`lead-agent-runtime-unification.zh-CN.md`
-- 实施进度：通用 `tool_approval` 移除、历史状态安全收敛、`ask_user` Composer/问题卡统一原子自动续跑、Lazy Sandbox Runtime，以及阶段 1A/1B 的统一 Tool Plane 与外部 Provider 惰性接入已落地；阶段 2 的 MCP Provider Actor、跨 Run 有界 Schema Snapshot、类型化错误与取消来源隔离已落地；A2A Card TTL/共享 Client、完整平台 Capability Grant、Durable Finalizer 和完整错误 UX 仍待阶段 3 及后续批次
+- 实施进度：通用 `tool_approval` 移除、历史状态安全收敛、`ask_user` Composer/问题卡统一原子自动续跑、Lazy Sandbox Runtime，以及阶段 1A/1B 的统一 Tool Plane 与外部 Provider 惰性接入已落地；阶段 2 的 MCP Provider Actor、跨 Run 有界 Schema Snapshot、类型化错误与取消来源隔离已落地；阶段 3 的 A2A 目标级 Card Snapshot、条件刷新、共享 HTTP Runtime、安全委派目录和现代/旧协议兼容已落地；完整平台 Capability Grant、Durable Finalizer、A2A streaming/认证和完整错误 UX 仍待后续批次
 
 ## 结论先行
 
@@ -820,11 +820,14 @@ async def resolve(
 4. 应用关闭时先取消并等待 Run 退出，再关闭共享 Pool；单个 Runner/Sandbox 清理失败不会阻止其他 Runner、Provider Pool、数据库或 Redis 关闭。
 5. `ErrorEvent` 与 `ToolResult` 新增兼容的 `FailureInfo`，前端按 Provider/Tool/Run 类别展示安全信息，不再把所有失败解释为模型配置、余额或网络问题。
 
-### 阶段 3：A2A Card 惰性刷新和委派目录（P1）
+### 阶段 3：A2A Card 惰性刷新和委派目录（P1，已实施）
 
-1. 固定 A2A Tool Schema 与动态 Agent Card 分离。
-2. 按 Target 刷新、TTL 快照、独立超时和共享 HTTP Client。
-3. 为未来本地 Sub Agent/A2A 统一 Delegation Target 摘要，但保持执行 Runtime 分离。
+1. 固定 A2A Tool Schema 与动态 Agent Card 分离；构造 Catalog、Runner 或 Tool 不创建 HTTP Client，也不发现 Card。
+2. 应用级共享 HTTP Runtime 按 `user_id + target_id + config_fingerprint + negotiation_policy_version` 隔离；Card Snapshot、配置代际和刷新锁均有界。
+3. 按 Target single-flight 刷新，支持平台 TTL 上限、`Cache-Control`、ETag/Last-Modified、304、stale-if-error、独立发现/调用超时和响应体上限。
+4. 按 Agent Card 顺序选择现代 `JSONRPC` 或 `HTTP+JSON`，同时保留旧顶层 URL 与 `message/send` 请求兼容；Card 调用 URL限制 HTTP(S)、无 userinfo 且与配置发现源同源。
+5. 模型只读取 `DelegationTargetDescriptor` 白名单摘要并明确标记 `untrusted_external`；单目标发现/调用失败投影为 A2A FailureInfo，不取消父 Run。
+6. 为未来本地 Sub Agent/A2A 统一 Delegation Target 摘要，但保持执行 Runtime 分离；本阶段未实现本地多 Agent 编排、A2A streaming、认证或 JWS 验签。
 
 ### 阶段 4：多字段表单与完整错误 UX（P1/P2）
 

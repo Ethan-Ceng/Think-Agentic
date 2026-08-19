@@ -37,6 +37,7 @@ from app.repositories.uow import IUnitOfWork
 from app.core.agent.lead import LeadAgent
 from app.core.config import get_settings
 from app.core.tools.a2a import A2ATool
+from app.core.tools.a2a_runtime import A2AProviderRuntime
 from app.core.tools.mcp import MCPTool
 from app.core.tools.provider_runtime import MCPProviderPool
 from app.core.tools.provider_runtime import ProviderRuntimeError
@@ -79,6 +80,7 @@ class AgentTaskRunner(TaskRunner):
             skill_package_storage: SkillPackageStorage | None = None,
             bundled_skill_service: BundledSkillService | None = None,
             skill_workspace_service: SkillWorkspaceService | None = None,
+            a2a_provider_runtime: A2AProviderRuntime | None = None,
             mcp_provider_pool: MCPProviderPool | None = None,
     ) -> None:
         """构造函数，完成Agent任务运行器的创建"""
@@ -102,7 +104,11 @@ class AgentTaskRunner(TaskRunner):
             user_id=user_id,
         )
         self._a2a_config = a2a_config
-        self._a2a_tool = A2ATool(a2a_config)
+        self._a2a_tool = A2ATool(
+            a2a_config,
+            provider_runtime=a2a_provider_runtime,
+            user_id=user_id,
+        )
         self._file_storage = file_storage
         self._browser = browser
         self._sandbox_runtime.set_activation_observer(

@@ -8,6 +8,7 @@
 import uuid
 from enum import Enum
 from typing import Dict, Optional, List, Any
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, HttpUrl, Field, ConfigDict, model_validator
 
@@ -82,14 +83,44 @@ class MCPConfig(BaseModel):
 
 class A2AServerConfig(BaseModel):
     """A2A服务配置"""
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))  # 唯一标识
+    id: str = Field(
+        default_factory=lambda: str(uuid.uuid4()),
+        min_length=1,
+        max_length=120,
+    )  # 唯一标识
     base_url: str  # 服务基础URL
     enabled: bool = True  # 服务是否开启
+
+    @model_validator(mode="after")
+    def validate_a2a_server_config(self):
+        parsed = urlsplit(self.base_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("A2A base_url 必须是有效的 HTTP(S) URL")
+        try:
+            parsed.port
+        except ValueError as exc:
+            raise ValueError("A2A base_url 端口无效") from exc
+        if parsed.username or parsed.password:
+            raise ValueError("A2A base_url 不允许包含用户凭据")
+        if parsed.query or parsed.fragment:
+            raise ValueError("A2A base_url 不允许包含 query 或 fragment")
+        self.id = self.id.strip()
+        self.base_url = self.base_url.rstrip("/")
+        if not self.id:
+            raise ValueError("A2A id 不能为空")
+        return self
 
 
 class A2AConfig(BaseModel):
     """A2A配置"""
     a2a_servers: List[A2AServerConfig] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_unique_target_ids(self):
+        target_ids = [server.id for server in self.a2a_servers]
+        if len(target_ids) != len(set(target_ids)):
+            raise ValueError("A2A target id 必须唯一")
+        return self
 
 
 class AppConfig(BaseModel):

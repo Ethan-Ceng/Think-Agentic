@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 from app.dependencies.infrastructure import (
+    get_a2a_provider_runtime,
     get_bundled_skill_service,
     get_file_storage,
     get_json_parser,
@@ -88,5 +89,6 @@ def get_agent_service() -> AgentService:
         skill_package_storage=get_skill_package_storage(),
         bundled_skill_service=get_bundled_skill_service(),
         skill_workspace_service=get_skill_workspace_service(),
+        a2a_provider_runtime=get_a2a_provider_runtime(),
         mcp_provider_pool=get_mcp_provider_pool(),
     )

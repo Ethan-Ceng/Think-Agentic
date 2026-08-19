@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 
 from app.extensions import get_db, get_redis
 from app.dependencies.infrastructure import (
+    get_a2a_provider_runtime,
     get_file_storage,
     get_mcp_provider_pool,
     task_cls,
@@ -55,6 +56,17 @@ async def _shutdown_resources(shutdown_steps) -> None:
             logger.exception("关闭 %s 失败", resource_name)
 
 
+def _application_shutdown_steps():
+    """Resolve application-owned resources in dependency-safe close order."""
+    return (
+        ("agent tasks", task_cls.destroy),
+        ("A2A Provider Runtime", get_a2a_provider_runtime().close),
+        ("MCP Provider Pool", get_mcp_provider_pool().close),
+        ("database", get_db().shutdown),
+        ("Redis", get_redis().shutdown),
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
@@ -83,13 +95,7 @@ async def lifespan(app: FastAPI):
         purge_task.cancel()
         with suppress(asyncio.CancelledError):
             await purge_task
-        shutdown_steps = (
-            ("agent tasks", task_cls.destroy),
-            ("MCP Provider Pool", get_mcp_provider_pool().close),
-            ("database", get_db().shutdown),
-            ("Redis", get_redis().shutdown),
-        )
-        await _shutdown_resources(shutdown_steps)
+        await _shutdown_resources(_application_shutdown_steps())
         logger.info("MoocManus 关闭完成")
 
 

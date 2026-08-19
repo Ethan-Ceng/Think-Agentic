@@ -34,7 +34,7 @@ def test_builtin_registry_baseline_separates_sandbox_browser_and_context_tools()
         "search": {"function_count": 1, "category": "no_sandbox"},
         "shell": {"function_count": 5, "category": "requires_sandbox"},
     }
-    assert summary["tool_schema_bytes"] == 12933
+    assert summary["tool_schema_bytes"] == 13148
 
 
 def test_tool_schema_bytes_handles_empty_dynamic_and_chinese_schemas() -> None:

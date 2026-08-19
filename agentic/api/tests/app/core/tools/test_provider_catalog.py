@@ -174,7 +174,7 @@ def test_tool_factory_registers_provider_catalog_without_initializing_runtime() 
     )
 
     assert mcp_tool._manager is None
-    assert a2a_tool.manager is None
+    assert a2a_tool.runtime_active is False
     assert all(
         tool._after_prepare is None
         for tool in tools

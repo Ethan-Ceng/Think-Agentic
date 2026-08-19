@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     mcp_provider_operation_timeout_seconds: float = 60.0
     mcp_provider_backoff_base_seconds: float = 1.0
     mcp_provider_backoff_max_seconds: float = 30.0
+    a2a_card_snapshot_ttl_seconds: float = 300.0
+    a2a_card_snapshot_stale_seconds: float = 900.0
+    a2a_card_snapshot_max_entries: int = 2048
+    a2a_card_discovery_timeout_seconds: float = 10.0
+    a2a_invoke_timeout_seconds: float = 60.0
+    a2a_response_max_bytes: int = 2 * 1024 * 1024
 
     skill_package_storage_path: str = "/app/storage/skills/packages"
     skill_workspace_storage_path: str = "/app/storage/skill-workspaces"
@@ -123,6 +129,20 @@ class Settings(BaseSettings):
                 "mcp_provider_backoff_max_seconds must be greater than or equal "
                 "to mcp_provider_backoff_base_seconds"
             )
+        if self.a2a_card_snapshot_ttl_seconds <= 0:
+            raise ValueError("a2a_card_snapshot_ttl_seconds must be positive")
+        if self.a2a_card_snapshot_stale_seconds < 0:
+            raise ValueError("a2a_card_snapshot_stale_seconds cannot be negative")
+        if self.a2a_card_snapshot_max_entries <= 0:
+            raise ValueError("a2a_card_snapshot_max_entries must be positive")
+        if self.a2a_card_discovery_timeout_seconds <= 0:
+            raise ValueError(
+                "a2a_card_discovery_timeout_seconds must be positive"
+            )
+        if self.a2a_invoke_timeout_seconds <= 0:
+            raise ValueError("a2a_invoke_timeout_seconds must be positive")
+        if self.a2a_response_max_bytes <= 0:
+            raise ValueError("a2a_response_max_bytes must be positive")
         roots = {
             "ordinary files": self.local_storage_path,
             "Skill packages": self.skill_package_storage_path,
