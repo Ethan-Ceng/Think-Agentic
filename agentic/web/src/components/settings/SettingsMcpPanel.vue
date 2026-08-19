@@ -5,6 +5,7 @@ import { Loader2, Plus, RotateCcw, Trash, Wrench } from 'lucide-vue-next'
 import { useToast } from '@/composables/useToast'
 import { configApi } from '@/lib/api/config'
 import type { ListMCPServerItem, MCPConfig } from '@/lib/api/types'
+import ProviderDiagnosticCard from './ProviderDiagnosticCard.vue'
 
 const toast = useToast()
 const servers = ref<ListMCPServerItem[]>([])
@@ -122,6 +123,12 @@ defineExpose({ isDirty, save })
       <div v-if="server.tools?.length" class="badge-row">
         <ElTag v-for="tool in server.tools" :key="tool" size="small" effect="plain"><Wrench :size="12" />{{ tool }}</ElTag>
       </div>
+      <ProviderDiagnosticCard
+        provider-type="mcp"
+        :target-id="server.server_name"
+        :reset-key="`${server.server_name}:${server.enabled}:${server.transport}`"
+        description="仅刷新该服务的 Tool Schema，不会调用任何 Tool。"
+      />
     </article>
   </section>
 

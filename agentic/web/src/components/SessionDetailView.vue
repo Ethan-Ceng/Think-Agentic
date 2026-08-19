@@ -705,7 +705,7 @@ async function handleRecoverTask(mode: ResumeMode) {
 
 async function handleFailureRecovery(command: FailureRecoveryCommand) {
   if (command.kind === 'settings') {
-    settingsModal.openSettings(command.tab)
+    settingsModal.openSettings(command.tab, command.failure)
     return
   }
   await handleRecoverTask(command.mode)

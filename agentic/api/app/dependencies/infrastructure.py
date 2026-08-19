@@ -69,6 +69,11 @@ def get_llm(llm_config):
     return OpenAILLM(llm_config)
 
 
+def get_diagnostic_llm(llm_config):
+    """Build a one-shot LLM client without SDK-level retries."""
+    return OpenAILLM(llm_config, max_retries=0)
+
+
 def get_json_parser():
     return RepairJSONParser()
 

@@ -15,6 +15,7 @@ from .runs import router as runs_router
 from .search import router as search_router
 from .skills import drafts_router, skills_router
 from .project import router as project_router
+from .provider_diagnostics import router as provider_diagnostics_router
 
 # 主路由
 router = APIRouter()
@@ -31,5 +32,6 @@ router.include_router(search_router)
 router.include_router(drafts_router)
 router.include_router(skills_router)
 router.include_router(project_router)
+router.include_router(provider_diagnostics_router)
 
 __all__ = ["router"]

@@ -158,7 +158,14 @@ describe('ChatMessage reply failure recovery', () => {
     ])
     await buttons[0].trigger('click')
     expect(wrapper.emitted('recoverFailure')).toEqual([
-      [{ kind: 'settings', tab: 'mcp' }],
+      [{
+        kind: 'settings',
+        tab: 'mcp',
+        failure: expect.objectContaining({
+          code: 'PROVIDER_AUTH_FAILED',
+          debug_id: 'debug-provider-1',
+        }),
+      }],
     ])
   })
 

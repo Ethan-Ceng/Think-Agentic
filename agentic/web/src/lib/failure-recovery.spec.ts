@@ -38,7 +38,11 @@ describe('failure recovery registry', () => {
       primary: true,
       command: { kind: 'resume', mode: 'continue' },
     })
-    expect(options[1].command).toEqual({ kind: 'settings', tab: 'mcp' })
+    expect(options[1].command).toEqual({
+      kind: 'settings',
+      tab: 'mcp',
+      failure: expect.objectContaining({ code: 'PROVIDER_TIMEOUT' }),
+    })
     expect(options[2].command).toEqual({ kind: 'resume', mode: 'restart' })
   })
 

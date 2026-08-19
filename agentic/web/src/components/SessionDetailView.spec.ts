@@ -127,7 +127,7 @@ const ChatMessageStub = defineComponent({
         v-if="item.kind === 'error' && showRecoveryActions"
         class="recover-settings"
         type="button"
-        @click="$emit('recoverFailure', { kind: 'settings', tab: 'llm' })"
+        @click="$emit('recoverFailure', { kind: 'settings', tab: 'llm', failure: item.failure })"
       />
     </article>
   `,
@@ -335,7 +335,10 @@ describe('SessionDetailView failure recovery commands', () => {
     expect(detail.resumeTask).toHaveBeenCalledWith('continue')
 
     await wrapper.get('.recover-settings').trigger('click')
-    expect(mocks.openSettings).toHaveBeenCalledWith('llm')
+    expect(mocks.openSettings).toHaveBeenCalledWith(
+      'llm',
+      expect.objectContaining({ code: 'MODEL_AUTHENTICATION_FAILED' }),
+    )
     expect(detail.resumeTask).toHaveBeenCalledTimes(1)
     wrapper.unmount()
   })

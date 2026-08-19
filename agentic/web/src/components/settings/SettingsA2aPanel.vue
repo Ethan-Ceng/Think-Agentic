@@ -5,6 +5,7 @@ import { Loader2, Plus, RotateCcw, Trash } from 'lucide-vue-next'
 import { useToast } from '@/composables/useToast'
 import { configApi } from '@/lib/api/config'
 import type { ListA2AServerItem } from '@/lib/api/types'
+import ProviderDiagnosticCard from './ProviderDiagnosticCard.vue'
 
 const toast = useToast()
 const servers = ref<ListA2AServerItem[]>([])
@@ -106,6 +107,12 @@ defineExpose({ isDirty, save })
         <ElTag size="small" effect="plain">流式输出: {{ server.streaming ? '开启' : '关闭' }}</ElTag>
         <ElTag size="small" effect="plain">推送通知: {{ server.push_notifications ? '开启' : '关闭' }}</ElTag>
       </div>
+      <ProviderDiagnosticCard
+        provider-type="a2a"
+        :target-id="server.id"
+        :reset-key="`${server.id}:${server.enabled}`"
+        description="仅刷新该 Agent 的能力卡，不会委派或执行任务。"
+      />
     </article>
   </section>
 

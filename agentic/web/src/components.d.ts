@@ -51,6 +51,7 @@ declare module 'vue' {
     PlanPanel: typeof import('./components/chat/PlanPanel.vue')['default']
     ProjectDialog: typeof import('./components/ProjectDialog.vue')['default']
     ProjectSections: typeof import('./components/navigation/ProjectSections.vue')['default']
+    ProviderDiagnosticCard: typeof import('./components/settings/ProviderDiagnosticCard.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
     RunSkillsPanel: typeof import('./components/skills/RunSkillsPanel.vue')['default']

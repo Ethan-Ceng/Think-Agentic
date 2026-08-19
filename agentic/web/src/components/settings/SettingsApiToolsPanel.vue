@@ -4,6 +4,7 @@ import { ElMessageBox } from 'element-plus'
 import { Loader2, Pencil, Play, Plus, RotateCcw, Trash } from 'lucide-vue-next'
 import { useToast } from '@/composables/useToast'
 import { toolsApi } from '@/lib/api/tools'
+import ProviderDiagnosticCard from './ProviderDiagnosticCard.vue'
 import type {
   RuntimeToolPolicy,
   ToolDescriptor,
@@ -255,14 +256,16 @@ function openTestDialog(registration: ToolRegistration) {
 
 async function runTest() {
   if (!testingRegistration.value) return
-  let args: Record<string, unknown> = {}
-  if (testingToolName.value) {
-    try { args = parseJsonObject(testArgumentsText.value, 'Arguments') }
-    catch (error) { toast.error(error instanceof Error ? error.message : '测试参数格式错误'); return }
+  if (!testingToolName.value) {
+    toast.error('请选择要真实调用的 API Operation')
+    return
   }
+  let args: Record<string, unknown> = {}
+  try { args = parseJsonObject(testArgumentsText.value, 'Arguments') }
+  catch (error) { toast.error(error instanceof Error ? error.message : '测试参数格式错误'); return }
   testingTool.value = true
   try {
-    testResult.value = await toolsApi.testRegistration(testingRegistration.value.registration_id, { function_name: testingToolName.value || null, arguments: args })
+    testResult.value = await toolsApi.testRegistration(testingRegistration.value.registration_id, { function_name: testingToolName.value, arguments: args })
     applyData(await toolsApi.listTools())
     initialSnapshot.value = bindingsSnapshot()
     const result = testResult.value.result
@@ -305,9 +308,16 @@ defineExpose({ isDirty, save })
               <div class="tool-row-heading"><strong>{{ registration.provider_label }}</strong><code>{{ registration.provider_id }}</code></div>
               <p>{{ registration.description || '未配置描述' }}</p>
               <div class="badge-row"><ElTag size="small" effect="plain">API</ElTag><ElTag size="small" effect="plain">{{ registrationToolCount(registration.provider_id) }} 工具</ElTag><ElTag v-if="registration.requires_credentials" size="small" effect="plain">凭证</ElTag></div>
+              <ProviderDiagnosticCard
+                provider-type="api"
+                :target-id="registration.registration_id"
+                :reset-key="JSON.stringify(registration)"
+                button-label="校验已保存配置"
+                description="只校验注册信息和 OpenAPI Schema，不会调用远程 Operation。"
+              />
             </div>
             <div class="tool-registration-controls">
-              <ElButton text size="small" :aria-label="`测试 ${registration.provider_label}`" @click="openTestDialog(registration)"><Play :size="14" /></ElButton>
+              <ElButton text size="small" :aria-label="`调用 Operation 测试 ${registration.provider_label}`" title="调用 Operation 测试（可能产生外部副作用）" @click="openTestDialog(registration)"><Play :size="14" /></ElButton>
               <ElButton text size="small" :aria-label="`编辑 ${registration.provider_label}`" @click="openEditRegistrationDialog(registration)"><Pencil :size="14" /></ElButton>
               <ElButton text type="danger" size="small" :aria-label="`删除 ${registration.provider_label}`" @click="deleteRegistration(registration)"><Trash :size="14" /></ElButton>
               <ElSwitch :model-value="registration.enabled" inline-prompt active-text="开" inactive-text="关" :aria-label="`${registration.provider_label} 启用状态`" @change="toggleRegistration(registration, Boolean($event))" />
@@ -340,10 +350,11 @@ defineExpose({ isDirty, save })
     <template #footer><ElButton :disabled="addingRegistration" @click="requestRegistrationClose()">取消</ElButton><ElButton type="primary" :loading="addingRegistration" @click="submitRegistration">{{ registrationSubmitText }}</ElButton></template>
   </ElDialog>
 
-  <ElDialog v-model="testDialogOpen" width="min(680px, calc(100vw - 24px))" append-to-body align-center class="settings-sub-dialog" :show-close="!testingTool" :close-on-click-modal="!testingTool" :close-on-press-escape="!testingTool" title="测试工具源">
+  <ElDialog v-model="testDialogOpen" width="min(680px, calc(100vw - 24px))" append-to-body align-center class="settings-sub-dialog" :show-close="!testingTool" :close-on-click-modal="!testingTool" :close-on-press-escape="!testingTool" title="调用 API Operation 测试">
     <ElForm label-position="top" class="settings-form compact">
-      <ElFormItem label="工具函数"><ElSelect v-model="testingToolName" clearable placeholder="只解析 OpenAPI Schema"><ElOption v-for="tool in testingTools" :key="tool.function_name" :label="`${tool.label} (${tool.function_name})`" :value="tool.function_name" /></ElSelect></ElFormItem>
-      <ElFormItem v-if="testingToolName" label="测试参数 JSON"><ElInput v-model="testArgumentsText" type="textarea" resize="vertical" :autosize="{ minRows: 4, maxRows: 10 }" placeholder='{"city": "Hong Kong"}' /></ElFormItem>
+      <div class="settings-security-note"><p>选择 Operation 后会真实调用远程 API，可能产生外部副作用；仅解析 Schema 请使用 Provider 卡片中的“校验已保存配置”。</p></div>
+      <ElFormItem label="要真实调用的 Operation"><ElSelect v-model="testingToolName" placeholder="请选择 API Operation"><ElOption v-for="tool in testingTools" :key="tool.function_name" :label="`${tool.label} (${tool.function_name})`" :value="tool.function_name" /></ElSelect></ElFormItem>
+      <ElFormItem v-if="testingToolName" label="调用参数 JSON"><ElInput v-model="testArgumentsText" type="textarea" resize="vertical" :autosize="{ minRows: 4, maxRows: 10 }" placeholder='{"city": "Hong Kong"}' /></ElFormItem>
       <div v-if="testResult" class="tool-test-result"><div class="badge-row"><ElTag size="small" effect="plain">{{ testResult.tools.length }} 工具</ElTag><ElTag v-if="testResult.result" size="small" effect="plain" :type="testResult.result.success === false ? 'danger' : 'success'">{{ testResult.result.success === false ? '失败' : '成功' }}</ElTag></div><pre>{{ JSON.stringify(testResult.result ?? testResult.tools.map((tool) => tool.function_name), null, 2) }}</pre></div>
     </ElForm>
     <template #footer><ElButton :disabled="testingTool" @click="testDialogOpen = false">取消</ElButton><ElButton type="primary" :loading="testingTool" @click="runTest">测试</ElButton></template>

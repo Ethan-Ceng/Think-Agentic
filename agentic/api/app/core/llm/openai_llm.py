@@ -118,12 +118,17 @@ class OpenAILLM(LLM):
     def max_tokens(self) -> int:
         return self._max_tokens
 
+    async def aclose(self) -> None:
+        """Close the underlying SDK client owned by this LLM instance."""
+        await self._client.close()
+
     async def invoke(
             self,
             messages: List[Dict[str, Any]],
             tools: List[Dict[str, Any]] = None,
             response_format: Dict[str, Any] = None,
             tool_choice: str = None,
+            log_response: bool = True,
     ) -> Dict[str, Any]:
         """使用异步OpenAI客户端发起块响应（该步骤可以切换成流式响应）"""
         try:
@@ -154,7 +159,8 @@ class OpenAILLM(LLM):
                 )
 
             # 3.处理响应数据并返回
-            logger.info(f"OpenAI客户端返回内容: {response.model_dump()}")
+            if log_response:
+                logger.info(f"OpenAI客户端返回内容: {response.model_dump()}")
             message = response.choices[0].message.model_dump()
             message["_trace_metadata"] = {
                 "model": getattr(response, "model", None),

@@ -199,6 +199,43 @@ async def test_refresh_failure_uses_bounded_stale_snapshot() -> None:
     await runtime.close()
 
 
+async def test_forced_diagnostic_refresh_can_disable_stale_fallback() -> None:
+    now = [0.0]
+    request_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        request_count += 1
+        if request_count == 1:
+            return httpx.Response(
+                200,
+                json=_modern_card(),
+                headers={"Cache-Control": "max-age=1"},
+            )
+        raise httpx.ConnectError("stale card must not hide current failure")
+
+    runtime = _runtime(
+        handler,
+        clock=lambda: now[0],
+        ttl=30.0,
+        stale=10.0,
+    )
+    target = _target()
+    await runtime.discover(user_id="user-a", target_config=target)
+    now[0] = 2.0
+
+    with pytest.raises(A2ARuntimeError):
+        await runtime.discover(
+            user_id="user-a",
+            target_config=target,
+            force_refresh=True,
+            allow_stale=False,
+        )
+
+    assert request_count == 2
+    await runtime.close()
+
+
 async def test_no_store_card_is_not_reused() -> None:
     request_count = 0
 

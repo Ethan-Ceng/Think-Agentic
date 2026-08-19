@@ -337,6 +337,7 @@ class A2AProviderRuntime:
         user_id: str,
         target_config: A2AServerConfig,
         force_refresh: bool = False,
+        allow_stale: bool = True,
     ) -> A2ACardSnapshot:
         key = await self._reconcile_key(user_id, target_config)
         if not force_refresh:
@@ -359,7 +360,11 @@ class A2AProviderRuntime:
                 )
             except A2ARuntimeError:
                 stale = self._snapshots.get_stale(key)
-                if stale is not None and self._clock() >= stale.expires_at:
+                if (
+                    allow_stale
+                    and stale is not None
+                    and self._clock() >= stale.expires_at
+                ):
                     return stale.as_stale()
                 raise
 

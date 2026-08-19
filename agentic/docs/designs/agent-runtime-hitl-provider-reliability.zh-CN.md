@@ -833,7 +833,8 @@ async def resolve(
 
 1. 若产品需要，新增 `form_input + input_schema + values`。
 2. **Stage 4A 已实施**：Model Failure、用户可见终止 ErrorEvent 和前端恢复动作已按稳定错误码与 `recovery_actions` 贯通；输出订阅失败不再伪造 Agent 终止。
-3. 管理页展示 Provider 健康、最近错误码和测试连接，不暴露敏感配置。
+3. **Stage 4B 已实施**：用户可主动触发 LLM/MCP/A2A/API 统一连接诊断，并从失败卡携带安全上下文进入对应设置页，详见 `provider-connection-diagnostics.zh-CN.md`；不后台轮询、不自动调用有副作用的 Tool/Agent/Operation。
+4. Provider 健康历史、最近错误列表、成功率与 Lead 路由反馈作为后续 Stage 4C 单独设计，不暴露敏感配置。
 
 ### 与 Durable Solo Lead Runtime 的关系
 

@@ -33,6 +33,10 @@ const activePanel = ref<SettingsPanelHandle | null>(null)
 const mobilePanelOpen = ref(settingsModal.requestedTab.value !== 'appearance')
 const saving = ref(false)
 const activeDirty = ref(false)
+const activeFailure = computed(() => {
+  const context = settingsModal.failureContext.value
+  return context?.tab === activeTab.value ? context.failure : null
+})
 
 const groups: SettingNavGroup[] = [
   {
@@ -156,6 +160,14 @@ async function handleSave() {
 
       <main class="settings-main">
         <button class="settings-mobile-back" type="button" @click="backToCategories"><ArrowLeft :size="17" />设置分类</button>
+        <section v-if="activeFailure" class="settings-failure-context" role="status">
+          <div>
+            <strong>正在检查本次失败</strong>
+            <ElTag size="small" type="danger" effect="plain">{{ activeFailure.code }}</ElTag>
+          </div>
+          <p>{{ activeFailure.message }}</p>
+          <small>调试参考：{{ activeFailure.debug_id }}</small>
+        </section>
         <SettingsAppearancePanel v-if="activeTab === 'appearance'" ref="activePanel" @dirty-change="activeDirty = $event" />
         <SettingsGeneralPanel v-else-if="activeTab === 'common'" ref="activePanel" @dirty-change="activeDirty = $event" />
         <SettingsModelPanel v-else-if="activeTab === 'llm'" ref="activePanel" @dirty-change="activeDirty = $event" />

@@ -11,6 +11,7 @@ from app.dependencies.services import (
     get_skill_service,
     get_marketplace_skill_service,
     get_project_service,
+    get_provider_diagnostic_service,
 )
 from app.dependencies.auth import get_current_user
 from app.dependencies.uow import get_uow
@@ -27,5 +28,6 @@ __all__ = [
     "get_skill_service",
     "get_marketplace_skill_service",
     "get_project_service",
+    "get_provider_diagnostic_service",
     "get_uow",
 ]

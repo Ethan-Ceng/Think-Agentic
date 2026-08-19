@@ -4,6 +4,7 @@ import { Loader2, RotateCcw, ShieldCheck } from 'lucide-vue-next'
 import { useToast } from '@/composables/useToast'
 import { configApi, DEFAULT_LLM_MAX_TOKENS } from '@/lib/api/config'
 import type { LLMConfig } from '@/lib/api/types'
+import ProviderDiagnosticCard from './ProviderDiagnosticCard.vue'
 import type { SettingsPanelEmits } from './types'
 
 const emit = defineEmits<SettingsPanelEmits>()
@@ -14,6 +15,7 @@ const loading = ref(true)
 const loadError = ref('')
 
 const dirty = computed(() => Boolean(initialSnapshot.value) && JSON.stringify(config.value) !== initialSnapshot.value)
+const diagnosticResetKey = computed(() => JSON.stringify(config.value))
 watch(dirty, (value) => emit('dirty-change', value), { immediate: true })
 
 async function load() {
@@ -70,5 +72,11 @@ defineExpose({ isDirty, save })
       <ElFormItem label="温度 temperature"><ElInputNumber v-model="config.temperature" :min="0" :max="2" :step="0.1" controls-position="right" /></ElFormItem>
       <ElFormItem label="最大输出 Token 数"><ElInputNumber v-model="config.max_tokens" :min="1" :max="128000" :step="1024" :value-on-clear="DEFAULT_LLM_MAX_TOKENS" controls-position="right" /></ElFormItem>
     </div>
+    <ProviderDiagnosticCard
+      provider-type="llm"
+      :disabled="dirty"
+      :reset-key="diagnosticResetKey"
+      description="会向当前已保存的模型发送一次极小请求；有未保存修改时不可测试。"
+    />
   </ElForm>
 </template>

@@ -215,6 +215,19 @@ def validate_api_tool_registration(registration: ToolRegistration) -> None:
         )
 
 
+def inspect_api_tool_registration(
+    registration: ToolRegistration,
+) -> List[APIToolDefinition]:
+    """Validate and parse one registration without invoking any Operation."""
+    raw_schema = registration.config.get("openapi_schema") or registration.config.get(
+        "schema"
+    )
+    if raw_schema in (None, ""):
+        raise ValueError("OpenAPI schema is required")
+    validate_api_tool_registration(registration)
+    return _definitions_from_registration(registration, set())
+
+
 def validate_api_request_url(
     url: str,
     allow_private_network: bool = False,

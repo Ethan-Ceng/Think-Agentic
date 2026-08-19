@@ -7,7 +7,7 @@ import type { SettingTab } from '@/lib/settings'
 
 export type FailureRecoveryCommand =
   | { kind: 'resume'; mode: ResumeMode }
-  | { kind: 'settings'; tab: SettingTab }
+  | { kind: 'settings'; tab: SettingTab; failure: FailureInfo }
 
 export type FailureRecoveryOption = {
   action: RecoveryAction
@@ -51,13 +51,21 @@ function optionForAction(
       return {
         action,
         label: '检查配置',
-        command: { kind: 'settings', tab: getFailureSettingsTab(failure) },
+        command: {
+          kind: 'settings',
+          tab: getFailureSettingsTab(failure),
+          failure,
+        },
       }
     case 'reauthorize':
       return {
         action,
         label: '重新配置连接',
-        command: { kind: 'settings', tab: getFailureSettingsTab(failure) },
+        command: {
+          kind: 'settings',
+          tab: getFailureSettingsTab(failure),
+          failure,
+        },
       }
     case 'choose_provider':
       return null
