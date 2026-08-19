@@ -22,15 +22,15 @@ import SettingsMcpPanel from '@/components/settings/SettingsMcpPanel.vue'
 import SettingsModelPanel from '@/components/settings/SettingsModelPanel.vue'
 import type { SettingsPanelHandle } from '@/components/settings/types'
 import { useSettingsModal } from '@/composables/useSettingsModal'
+import type { SettingTab } from '@/lib/settings'
 
-type SettingTab = 'appearance' | 'common' | 'llm' | 'storage' | 'tools' | 'a2a' | 'mcp'
 type SettingNavItem = { key: SettingTab; icon: Component; title: string; description: string }
 type SettingNavGroup = { label: string; description: string; tabs: SettingNavItem[] }
 
 const settingsModal = useSettingsModal()
-const activeTab = ref<SettingTab>('appearance')
+const activeTab = ref<SettingTab>(settingsModal.requestedTab.value)
 const activePanel = ref<SettingsPanelHandle | null>(null)
-const mobilePanelOpen = ref(false)
+const mobilePanelOpen = ref(settingsModal.requestedTab.value !== 'appearance')
 const saving = ref(false)
 const activeDirty = ref(false)
 

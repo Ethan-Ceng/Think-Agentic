@@ -21,7 +21,9 @@ from app.core.llm.base import (
     LLMStreamingUnsupportedError,
 )
 from app.core.llm.json_stream import TopLevelJSONStringProjector
+from app.core.llm.failure import ModelFailureCode, ModelRuntimeError, model_failure
 from app.core.entities.app_config import AgentConfig
+from app.core.entities.failure import RunFailureCode, run_failure
 from app.core.entities.event import (
     BaseEvent,
     ErrorEvent,
@@ -239,8 +241,10 @@ class BaseAgent(ABC):
         await self._prepare_tool_schemas()
         await self._add_to_memory(messages)
         response_format = {"type": format} if format else None
-        error = "调用语言模型发生错误"
         draft_active = False
+        last_model_error = ModelRuntimeError(
+            model_failure(ModelFailureCode.UNKNOWN_ERROR)
+        )
 
         for attempt in range(self._agent_config.max_retries):
             available_tools = self._get_available_tools()
@@ -357,7 +361,9 @@ class BaseAgent(ABC):
                 filtered_message = self._filter_llm_message(message)
                 if filtered_message is None:
                     logger.warning("LLM回复了空内容，执行重试")
-                    error = "LLM回复了空内容"
+                    last_model_error = ModelRuntimeError(
+                        model_failure(ModelFailureCode.EMPTY_RESPONSE)
+                    )
                     await self._add_to_memory([
                         {"role": "assistant", "content": ""},
                         {"role": "user", "content": "AI无响应内容，请继续。"},
@@ -382,30 +388,49 @@ class BaseAgent(ABC):
                 )
                 return
             except Exception as exception:
+                if isinstance(exception, ModelRuntimeError):
+                    current_error = exception
+                elif isinstance(
+                    exception,
+                    (LLMStreamingUnsupportedError, NotImplementedError),
+                ):
+                    current_error = ModelRuntimeError(
+                        model_failure(ModelFailureCode.INVALID_RESPONSE),
+                        cause=exception,
+                    )
+                else:
+                    current_error = ModelRuntimeError(
+                        model_failure(ModelFailureCode.UNKNOWN_ERROR),
+                        cause=exception,
+                    )
+                last_model_error = current_error
                 if self._trace_service and not trace_finished:
                     await self._trace_service.record_model_call_finished(
                         model_call_id,
-                        error=str(exception),
+                        error=current_error.failure.message,
                         latency_ms=elapsed_ms(model_started),
                     )
-                logger.error("调用语言模型发生错误: %s", str(exception))
-                error = str(exception)
+                logger.error(
+                    "调用语言模型失败: code=%s debug_id=%s error_type=%s",
+                    current_error.failure.code,
+                    current_error.failure.debug_id,
+                    type(exception).__name__,
+                )
+                terminal_attempt = (
+                    not current_error.failure.retryable
+                    or attempt == self._agent_config.max_retries - 1
+                )
                 if draft_active:
-                    operation = (
-                        "abort"
-                        if attempt == self._agent_config.max_retries - 1
-                        else "reset"
-                    )
+                    operation = "abort" if terminal_attempt else "reset"
                     yield ProjectedMessageDelta(delta="", operation=operation)
                     if operation == "abort":
                         draft_active = False
-                if attempt < self._agent_config.max_retries - 1:
+                if not current_error.failure.retryable:
+                    raise current_error
+                if not terminal_attempt:
                     await asyncio.sleep(self._retry_interval)
 
-        raise RuntimeError(
-            "调用语言模型失败, 已达到最大重试次数"
-            f"({self._agent_config.max_retries}): {error}"
-        )
+        raise last_model_error
 
     @staticmethod
     def _filter_llm_message(message: Dict[str, Any]) -> Dict[str, Any] | None:
@@ -636,19 +661,19 @@ class BaseAgent(ABC):
                 else:
                     next_message = llm_event.message
             if next_message is None:
-                yield ErrorEvent(error="Agent未能获得工具调用后的模型回复")
+                yield ErrorEvent(
+                    failure=model_failure(ModelFailureCode.INVALID_RESPONSE)
+                )
                 return
             message = next_message
         else:
-            yield ErrorEvent(
-                error=f"Agent迭代超过最大迭代次数: {self._agent_config.max_iterations}, 任务处理失败"
-            )
+            yield ErrorEvent(failure=run_failure(RunFailureCode.ITERATION_LIMIT))
             return
 
         if message and message.get("content") is not None:
             yield MessageEvent(message=message["content"])
         else:
-            yield ErrorEvent(error="Agent未能生成有效回复内容")
+            yield ErrorEvent(failure=model_failure(ModelFailureCode.EMPTY_RESPONSE))
 
     async def resume_interaction(
             self,
@@ -725,7 +750,9 @@ class BaseAgent(ABC):
             else:
                 next_message = llm_event.message
         if next_message is None:
-            yield ErrorEvent(error="Agent未能获得交互恢复后的模型回复")
+            yield ErrorEvent(
+                failure=model_failure(ModelFailureCode.INVALID_RESPONSE)
+            )
             return
         async for event in self._continue_tool_loop(
             next_message,
@@ -756,7 +783,9 @@ class BaseAgent(ABC):
             else:
                 message = llm_event.message
         if message is None:
-            yield ErrorEvent(error="Agent未能获得模型回复")
+            yield ErrorEvent(
+                failure=model_failure(ModelFailureCode.INVALID_RESPONSE)
+            )
             return
 
         # 3.继续执行工具循环；需要人类输入时该生成器会在实际调用前安全结束。

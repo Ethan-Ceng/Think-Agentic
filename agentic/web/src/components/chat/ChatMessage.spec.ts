@@ -89,7 +89,7 @@ describe('ChatMessage reply failure recovery', () => {
     expect(wrapper.getComponent(MarkdownContent).props('content')).not.toContain(internalError)
   })
 
-  it('maps reply regeneration and task restart to the existing recovery modes', async () => {
+  it('maps legacy reply regeneration and task restart to recovery commands', async () => {
     const wrapper = shallowMount(ChatMessage, {
       props: {
         item: errorItem,
@@ -105,7 +105,10 @@ describe('ChatMessage reply failure recovery', () => {
     await buttons[0].trigger('click')
     await buttons[1].trigger('click')
 
-    expect(wrapper.emitted('recoverTask')).toEqual([['continue'], ['restart']])
+    expect(wrapper.emitted('recoverFailure')).toEqual([
+      [{ kind: 'resume', mode: 'continue' }],
+      [{ kind: 'resume', mode: 'restart' }],
+    ])
   })
 
   it('shows provider failures as provider errors instead of model configuration errors', () => {
@@ -126,6 +129,37 @@ describe('ChatMessage reply failure recovery', () => {
     expect(wrapper.getComponent(MarkdownContent).props('content')).not.toContain(
       '账户余额',
     )
+    expect(wrapper.text()).toContain('参考编号：debug-provider-1')
+    expect(wrapper.findAll('.task-recovery-button').map((button) => button.text())).toEqual([
+      '重试本次回复',
+    ])
+  })
+
+  it('shows non-retry configuration actions and emits the settings command', async () => {
+    const wrapper = shallowMount(ChatMessage, {
+      props: {
+        item: {
+          ...providerErrorItem,
+          failure: {
+            ...providerErrorItem.failure!,
+            code: 'PROVIDER_AUTH_FAILED',
+            retryable: false,
+            recovery_actions: ['reauthorize', 'start_new_run'],
+          },
+        },
+        showRecoveryActions: true,
+      },
+    })
+
+    const buttons = wrapper.findAll('.task-recovery-button')
+    expect(buttons.map((button) => button.text())).toEqual([
+      '重新配置连接',
+      '重新执行任务',
+    ])
+    await buttons[0].trigger('click')
+    expect(wrapper.emitted('recoverFailure')).toEqual([
+      [{ kind: 'settings', tab: 'mcp' }],
+    ])
   })
 
   it('hides recovery actions for historical errors and disables them while recovering', () => {

@@ -18,6 +18,7 @@ from app.extensions.file_storage import FileStorage
 from app.extensions.skill_package_storage import SkillPackageStorage
 from app.core.json_parser.base import JSONParser
 from app.core.llm.base import LLM
+from app.core.llm.failure import ModelRuntimeError
 from app.core.sandbox.base import Sandbox
 from app.core.sandbox.runtime import LazySandboxRuntime, SandboxActivation
 from app.core.search.base import SearchEngine
@@ -389,7 +390,7 @@ class AgentTaskRunner(TaskRunner):
         # 1.判断传递的消息是否为空
         if not message.message:
             logger.warning("AgentTaskRunner接收了一条空消息")
-            yield ErrorEvent(error="空消息错误")
+            yield ErrorEvent(failure=run_failure(RunFailureCode.INTERNAL_ERROR))
             return
 
         # 2.调用流并运行获取事件信息
@@ -623,6 +624,20 @@ class AgentTaskRunner(TaskRunner):
                 task,
                 ErrorEvent(failure=run_failure(RunFailureCode.INTERNAL_ERROR)),
             )
+        except ModelRuntimeError as e:
+            logger.warning(
+                "模型运行失败: code=%s debug_id=%s",
+                e.failure.code,
+                e.failure.debug_id,
+            )
+            async with self._uow:
+                await self._uow.session.reset_processing_next_message(self._session_id)
+                await self._uow.session.update_status(
+                    self._session_id,
+                    SessionStatus.COMPLETED,
+                )
+            await self._abort_active_streams(task, active_streams)
+            await self._put_and_add_event(task, ErrorEvent(failure=e.failure))
         except ProviderRuntimeError as e:
             logger.warning(
                 "MCP Provider运行失败: code=%s provider_id=%s debug_id=%s",

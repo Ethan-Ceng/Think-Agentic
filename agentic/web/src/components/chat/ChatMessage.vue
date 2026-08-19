@@ -20,13 +20,16 @@ import type { Component } from 'vue'
 import type {
   BranchOperation,
   ResolveInteractionParams,
-  ResumeMode,
   ToolEvent,
 } from '@/lib/api/types'
 import type { FailureCategory } from '@/lib/api/types'
 import type { InlineChatArtifact } from '@/lib/chat-artifacts'
 import type { AttachmentFile, TimelineItem, UserMessageStatus } from '@/lib/session-events'
 import { getFriendlyToolLabel, getToolKind } from '@/lib/tool-utils'
+import {
+  getFailureRecoveryOptions,
+  type FailureRecoveryCommand,
+} from '@/lib/failure-recovery'
 
 defineProps<{
   item: TimelineItem
@@ -47,7 +50,7 @@ const emit = defineEmits<{
   fileClick: [file: AttachmentFile]
   toolClick: [tool: ToolEvent]
   retryMessage: [itemId: string]
-  recoverTask: [mode: ResumeMode]
+  recoverFailure: [command: FailureRecoveryCommand]
   resolveInteraction: [actionId: string, params: ResolveInteractionParams]
   branchAction: [operation: BranchOperation, item: TimelineItem]
   editSubmit: [message: string]
@@ -84,8 +87,8 @@ function getFailureMessage(item: TimelineItem): string {
   return friendlyReplyError
 }
 
-function canRecoverFailure(item: TimelineItem): boolean {
-  return item.kind !== 'error' || item.failure?.retryable !== false
+function getRecoveryOptions(item: TimelineItem) {
+  return getFailureRecoveryOptions(item.kind === 'error' ? item.failure : undefined)
 }
 
 function getUserStatus(item: TimelineItem): UserMessageStatus {
@@ -270,22 +273,20 @@ function handleResolveInteraction(actionId: string, params: ResolveInteractionPa
           <strong>{{ getFailureTitle(item) }}</strong>
         </div>
         <MarkdownContent :content="getFailureMessage(item)" />
-        <div v-if="showRecoveryActions && canRecoverFailure(item)" class="task-recovery-actions">
+        <p v-if="item.failure?.debug_id" class="failure-debug-id">
+          参考编号：<code>{{ item.failure.debug_id }}</code>
+        </p>
+        <div v-if="showRecoveryActions && getRecoveryOptions(item).length" class="task-recovery-actions">
           <button
-            class="task-recovery-button is-primary"
-            type="button"
-            :disabled="recoveryBusy"
-            @click="emit('recoverTask', 'continue')"
-          >
-            重新生成回复
-          </button>
-          <button
+            v-for="option in getRecoveryOptions(item)"
+            :key="option.action"
             class="task-recovery-button"
+            :class="{ 'is-primary': option.primary }"
             type="button"
             :disabled="recoveryBusy"
-            @click="emit('recoverTask', 'restart')"
+            @click="emit('recoverFailure', option.command)"
           >
-            重新执行任务
+            {{ option.label }}
           </button>
         </div>
       </div>

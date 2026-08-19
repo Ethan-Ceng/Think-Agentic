@@ -13,6 +13,7 @@ import SessionHeader from '@/components/SessionHeader.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import UiState from '@/components/ui/UiState.vue'
 import { useSessionDetail } from '@/composables/useSessionDetail'
+import { useSettingsModal } from '@/composables/useSettingsModal'
 import { useToast } from '@/composables/useToast'
 import { sessionApi } from '@/lib/api/session'
 import { ApiError } from '@/lib/api/fetch'
@@ -34,6 +35,7 @@ import type { SendMessageInput, SkillRef } from '@/types/skill'
 import { eventsToTimeline, formatMessageTimeLabel, getLatestPlanFromEvents } from '@/lib/session-events'
 import { getToolKind } from '@/lib/tool-utils'
 import { createQueuedRunIntent } from '@/lib/session-init'
+import type { FailureRecoveryCommand } from '@/lib/failure-recovery'
 
 const props = withDefaults(defineProps<{
   sessionId: string
@@ -64,6 +66,7 @@ type PendingUserMessage = {
 const router = useRouter()
 const route = useRoute()
 const toast = useToast()
+const settingsModal = useSettingsModal()
 const FilePreviewPanel = defineAsyncComponent(() => import('@/components/FilePreviewPanel.vue'))
 const ChatArtifactPreviewPanel = defineAsyncComponent(
   () => import('@/components/chat/ChatArtifactPreviewPanel.vue'),
@@ -700,6 +703,14 @@ async function handleRecoverTask(mode: ResumeMode) {
   }
 }
 
+async function handleFailureRecovery(command: FailureRecoveryCommand) {
+  if (command.kind === 'settings') {
+    settingsModal.openSettings(command.tab)
+    return
+  }
+  await handleRecoverTask(command.mode)
+}
+
 async function handleCancelNextMessage() {
   if (detail.session.value?.next_message?.state === 'processing') return
   try {
@@ -1077,7 +1088,7 @@ async function handleStop() {
                 @tool-click="handleToolClick"
                 @artifact-open="handleArtifactOpen"
                 @retry-message="handleRetryMessage"
-                @recover-task="handleRecoverTask"
+                @recover-failure="handleFailureRecovery"
                 @resolve-interaction="handleResolveInteraction"
                 @branch-action="handleBranchAction"
                 @edit-submit="handleEditBranchSubmit"

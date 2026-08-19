@@ -18,6 +18,7 @@ from app.core.entities.event import (
 )
 from app.core.entities.session import NextMessage, NextMessageState, SessionStatus
 from app.core.task.base import RunCancellationContext, RunCancellationReason
+from app.core.llm.failure import ModelFailureCode, ModelRuntimeError, model_failure
 
 
 class FakeSessionRepository:
@@ -260,6 +261,29 @@ def test_failed_run_updates_status_then_emits_error() -> None:
     assert "broken flow" not in output_events[0].error
     assert len(session_repo.next_messages) == 1
     assert session_repo.finish_calls == 0
+
+
+def test_model_failure_keeps_its_typed_error_at_run_boundary() -> None:
+    runner, session_repo = make_runner()
+    failure = model_failure(ModelFailureCode.AUTHENTICATION_FAILED)
+
+    async def failed_flow(_message):
+        raise ModelRuntimeError(failure)
+        if False:
+            yield None
+
+    runner._run_flow = failed_flow
+    task = FakeTask(MessageEvent(role="user", message="hello"))
+
+    asyncio.run(runner.invoke(task))
+
+    output_events = parse_output_events(task)
+    assert session_repo.status_updates == [SessionStatus.COMPLETED]
+    assert len(output_events) == 1
+    assert isinstance(output_events[0], ErrorEvent)
+    assert output_events[0].failure is not None
+    assert output_events[0].failure.code == ModelFailureCode.AUTHENTICATION_FAILED.value
+    assert output_events[0].failure.debug_id == failure.debug_id
 
 
 def test_unattributed_cancel_becomes_internal_error_instead_of_user_stop() -> None:

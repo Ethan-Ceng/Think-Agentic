@@ -37,6 +37,7 @@ class RunFailureCode(str, Enum):
     CANCELLED_BY_USER = "RUN_CANCELLED_BY_USER"
     CANCELLED_BY_SHUTDOWN = "RUN_CANCELLED_BY_SHUTDOWN"
     CONTEXT_LOST = "RUN_CONTEXT_LOST"
+    ITERATION_LIMIT = "RUN_ITERATION_LIMIT"
     INTERNAL_ERROR = "RUN_INTERNAL_ERROR"
 
 
@@ -84,6 +85,11 @@ def run_failure(code: RunFailureCode) -> FailureInfo:
         ),
         RunFailureCode.CONTEXT_LOST: (
             "本次运行上下文已丢失；当前进程无法继续，你可以基于已有结果继续。",
+            True,
+            [RecoveryAction.CONTINUE, RecoveryAction.START_NEW_RUN],
+        ),
+        RunFailureCode.ITERATION_LIMIT: (
+            "任务达到最大执行轮次，当前结果未能完成。",
             True,
             [RecoveryAction.CONTINUE, RecoveryAction.START_NEW_RUN],
         ),

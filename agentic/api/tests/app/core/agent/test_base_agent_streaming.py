@@ -20,6 +20,7 @@ from app.core.llm.base import (
     LLMStreamDelta,
     LLMStreamingUnsupportedError,
 )
+from app.core.llm.failure import ModelFailureCode, ModelRuntimeError, model_failure
 from app.core.tools.base import BaseTool, tool
 
 
@@ -117,6 +118,20 @@ class BlockLLM:
     async def invoke(self, **kwargs) -> dict[str, Any]:
         self.invoke_calls += 1
         return self.response
+
+
+class FailingBlockLLM:
+    model_name = "failing-block-model"
+    temperature = 0
+    max_tokens = 128
+
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+        self.invoke_calls = 0
+
+    async def invoke(self, **kwargs) -> dict[str, Any]:
+        self.invoke_calls += 1
+        raise self.error
 
 
 class UnsupportedStreamingLLM(BlockLLM):
@@ -313,7 +328,7 @@ async def test_retry_exhaustion_aborts_any_visible_draft() -> None:
     agent, _ = make_agent(llm)
     events: list[Any] = []
 
-    with pytest.raises(RuntimeError, match="最大重试次数"):
+    with pytest.raises(ModelRuntimeError) as exc_info:
         async for event in agent._invoke_llm_stream(
             [{"role": "user", "content": "hello"}],
             "json_object",
@@ -321,6 +336,7 @@ async def test_retry_exhaustion_aborts_any_visible_draft() -> None:
         ):
             events.append(event)
 
+    assert exc_info.value.failure.code == ModelFailureCode.UNKNOWN_ERROR.value
     assert [(event.operation, event.delta) for event in events] == [
         ("append", "old"),
         ("reset", ""),
@@ -363,7 +379,7 @@ async def test_provider_stream_incompatibility_never_falls_back_after_a_chunk() 
     agent, _ = make_agent(llm, max_retries=2)
     events: list[Any] = []
 
-    with pytest.raises(RuntimeError, match="最大重试次数"):
+    with pytest.raises(ModelRuntimeError) as exc_info:
         async for event in agent._invoke_llm_stream(
             [{"role": "user", "content": "hello"}],
             "json_object",
@@ -371,6 +387,7 @@ async def test_provider_stream_incompatibility_never_falls_back_after_a_chunk() 
         ):
             events.append(event)
 
+    assert exc_info.value.failure.code == ModelFailureCode.INVALID_RESPONSE.value
     assert [(event.operation, event.delta) for event in events] == [
         ("append", "partial"),
         ("reset", ""),
@@ -379,6 +396,32 @@ async def test_provider_stream_incompatibility_never_falls_back_after_a_chunk() 
     ]
     assert llm.stream_calls == 2
     assert llm.invoke_calls == 0
+
+
+async def test_non_retryable_model_failure_stops_after_one_attempt() -> None:
+    failure = model_failure(ModelFailureCode.AUTHENTICATION_FAILED)
+    llm = FailingBlockLLM(ModelRuntimeError(failure))
+    agent, _ = make_agent(llm, max_retries=3)
+
+    with pytest.raises(ModelRuntimeError) as exc_info:
+        await collect(agent)
+
+    assert llm.invoke_calls == 1
+    assert exc_info.value.failure.debug_id == failure.debug_id
+    assert exc_info.value.failure.code == ModelFailureCode.AUTHENTICATION_FAILED.value
+
+
+async def test_retryable_model_failure_preserves_last_failure_after_limit() -> None:
+    failure = model_failure(ModelFailureCode.TIMEOUT)
+    llm = FailingBlockLLM(ModelRuntimeError(failure))
+    agent, _ = make_agent(llm, max_retries=3)
+
+    with pytest.raises(ModelRuntimeError) as exc_info:
+        await collect(agent)
+
+    assert llm.invoke_calls == 3
+    assert exc_info.value.failure.debug_id == failure.debug_id
+    assert exc_info.value.failure.code == ModelFailureCode.TIMEOUT.value
 
 
 async def test_tool_loop_streams_only_the_post_tool_visible_field() -> None:

@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   getBranchFamily: vi.fn(),
   createBranch: vi.fn(),
   stopSession: vi.fn(),
+  openSettings: vi.fn(),
 }))
 
 vi.mock('@/composables/useSessionDetail', () => ({
@@ -26,6 +27,12 @@ vi.mock('@/composables/useToast', () => ({
     success: vi.fn(),
     error: vi.fn(),
     info: mocks.toastInfo,
+  }),
+}))
+
+vi.mock('@/composables/useSettingsModal', () => ({
+  useSettingsModal: () => ({
+    openSettings: mocks.openSettings,
   }),
 }))
 
@@ -62,8 +69,9 @@ const ChatMessageStub = defineComponent({
     item: { type: Object, required: true },
     editing: Boolean,
     editBusy: Boolean,
+    showRecoveryActions: Boolean,
   },
-  emits: ['branchAction', 'editSubmit', 'editCancel', 'artifactOpen'],
+  emits: ['branchAction', 'editSubmit', 'editCancel', 'artifactOpen', 'recoverFailure'],
   setup(_, { emit }) {
     return {
       openArtifact: () => emit('artifactOpen', {
@@ -108,6 +116,18 @@ const ChatMessageStub = defineComponent({
         class="open-inline-artifact"
         type="button"
         @click="openArtifact"
+      />
+      <button
+        v-if="item.kind === 'error' && showRecoveryActions"
+        class="recover-continue"
+        type="button"
+        @click="$emit('recoverFailure', { kind: 'resume', mode: 'continue' })"
+      />
+      <button
+        v-if="item.kind === 'error' && showRecoveryActions"
+        class="recover-settings"
+        type="button"
+        @click="$emit('recoverFailure', { kind: 'settings', tab: 'llm' })"
       />
     </article>
   `,
@@ -278,6 +298,48 @@ async function mountView(
   })
   return { router, wrapper }
 }
+
+describe('SessionDetailView failure recovery commands', () => {
+  beforeEach(() => {
+    mocks.openSettings.mockReset()
+    mocks.getBranchFamily.mockReset()
+    mocks.getBranchFamily.mockResolvedValue(null)
+    mocks.detail = makeDetail({
+      status: 'completed',
+      events: [
+        {
+          type: 'error',
+          data: {
+            error: '模型服务鉴权失败，请检查 API Key 或模型配置。',
+            failure: {
+              code: 'MODEL_AUTHENTICATION_FAILED',
+              category: 'model',
+              scope: 'run',
+              source: 'llm.openai_compatible',
+              message: '模型服务鉴权失败，请检查 API Key 或模型配置。',
+              retryable: false,
+              recovery_actions: ['check_config'],
+              debug_id: 'debug-model-1',
+            },
+          },
+        },
+      ],
+    })
+  })
+
+  it('dispatches resume and settings commands to their real handlers', async () => {
+    const { wrapper } = await mountView('/sessions/session-1', 'session-1')
+    const detail = mocks.detail as ReturnType<typeof makeDetail>
+
+    await wrapper.get('.recover-continue').trigger('click')
+    expect(detail.resumeTask).toHaveBeenCalledWith('continue')
+
+    await wrapper.get('.recover-settings').trigger('click')
+    expect(mocks.openSettings).toHaveBeenCalledWith('llm')
+    expect(detail.resumeTask).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+})
 
 describe('SessionDetailView archived state', () => {
   beforeEach(() => {

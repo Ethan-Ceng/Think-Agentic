@@ -11,9 +11,20 @@ from collections.abc import AsyncIterator, Mapping
 from time import monotonic
 from typing import List, Dict, Any
 
-from openai import AsyncOpenAI
+from openai import (
+    APIConnectionError,
+    APIStatusError,
+    APITimeoutError,
+    AsyncOpenAI,
+    AuthenticationError,
+    BadRequestError,
+    InternalServerError,
+    NotFoundError,
+    PermissionDeniedError,
+    RateLimitError,
+    UnprocessableEntityError,
+)
 
-from app.schemas.exceptions import ServerRequestsError
 from app.core.llm.base import (
     LLM,
     LLMStreamCompleted,
@@ -21,9 +32,55 @@ from app.core.llm.base import (
     LLMStreamEvent,
     LLMStreamingUnsupportedError,
 )
+from app.core.llm.failure import (
+    ModelFailureCode,
+    ModelRuntimeError,
+    model_failure,
+)
 from app.core.entities.app_config import LLMConfig
+from app.core.entities.failure import FailureInfo
 
 logger = logging.getLogger(__name__)
+
+
+def model_failure_from_openai_error(error: Exception) -> FailureInfo:
+    """Map SDK failures without inspecting or exposing provider error text."""
+    if isinstance(error, AuthenticationError):
+        code = ModelFailureCode.AUTHENTICATION_FAILED
+    elif isinstance(error, PermissionDeniedError):
+        code = ModelFailureCode.PERMISSION_DENIED
+    elif isinstance(error, RateLimitError):
+        code = ModelFailureCode.RATE_LIMITED
+    elif isinstance(error, APITimeoutError):
+        code = ModelFailureCode.TIMEOUT
+    elif isinstance(error, APIConnectionError):
+        code = ModelFailureCode.CONNECTION_FAILED
+    elif isinstance(
+        error,
+        (BadRequestError, NotFoundError, UnprocessableEntityError),
+    ):
+        code = ModelFailureCode.REQUEST_INVALID
+    elif isinstance(error, InternalServerError):
+        code = ModelFailureCode.SERVICE_UNAVAILABLE
+    elif isinstance(error, APIStatusError):
+        status_code = error.status_code
+        if status_code == 401:
+            code = ModelFailureCode.AUTHENTICATION_FAILED
+        elif status_code == 403:
+            code = ModelFailureCode.PERMISSION_DENIED
+        elif status_code == 429:
+            code = ModelFailureCode.RATE_LIMITED
+        elif status_code == 408:
+            code = ModelFailureCode.TIMEOUT
+        elif 400 <= status_code < 500:
+            code = ModelFailureCode.REQUEST_INVALID
+        elif status_code >= 500:
+            code = ModelFailureCode.SERVICE_UNAVAILABLE
+        else:
+            code = ModelFailureCode.UNKNOWN_ERROR
+    else:
+        code = ModelFailureCode.UNKNOWN_ERROR
+    return model_failure(code)
 
 
 class OpenAILLM(LLM):
@@ -105,9 +162,15 @@ class OpenAILLM(LLM):
                 "usage": response.usage.model_dump(mode="json") if response.usage else {},
             }
             return message
-        except Exception as e:
-            logger.error(f"调用OpenAI客户端发生错误: {str(e)}")
-            raise ServerRequestsError("调用OpenAI客户端向LLM发起请求出错")
+        except Exception as error:
+            failure = model_failure_from_openai_error(error)
+            logger.error(
+                "OpenAI-compatible块调用失败: code=%s debug_id=%s error_type=%s",
+                failure.code,
+                failure.debug_id,
+                type(error).__name__,
+            )
+            raise ModelRuntimeError(failure, cause=error) from error
 
     def stream(
             self,
@@ -254,8 +317,14 @@ class OpenAILLM(LLM):
         except LLMStreamingUnsupportedError:
             raise
         except Exception as error:
-            logger.error("调用OpenAI客户端流式响应发生错误: %s", str(error))
-            raise ServerRequestsError("调用OpenAI客户端向LLM发起流式请求出错") from error
+            failure = model_failure_from_openai_error(error)
+            logger.error(
+                "OpenAI-compatible流式调用失败: code=%s debug_id=%s error_type=%s",
+                failure.code,
+                failure.debug_id,
+                type(error).__name__,
+            )
+            raise ModelRuntimeError(failure, cause=error) from error
 
     async def _create_stream(self, request: Dict[str, Any]) -> Any:
         try:

@@ -11,7 +11,7 @@ const settingsModal = useSettingsModal()
     type="button"
     title="设置"
     aria-label="设置"
-    @click="settingsModal.openSettings"
+    @click="settingsModal.openSettings()"
   >
     <Settings :size="18" />
   </button>

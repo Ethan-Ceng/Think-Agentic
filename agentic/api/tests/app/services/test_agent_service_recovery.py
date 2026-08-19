@@ -232,6 +232,16 @@ class RunningReplayTask:
         self.output_stream = ReplayOutputStream(events)
 
 
+class FailingOutputStream:
+    async def get(self, start_id=None, block_ms=None):
+        raise RuntimeError("Authorization: Bearer sk-secret")
+
+
+class RunningTaskWithBrokenOutput:
+    done = False
+    output_stream = FailingOutputStream()
+
+
 def make_service(session: Session) -> tuple[AgentService, FakeSessionRepository, FakeTraceRepository]:
     session_repo = FakeSessionRepository(session)
     trace_repo = FakeTraceRepository()
@@ -278,6 +288,39 @@ def test_chat_finalizes_running_session_when_task_registry_was_lost() -> None:
     assert session_repo.events == events
     assert trace_repo.interruptions[0]["session_id"] == session.id
     assert "运行上下文已丢失" in trace_repo.interruptions[0]["error"]
+
+
+def test_chat_subscription_failure_does_not_finalize_the_running_agent() -> None:
+    session = Session(
+        id="session-1",
+        user_id="user-1",
+        task_id="task-1",
+        status=SessionStatus.RUNNING,
+    )
+    service, session_repo, _ = make_service(session)
+
+    async def fake_get_task(_session: Session) -> RunningTaskWithBrokenOutput:
+        return RunningTaskWithBrokenOutput()
+
+    service._get_task = fake_get_task  # type: ignore[method-assign]
+
+    async def run() -> None:
+        async for _ in service.chat(
+                session_id=session.id,
+                user_id=session.user_id,
+        ):
+            pass
+
+    try:
+        asyncio.run(run())
+    except RuntimeError as error:
+        assert "sk-secret" in str(error)
+    else:
+        raise AssertionError("subscription failure must close the current stream")
+
+    assert session.status == SessionStatus.RUNNING
+    assert session_repo.status_updates == []
+    assert session_repo.events == []
 
 
 def test_recovery_messages_distinguish_continue_from_restart() -> None:
@@ -763,7 +806,9 @@ def test_plain_reply_task_creation_failure_does_not_recreate_resolved_wait() -> 
 
     assert len(events) == 1
     assert isinstance(events[0], ErrorEvent)
-    assert "task construction failed" in events[0].error
+    assert events[0].failure is not None
+    assert events[0].failure.code == "RUN_INTERNAL_ERROR"
+    assert "task construction failed" not in events[0].error
     assert session.status == SessionStatus.COMPLETED
     assert session.events[-1].status == InteractionStatus.RESOLVED
     assert session.events[-1].answer == "Shanghai"

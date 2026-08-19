@@ -65,10 +65,6 @@ logger = logging.getLogger(__name__)
 class AgentService:
     """Manus智能体服务"""
 
-    ORPHANED_RUN_ERROR = (
-        "当前进程已无法继续本次运行。"
-        "你可以基于已有结果继续，或重新执行本次任务。"
-    )
     RECOVERY_MESSAGES = {
         "continue": (
             "请基于当前对话已有结果，从未完成处继续执行任务。"
@@ -282,7 +278,7 @@ class AgentService:
 
     async def _finalize_orphaned_run(self, session: Session) -> ErrorEvent:
         failure = run_failure(RunFailureCode.CONTEXT_LOST)
-        event = ErrorEvent(error=self.ORPHANED_RUN_ERROR, failure=failure)
+        event = ErrorEvent(failure=failure)
         finished_at = datetime.now()
         async with self._uow:
             await self._uow.session.reset_processing_next_message(session.id)
@@ -400,6 +396,7 @@ class AgentService:
         skills = skills or []
         previous_status: SessionStatus | None = None
         routed_interaction: InteractionEvent | None = None
+        consuming_output = False
         try:
             # 1. 新 Run 与归档在同一行锁上串行化；只读订阅保持原查询。
             if message:
@@ -471,22 +468,8 @@ class AgentService:
             if message:
                 # 4.判断会话的状态是什么,如果不是运行中则表示已完成或者空闲中
                 if previous_status is not None or session.status != SessionStatus.RUNNING or task is None:
-                    # 5.不在运行中需要创建一个新的task并启动
-                    try:
-                        task = await self._create_task(session)
-                    except Exception:
-                        if previous_status is not None or preclaimed_interaction:
-                            restore_status = (
-                                SessionStatus.COMPLETED
-                                if interaction_response is not None
-                                else previous_status
-                            )
-                            async with self._uow:
-                                await self._uow.session.update_status(
-                                    session_id,
-                                    restore_status,
-                                )
-                        raise
+                    # 5.不在运行中需要创建一个新的task并启动；失败由统一终止边界收敛。
+                    task = await self._create_task(session)
                     if not task:
                         logger.error(f"会话[{session_id}]创建任务失败")
                         raise RuntimeError(f"会话[{session_id}]创建任务失败")
@@ -549,6 +532,7 @@ class AgentService:
 
             # 11.从任务的输出流中读取数据。任务可能先于 SSE 消费循环结束，
             # 因此必须再做一次有限等待来排空已经写入的尾部终止事件。
+            consuming_output = True
             while task:
                 # 12.从输出消息队列中获取数据
                 event_id, event_str = await task.output_stream.get(
@@ -582,13 +566,35 @@ class AgentService:
                     break
 
             # 16.循环外面表示这次任务AI端的已结束
+            consuming_output = False
             logger.info(f"会话[{session_id}]本轮运行结束")
         except Exception as e:
-            # 17.记录日志并返回错误事件
-            logger.error(f"任务会话[{session_id}]对话出错: {str(e)}")
-            event = ErrorEvent(error=str(e))
+            if consuming_output:
+                # 输出订阅是消费者边界；失败只能关闭本次 SSE，由客户端重连对账，
+                # 不能改写仍在运行的 Agent Run 或持久化伪终止事件。
+                logger.exception(
+                    "会话[%s]输出订阅失败: error_type=%s",
+                    session_id,
+                    type(e).__name__,
+                )
+                raise
+
+            # 17.任务构造/输入持久化异常投影安全终止事件；原始异常留在服务端日志。
+            failure = run_failure(RunFailureCode.INTERNAL_ERROR)
+            logger.exception(
+                "任务会话[%s]对话出错: debug_id=%s error_type=%s",
+                session_id,
+                failure.debug_id,
+                type(e).__name__,
+            )
+            event = ErrorEvent(failure=failure)
             try:
                 async with self._uow:
+                    await self._uow.session.reset_processing_next_message(session_id)
+                    await self._uow.session.update_status(
+                        session_id,
+                        SessionStatus.COMPLETED,
+                    )
                     await self._uow.session.add_event(session_id, event)
             except (asyncio.CancelledError, Exception) as add_err:
                 logger.warning(f"会话[{session_id}]添加错误事件失败(可能是客户端断开连接): {add_err}")

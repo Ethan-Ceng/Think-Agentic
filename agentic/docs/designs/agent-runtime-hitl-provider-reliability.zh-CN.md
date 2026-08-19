@@ -7,7 +7,7 @@
 - 创建日期：2026-08-18
 - 最近更新：2026-08-19
 - 前置设计：`lead-agent-runtime-unification.zh-CN.md`
-- 实施进度：通用 `tool_approval` 移除、历史状态安全收敛、`ask_user` Composer/问题卡统一原子自动续跑、Lazy Sandbox Runtime，以及阶段 1A/1B 的统一 Tool Plane 与外部 Provider 惰性接入已落地；阶段 2 的 MCP Provider Actor、跨 Run 有界 Schema Snapshot、类型化错误与取消来源隔离已落地；阶段 3 的 A2A 目标级 Card Snapshot、条件刷新、共享 HTTP Runtime、安全委派目录和现代/旧协议兼容已落地；完整平台 Capability Grant、Durable Finalizer、A2A streaming/认证和完整错误 UX 仍待后续批次
+- 实施进度：通用 `tool_approval` 移除、历史状态安全收敛、`ask_user` Composer/问题卡统一原子自动续跑、Lazy Sandbox Runtime，以及阶段 1A/1B 的统一 Tool Plane 与外部 Provider 惰性接入已落地；阶段 2 的 MCP Provider Actor、跨 Run 有界 Schema Snapshot、类型化错误与取消来源隔离已落地；阶段 3 的 A2A 目标级 Card Snapshot、条件刷新、共享 HTTP Runtime、安全委派目录和现代/旧协议兼容已落地；阶段 4A 的 Model Failure、终止错误收口与 RecoveryAction UX 已落地；完整平台 Capability Grant、Durable Finalizer、A2A streaming/认证、`form_input` 和 Provider 健康管理仍待后续批次
 
 ## 结论先行
 
@@ -829,10 +829,10 @@ async def resolve(
 5. 模型只读取 `DelegationTargetDescriptor` 白名单摘要并明确标记 `untrusted_external`；单目标发现/调用失败投影为 A2A FailureInfo，不取消父 Run。
 6. 为未来本地 Sub Agent/A2A 统一 Delegation Target 摘要，但保持执行 Runtime 分离；本阶段未实现本地多 Agent 编排、A2A streaming、认证或 JWS 验签。
 
-### 阶段 4：多字段表单与完整错误 UX（P1/P2）
+### 阶段 4：多字段表单与完整错误 UX（P1/P2，4A 已实施）
 
 1. 若产品需要，新增 `form_input + input_schema + values`。
-2. 前端按稳定错误码和 recovery_actions 展示操作。
+2. **Stage 4A 已实施**：Model Failure、用户可见终止 ErrorEvent 和前端恢复动作已按稳定错误码与 `recovery_actions` 贯通；输出订阅失败不再伪造 Agent 终止。
 3. 管理页展示 Provider 健康、最近错误码和测试连接，不暴露敏感配置。
 
 ### 与 Durable Solo Lead Runtime 的关系

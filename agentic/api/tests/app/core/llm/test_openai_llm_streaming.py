@@ -12,8 +12,8 @@ from app.core.llm.base import (
     LLMStreamDelta,
     LLMStreamingUnsupportedError,
 )
+from app.core.llm.failure import ModelFailureCode, ModelRuntimeError
 from app.core.llm.openai_llm import OpenAILLM
-from app.schemas.exceptions import ServerRequestsError
 
 
 pytestmark = pytest.mark.anyio
@@ -257,12 +257,13 @@ async def test_stream_does_not_replay_after_consumption_started() -> None:
     )
     llm = make_llm(completions)
 
-    with pytest.raises(ServerRequestsError):
+    with pytest.raises(ModelRuntimeError) as exc_info:
         await collect(
             llm,
             messages=[{"role": "user", "content": "hello"}],
         )
 
+    assert exc_info.value.failure.code == ModelFailureCode.UNKNOWN_ERROR.value
     assert len(completions.calls) == 1
 
 
@@ -273,12 +274,13 @@ async def test_stream_does_not_retry_unrelated_create_errors() -> None:
     )
     llm = make_llm(completions)
 
-    with pytest.raises(ServerRequestsError):
+    with pytest.raises(ModelRuntimeError) as exc_info:
         await collect(
             llm,
             messages=[{"role": "user", "content": "hello"}],
         )
 
+    assert exc_info.value.failure.code == ModelFailureCode.UNKNOWN_ERROR.value
     assert len(completions.calls) == 1
 
 
