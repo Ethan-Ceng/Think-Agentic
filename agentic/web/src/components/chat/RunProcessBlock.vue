@@ -9,6 +9,7 @@ import {
 } from 'lucide-vue-next'
 import ExecutionTree from '@/components/chat/ExecutionTree.vue'
 import type { RunExecutionState } from '@/composables/useRunExecutions'
+import type { ExecutionNode } from '@/lib/api/types'
 
 const props = defineProps<{
   state: RunExecutionState
@@ -16,14 +17,8 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   toggle: [runId: string]
+  toolClick: [runId: string, node: ExecutionNode]
 }>()
-
-const latestNode = computed(() => {
-  const active = [...props.state.nodes]
-    .reverse()
-    .find((node) => node.status === 'running' || node.status === 'waiting' || node.status === 'failed')
-  return active || props.state.nodes.at(-1)
-})
 
 const statusLabel = computed(() => {
   const { status, mode, metrics } = props.state.run
@@ -76,10 +71,10 @@ function formatDuration(value?: number | null): string {
     </button>
 
     <div v-if="state.expanded" class="run-process-detail">
-      <div v-if="latestNode" class="run-process-current">
-        <span>{{ latestNode.summary || latestNode.title }}</span>
-      </div>
-      <ExecutionTree :nodes="state.nodes" />
+      <ExecutionTree
+        :nodes="state.nodes"
+        @tool-click="emit('toolClick', state.runId, $event)"
+      />
       <div v-if="state.loading" class="run-process-loading">正在读取执行详情…</div>
       <div v-else-if="state.error" class="run-process-error">{{ state.error }}</div>
       <div v-if="!state.traceComplete" class="run-process-warning">执行记录暂不完整，可稍后刷新重试。</div>

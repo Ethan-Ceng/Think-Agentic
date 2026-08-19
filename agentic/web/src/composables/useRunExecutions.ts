@@ -18,6 +18,7 @@ export type RunExecutionState = {
   nodes: ExecutionNode[]
   cursor: number | null
   expanded: boolean
+  userToggled: boolean
   hydrated: boolean
   loading: boolean
   error: string
@@ -32,6 +33,7 @@ export function useRunExecutions(
   const states = ref<Record<string, RunExecutionState>>({})
   const loadingRuns = ref(false)
   let requestVersion = 0
+  let consumedEventCount = 0
   const seenUpdates = new Set<string>()
 
   const byInputEventId = computed<Record<string, RunExecutionState>>(() => {
@@ -60,7 +62,11 @@ export function useRunExecutions(
 
   function modeFromNodes(nodes: ExecutionNode[]): 'direct' | 'react' | 'plan' | null {
     const strategy = [...nodes].reverse().find((node) => node.kind === 'strategy')
-    if (!strategy) return nodes.some((node) => node.kind === 'plan') ? 'plan' : null
+    if (!strategy) {
+      return nodes.some(
+        (node) => node.kind === 'plan' || node.parent_node_id?.startsWith('plan:'),
+      ) ? 'plan' : null
+    }
     if (strategy.title.includes('直接')) return 'direct'
     if (strategy.title.includes('计划')) return 'plan'
     return 'react'
@@ -98,19 +104,21 @@ export function useRunExecutions(
     const current = states.value[update.run_id]
     const nodes = mergeExecutionNodes(current?.nodes || [], update.nodes)
     const patchOverview = syntheticOverview({ ...update, nodes })
+    const run = {
+      ...(current?.run || patchOverview),
+      ...patchOverview,
+      mode: patchOverview.mode || current?.run.mode || null,
+      started_at: patchOverview.started_at || current?.run.started_at,
+      finished_at: patchOverview.finished_at || current?.run.finished_at,
+    }
     replaceState({
       runId: update.run_id,
       inputEventId: update.input_event_id || current?.inputEventId || null,
-      run: {
-        ...(current?.run || patchOverview),
-        ...patchOverview,
-        mode: patchOverview.mode || current?.run.mode || null,
-        started_at: patchOverview.started_at || current?.run.started_at,
-        finished_at: patchOverview.finished_at || current?.run.finished_at,
-      },
+      run,
       nodes,
       cursor: Math.max(current?.cursor || 0, update.next_cursor || 0) || null,
-      expanded: current?.expanded ?? false,
+      expanded: nextExpanded(current, run),
+      userToggled: current?.userToggled ?? false,
       hydrated: current?.hydrated ?? false,
       loading: false,
       error: '',
@@ -142,17 +150,19 @@ export function useRunExecutions(
 
   function mergeView(view: RunExecutionView, hydrated: boolean): void {
     const current = states.value[view.run.run_id]
+    const run = {
+      ...(current?.run || view.run),
+      ...view.run,
+      mode: view.run.mode || current?.run.mode || null,
+    }
     replaceState({
       runId: view.run.run_id,
       inputEventId: view.run.input_event_id || current?.inputEventId || null,
-      run: {
-        ...(current?.run || view.run),
-        ...view.run,
-        mode: view.run.mode || current?.run.mode || null,
-      },
+      run,
       nodes: mergeExecutionNodes(current?.nodes || [], view.nodes),
       cursor: Math.max(current?.cursor || 0, view.next_cursor || 0) || null,
-      expanded: current?.expanded ?? false,
+      expanded: nextExpanded(current, run),
+      userToggled: current?.userToggled ?? false,
       hydrated: hydrated || current?.hydrated || false,
       loading: false,
       error: '',
@@ -204,19 +214,21 @@ export function useRunExecutions(
       for (const run of data.runs || []) {
         const current = states.value[run.id]
         const runOverview = overviewFromRun(run)
+        const mergedRun = {
+          ...(current?.run || runOverview),
+          ...runOverview,
+          mode: current?.run.mode || null,
+          summary: current?.run.summary || '',
+          metrics: current?.run.metrics || {},
+        }
         replaceState({
           runId: run.id,
           inputEventId: run.input_event_id || current?.inputEventId || null,
-          run: {
-            ...(current?.run || runOverview),
-            ...runOverview,
-            mode: current?.run.mode || null,
-            summary: current?.run.summary || '',
-            metrics: current?.run.metrics || {},
-          },
+          run: mergedRun,
           nodes: current?.nodes || [],
           cursor: current?.cursor || null,
-          expanded: current?.expanded ?? false,
+          expanded: nextExpanded(current, mergedRun),
+          userToggled: current?.userToggled ?? false,
           hydrated: current?.hydrated ?? false,
           loading: current?.loading ?? false,
           error: current?.error || '',
@@ -235,7 +247,7 @@ export function useRunExecutions(
     const state = states.value[runId]
     if (!state) return
     const expanded = !state.expanded
-    replaceState({ ...state, expanded })
+    replaceState({ ...state, expanded, userToggled: true })
     if (expanded && !state.hydrated) void loadExecution(runId, true)
   }
 
@@ -243,6 +255,7 @@ export function useRunExecutions(
     () => unref(sessionId),
     () => {
       requestVersion += 1
+      consumedEventCount = 0
       states.value = {}
       seenUpdates.clear()
       void refreshRuns()
@@ -251,13 +264,16 @@ export function useRunExecutions(
   )
 
   watch(
-    events,
-    (items) => {
-      for (const event of items) {
+    () => events.value.length,
+    () => {
+      const items = events.value
+      const start = items.length < consumedEventCount ? 0 : consumedEventCount
+      for (const event of items.slice(start)) {
         if (event.type === 'execution_update') applyExecutionUpdate(event.data)
       }
+      consumedEventCount = items.length
     },
-    { deep: false, immediate: true },
+    { immediate: true },
   )
 
   if (sessionStatus) {
@@ -275,6 +291,17 @@ export function useRunExecutions(
     toggle,
     applyExecutionUpdate,
   }
+}
+
+function nextExpanded(
+  current: RunExecutionState | undefined,
+  run: RunExecutionOverview,
+): boolean {
+  if (current?.userToggled) return current.expanded
+  return (
+    (run.status === 'pending' || run.status === 'running') &&
+    (run.mode === 'react' || run.mode === 'plan')
+  )
 }
 
 function durationMs(start?: string | null, end?: string | null): number | null {

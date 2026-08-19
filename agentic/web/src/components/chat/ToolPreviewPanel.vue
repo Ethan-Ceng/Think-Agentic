@@ -288,6 +288,9 @@ async function copyText(text: string, target: 'args' | 'result') {
         <p class="result-summary">
           搜索“{{ query || label }}”的结果 · 共 {{ searchResults.length }} 条
         </p>
+        <p v-if="resultContent && searchResults.length === 0" class="result-summary">
+          {{ resultContent }}
+        </p>
         <a
           v-for="(item, index) in searchResults"
           :key="`${item.url}-${index}`"

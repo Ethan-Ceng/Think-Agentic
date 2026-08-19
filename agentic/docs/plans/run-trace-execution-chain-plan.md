@@ -11,9 +11,9 @@
 ## 当前进度
 
 - 整体状态：`READY_TO_MERGE`
-- 当前阶段：已完成
+- 当前阶段：真实长任务回归整改完成
 - 当前任务：无
-- 已完成：5 / 5
+- 已完成：8 / 8
 - 阻塞问题：无
 - 最近更新时间：2026-08-19（Asia/Shanghai）
 
@@ -40,6 +40,8 @@
 | 2026-08-19（Asia/Shanghai） | `IN_PROGRESS` | Task 4 | T3 transport-only 实时更新和消息级执行卡已完成，进入 TracePanel 合同收敛与按需诊断 |
 | 2026-08-19（Asia/Shanghai） | `IN_PROGRESS` | Task 5 | T4 TracePanel 已统一 Execution View，并完成按需诊断、独立游标与安全展示，进入全量验证和代码审查 |
 | 2026-08-19（Asia/Shanghai） | `READY_TO_MERGE` | 无 | 全量门禁、迁移往返、正式审查、整改与远端功能分支建立均已完成 |
+| 2026-08-19（Asia/Shanghai） | `IN_PROGRESS` | Task 6 | 真实 Session `2d5831ca-4aea-469d-8103-ad0a5c1b4c0a` 暴露越权工具调用中断、实时更新失效、重复节点和步骤层级不清，重新打开计划整改 |
+| 2026-08-19（Asia/Shanghai） | `READY_TO_MERGE` | 无 | Task 6–8 修复、全量验证和正式复审完成；按用户授权提交当前分支，不推送、不合并 |
 
 ## Task 1：T1 Trace 安全、游标、分页与迁移
 
@@ -363,12 +365,177 @@ TracePanel 已改为以 `RunExecutionView` 为唯一首屏数据源，并复用�
 - 代码审查：`docs/reviews/run-trace-execution-chain-review.md`，结论 `APPROVED`，无未处理 blocking/major/minor。
 - 远端：`git push -u origin feature/run-execution-view` 退出 0，远端同名功能分支与 upstream 已建立。
 
+## Task 6：越权工具调用容错与终态一致性
+
+状态：completed
+
+### 目标
+
+模型返回未注册、已禁用或不在当前 Step Scope 内的工具时，生成失败 Observation 供下一轮纠正，而不是在 ToolEvent 前抛异常终止 Run。
+
+### 涉及文件
+
+- `api/app/core/agent/base.py`
+- `api/app/core/tools/filter.py`
+- `api/tests/app/core/agent/test_base_agent_streaming.py`
+- `api/tests/app/core/agent/test_agent_task_runner_completion.py`
+- `docs/plans/run-trace-execution-chain-plan.md`
+
+### 依赖与接口
+
+- 前置任务：Task 1–5；真实 Trace 已确认最后一次模型返回 `browser_navigate`，当前 Scope 仅允许 `search_web`。
+- 输入：LLM tool call、当前 RuntimeToolScope、已配置工具注册表。
+- 输出：稳定失败 ToolEvent 与 tool message；未知/越权调用不穿透为 Run 级异常。
+
+### 实施步骤
+
+1. 新增失败回归测试，复现未授权历史工具在 `_get_tool()` 处抛出。
+2. 让已注册但越权/禁用的函数进入执行路由并返回策略失败；完全未知函数构造等价失败 Observation，均不得执行底层工具。
+3. 验证失败 Observation 进入下一轮模型上下文，合法工具和 Ask/Resume 行为不变。
+4. 增加 Runner 回归，确认可恢复工具失败不会触发 `RUN_INTERNAL_ERROR`。
+
+### 验证方式
+
+- 运行：`uv run pytest tests/app/core/agent/test_base_agent_streaming.py tests/app/core/agent/test_agent_task_runner_completion.py tests/app/core/agent/test_runtime_tool_scope.py tests/app/core/tools/test_tool_execution_router.py -q`
+- 运行：`uv run ruff check app/core/agent/base.py app/core/tools/filter.py tests/app/core/agent/test_base_agent_streaming.py tests/app/core/agent/test_agent_task_runner_completion.py`
+- 预期：全部退出 0；越权调用失败后继续或按既有迭代上限结束，不产生顶层内部异常。
+
+### 完成条件
+
+- `search scope -> browser_navigate` 有自动化回归测试。
+- 越权调用不执行浏览器，也不直接终止 Run。
+- 合法 Tool、未知 Tool、禁用 Tool、Ask/Resume 既有测试保持通过。
+
+### 执行结果
+
+已为工具注册表补充不受当前 Step Scope 影响的注册态查询，并调整 Agent 工具分发：已注册但越权/禁用的调用仍进入策略路由，由路由返回失败 Observation；完全未知工具生成等价失败 ToolResult。两类失败都会形成 ToolEvent 和 tool message，供下一轮模型纠正，不再在事件生成前抛出 Run 级异常，也不会执行底层工具。Resume 仍使用当前能力范围校验，既有交互恢复语义不变。
+
+### 验证证据
+
+- `uv run pytest tests/app/core/agent/test_base_agent_streaming.py tests/app/core/agent/test_agent_task_runner_completion.py tests/app/core/agent/test_runtime_tool_scope.py tests/app/core/tools/test_tool_execution_router.py -q`：45 passed。
+- `uv run ruff check app/core/agent/base.py app/core/tools/base.py app/core/tools/filter.py tests/app/core/agent/test_base_agent_streaming.py tests/app/core/agent/test_agent_task_runner_completion.py tests/app/core/agent/test_runtime_tool_scope.py tests/app/core/tools/test_tool_execution_router.py`：All checks passed。
+- 参数化回归复现 `search_web` Scope 下模型返回 `browser_navigate` 及完全未知工具，断言底层工具未执行、失败 Observation 进入下一轮且 Agent 正常给出最终结果。
+
+## Task 7：聊天实时执行链与步骤层级整改
+
+状态：completed
+
+### 目标
+
+确保 push 进入 Session events 的 `execution_update` 被实时消费；Plan/ReAct 运行态展示当前进度；聊天树不重复当前节点、不平铺全部 Model Call，并支持 Tool 安全详情。
+
+### 涉及文件
+
+- `web/src/composables/useRunExecutions.ts`
+- `web/src/composables/useRunExecutions.spec.ts`
+- `web/src/components/chat/RunProcessBlock.vue`
+- `web/src/components/chat/RunProcessBlock.spec.ts`
+- `web/src/components/chat/ExecutionTree.vue`
+- `web/src/components/chat/ExecutionTree.spec.ts`
+- `web/src/components/SessionDetailView.vue`
+- `web/src/components/SessionDetailView.spec.ts`
+- `web/src/components/chat/ToolPreviewPanel.vue`
+- `docs/plans/run-trace-execution-chain-plan.md`
+
+### 依赖与接口
+
+- 前置任务：Task 6。
+- 输入：execution_update、RunExecutionState、安全 ExecutionNode detail 引用。
+- 输出：实时、低密度、无重复且可查看 Tool 详情的消息级执行卡。
+
+### 实施步骤
+
+1. 增加 `events.value.push(...)` 回归测试，证明生产写入方式能创建、更新 Run 状态。
+2. 修复事件消费触发条件，保持 node cursor 去重、乱序覆盖和终态补拉。
+3. 未被用户手动切换的 Plan/ReAct 运行态默认展开；完成态收起，更新不覆盖手动选择。
+4. 删除 latestNode 与树的重复；chat density 过滤 Model/Skill 技术节点，突出 Planner/Step/Tool/Interaction/Error/Completion。
+5. Tool 节点发出安全详情点击事件并接入现有 ToolPreviewPanel；补充组件与 Session 集成测试。
+
+### 验证方式
+
+- 运行：`pnpm test:run -- src/composables/useRunExecutions.spec.ts src/components/chat/RunProcessBlock.spec.ts src/components/chat/ExecutionTree.spec.ts src/components/SessionDetailView.spec.ts`
+- 运行：`pnpm type-check`
+- 预期：全部退出 0；push 型 SSE 实时出现；运行中 Plan 展示 N/M；节点不重复；Tool 可打开安全详情。
+
+### 完成条件
+
+- 执行卡无需等 Session 终态刷新才出现。
+- chat density 不平铺 Model Call，当前节点不重复。
+- Planner/Step/Tool 层级清晰，手动折叠偏好稳定。
+- Tool 详情复用现有安全预览。
+
+### 执行结果
+
+实时消费改为按 Session event 数组长度增量读取，匹配生产端 `events.value.push(...)` 写入方式并保持 cursor 去重。未手动切换的 Plan/ReAct 运行态自动展开，用户折叠偏好不被后续更新覆盖。消息级执行树删除重复 current node，隐藏 Model/Skill 技术噪音，Step 增加序号与状态；Tool 节点可点击并通过安全分页 API 打开既有 ToolPreviewPanel，仅展示安全投影。
+
+### 验证证据
+
+- `pnpm test:run -- src/composables/useRunExecutions.spec.ts src/components/chat/RunProcessBlock.spec.ts src/components/chat/ExecutionTree.spec.ts src/components/SessionDetailView.spec.ts`：4 files / 27 tests passed。
+- `pnpm type-check`：退出 0。
+- 回归覆盖 push 型实时事件、运行态默认展开/手动折叠保持、Model 节点降噪、current node 单次渲染、Step 序号与状态、Tool 安全详情分页加载。
+
+## Task 8：回归验证、代码审查与提交
+
+状态：completed
+
+### 目标
+
+运行受影响和全量门禁，完成正式自审；无 blocking/major 后按用户授权提交到当前分支，不推送、不合并。
+
+### 涉及文件
+
+- Task 6–7 的全部实现与测试
+- `docs/plans/run-trace-execution-chain-plan.md`
+- `docs/reviews/run-trace-execution-chain-review.md`
+
+### 依赖与接口
+
+- 前置任务：Task 6、Task 7。
+- 输入：真实 Session 证据、修复 diff、局部测试。
+- 输出：最新验证、自审结论和当前分支提交。
+
+### 实施步骤
+
+1. 运行后端相关/全量测试、Ruff、compileall；运行前端相关/全量测试、类型检查和构建。
+2. 手工核对工具容错、push 型更新、运行态展开、chat density 和 Tool 详情事件。
+3. 审查相对 `c3c4de6` 的完整修复 diff并更新审查文档。
+4. 整改审查问题后重跑受影响门禁，将计划更新为 `READY_TO_MERGE`。
+5. 创建当前分支提交；不推送、不合并。
+
+### 验证方式
+
+- 后端：`uv run pytest -o addopts="" -q --tb=short --basetemp=.pytest_tmp_regression`
+- 后端静态/编译：`uv run ruff check app tests`、`uv run python -m compileall -q app tests`
+- 前端：`pnpm test:run`、`pnpm type-check`、`pnpm build`
+- Git：`git diff --check`、`git status --short --branch`、`git diff --stat c3c4de6`
+- 预期：全部退出 0；审查 `APPROVED`；提交仅含本次整改。
+
+### 完成条件
+
+- Task 6–7 都有最新证据。
+- 无未处理 blocking/major，状态 `READY_TO_MERGE`。
+- 当前分支生成回归修复提交，工作区干净。
+
+### 执行结果
+
+Task 6–7 的整改已完成定向与全量门禁，并对 `c3c4de6...working tree` 做正式复审。复审发现并修复未知工具失败分支仍可能空引用的问题；所有 blocking/major 已关闭，结论 `APPROVED`。首次后端全量因默认 PostgreSQL 缺少 `manus` 数据库出现 22 项环境失败；迁移到独立数据库和 Redis DB 15 后全量通过。应用内浏览器运行时未能启动，真实页面重放未计为通过，已在审查文档记录；当前代码与文档由本收尾提交一并写入当前分支，不推送、不合并。
+
+### 验证证据
+
+- 后端全量（隔离 PostgreSQL/Redis）：`uv run pytest -o addopts="" -q --tb=short --basetemp=.pytest_tmp_regression_final`：620 passed，12 条既有 Pydantic 弃用警告。
+- 后端静态/编译：`uv run ruff check app tests`、`uv run python -m compileall -q app tests`：均退出 0。
+- 前端全量：`pnpm test:run`：53 files / 225 tests passed。
+- 前端类型/构建：`pnpm type-check`、`pnpm build`：均退出 0。
+- Git：`git diff --check` 退出 0；工作区仅包含 Task 6–8 代码、测试、计划和审查文档。
+- 正式复审：`APPROVED`，无未解决 blocking、major 或 minor；浏览器手工重放因本机运行时不可用列为无法验证项。
+
 ## 计划变更
 
 | 日期 | 变更内容 | 原因 | 影响任务 | 是否影响设计 |
 | --- | --- | --- | --- | --- |
 | 2026-08-19 | 初始计划按 T1–T4 和最终门禁拆分 | 与最终设计和独立 Stage 提交要求对齐 | 全部 | 否 |
 | 2026-08-19 | 历史物理清理由自动迁移改为显式授权的运维步骤 | 自动清空历史数据不可逆；当前授权只覆盖功能实施与推送 | Task 1、Task 5 | 否，公共安全边界不变 |
+| 2026-08-19 | 追加真实长任务回归整改 Task 6–8，撤销原 `READY_TO_MERGE` | 真实 Session 暴露运行时中断、SSE push 未消费、聊天节点重复和步骤层级不清 | Task 6–8 | 否，恢复既有设计验收标准 |
 
 ## 最终验证
 
@@ -389,14 +556,14 @@ git log --oneline develop..HEAD
 
 ### 执行结果
 
-- 单元/集成测试：后端 618 passed；前端 53 files / 222 tests passed。
+- 单元/集成测试：后端最新隔离全量 620 passed；前端 53 files / 225 tests passed。
 - 静态检查：Ruff、compileall 与 `git diff --check` 全部退出 0。
 - 类型检查：`pnpm type-check` 退出 0。
 - 构建：`pnpm build` 退出 0。
 - 数据库迁移：隔离 PostgreSQL 17 空库 upgrade、downgrade、re-upgrade 通过，最终 head 为 `20260819_0001`。
-- 手工验证：TracePanel 首屏、按需页签、敏感字段扫描、运行中轮询、终态补拉和跨 Run 失效逻辑已核对。
+- 手工核对：TracePanel 首屏、按需页签、敏感字段扫描、运行中轮询、终态补拉和跨 Run 失效逻辑已核对；本轮应用内浏览器未能启动，真实 Session 页面重放未计为通过。
 - 代码审查：`APPROVED`，无未解决 blocking、major 或 minor。
-- 远端：`origin/feature/run-execution-view` 已建立，最终计划提交后再次推送并核对本地/远端 HEAD。
+- 分支策略：`origin/feature/run-execution-view` 已存在；本轮只按用户授权提交当前本地分支，不推送、不合并。
 
 ### 验收标准检查
 

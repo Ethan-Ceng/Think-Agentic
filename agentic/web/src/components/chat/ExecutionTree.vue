@@ -21,10 +21,17 @@ const props = withDefaults(defineProps<{
   density: 'chat',
 })
 
-type FlatNode = { node: ExecutionNode; depth: number }
+const emit = defineEmits<{
+  toolClick: [node: ExecutionNode]
+}>()
+
+type FlatNode = { node: ExecutionNode; depth: number; stepNumber?: number }
 
 const visibleNodes = computed<FlatNode[]>(() => {
-  const source = props.nodes.filter((node) => node.kind !== 'run')
+  const source = props.nodes.filter((node) => (
+    node.kind !== 'run' &&
+    (props.density === 'diagnostic' || (node.kind !== 'model' && node.kind !== 'skill'))
+  ))
   const sourceIds = new Set(source.map((node) => node.node_id))
   const children = new Map<string, ExecutionNode[]>()
   const roots: ExecutionNode[] = []
@@ -43,10 +50,15 @@ const visibleNodes = computed<FlatNode[]>(() => {
     [...items].sort((a, b) => a.cursor - b.cursor || a.node_id.localeCompare(b.node_id))
   const flattened: FlatNode[] = []
   const seen = new Set<string>()
+  let stepNumber = 0
   const visit = (node: ExecutionNode, depth: number) => {
     if (seen.has(node.node_id)) return
     seen.add(node.node_id)
-    flattened.push({ node, depth })
+    flattened.push({
+      node,
+      depth,
+      stepNumber: node.kind === 'step' ? ++stepNumber : undefined,
+    })
     for (const child of sort(children.get(node.node_id) || [])) visit(child, depth + 1)
   }
   for (const root of sort(roots)) visit(root, 0)
@@ -80,6 +92,17 @@ function formatDuration(value?: number | null): string {
   if (value < 1000) return `${value} ms`
   return `${(value / 1000).toFixed(value < 10_000 ? 1 : 0)} s`
 }
+
+function statusLabel(status: ExecutionNodeStatus): string {
+  return {
+    pending: '等待中',
+    running: '进行中',
+    waiting: '等待输入',
+    succeeded: '已完成',
+    failed: '失败',
+    cancelled: '已停止',
+  }[status]
+}
 </script>
 
 <template>
@@ -92,7 +115,14 @@ function formatDuration(value?: number | null): string {
       :style="{ '--execution-depth': item.depth }"
     >
       <PlannerNode v-if="item.node.kind === 'plan'" :node="item.node" />
-      <div v-else class="execution-node">
+      <component
+        :is="item.node.kind === 'tool' ? 'button' : 'div'"
+        v-else
+        class="execution-node"
+        :class="{ 'execution-node-action': item.node.kind === 'tool' }"
+        :type="item.node.kind === 'tool' ? 'button' : undefined"
+        @click="item.node.kind === 'tool' && emit('toolClick', item.node)"
+      >
         <span class="execution-node-icon">
           <component
             :is="item.node.status === 'running' || item.node.status === 'waiting'
@@ -104,7 +134,12 @@ function formatDuration(value?: number | null): string {
         </span>
         <div class="execution-node-copy">
           <div class="execution-node-title-row">
-            <strong>{{ item.node.title }}</strong>
+            <strong>
+              {{ item.stepNumber ? `${item.stepNumber}. ${item.node.title}` : item.node.title }}
+            </strong>
+            <span v-if="item.node.kind === 'step'" class="execution-node-state">
+              {{ statusLabel(item.node.status) }}
+            </span>
             <span v-if="formatDuration(item.node.latency_ms)">{{ formatDuration(item.node.latency_ms) }}</span>
           </div>
           <p v-if="item.node.summary && item.node.summary !== item.node.title">{{ item.node.summary }}</p>
@@ -113,7 +148,7 @@ function formatDuration(value?: number | null): string {
           </small>
           <small v-if="item.node.failure?.debug_id">参考编号：{{ item.node.failure.debug_id }}</small>
         </div>
-      </div>
+      </component>
     </div>
   </div>
 </template>

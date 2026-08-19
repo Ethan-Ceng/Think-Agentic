@@ -70,6 +70,10 @@ class FilteredTool(BaseTool):
             and self.inner.has_tool(tool_name)
         )
 
+    def has_registered_tool(self, tool_name: str) -> bool:
+        """Identify the owning bundle while leaving policy enforcement to invoke()."""
+        return self.inner.has_registered_tool(tool_name)
+
     async def invoke(self, tool_name: str, **kwargs) -> ToolResult:
         result = await self.executor_router.invoke(self.inner, tool_name, kwargs)
         if self._after_prepare is not None:

@@ -53,24 +53,25 @@ describe('useRunExecutions', () => {
     const result = scope.run(() => useRunExecutions(ref('session-1'), events))!
     await nextTick()
 
-    events.value = [executionUpdate(2, 'running')]
+    events.value.push(executionUpdate(2, 'running'))
     await nextTick()
     expect(result.byInputEventId.value['input-1'].nodes[0].cursor).toBe(2)
-
-    result.toggle('run-1')
     expect(result.states.value['run-1'].expanded).toBe(true)
 
-    events.value = [executionUpdate(2, 'running'), executionUpdate(3, 'succeeded')]
+    result.toggle('run-1')
+    expect(result.states.value['run-1'].expanded).toBe(false)
+
+    events.value.push(executionUpdate(3, 'succeeded'))
     await nextTick()
     expect(
       result.byInputEventId.value['input-1'].nodes.find((node) => node.node_id === 'step:1')?.cursor,
     ).toBe(3)
-    expect(result.states.value['run-1'].expanded).toBe(true)
+    expect(result.states.value['run-1'].expanded).toBe(false)
     scope.stop()
   })
 
   it('loads the full execution view only on first expansion', async () => {
-    const events = ref<SSEEventData[]>([executionUpdate(2, 'running')])
+    const events = ref<SSEEventData[]>([completedUpdate()])
     const scope = effectScope()
     const result = scope.run(() => useRunExecutions(ref('session-1'), events))!
     await nextTick()
@@ -139,6 +140,30 @@ function executionUpdate(cursor: number, status: 'running' | 'succeeded'): SSEEv
         },
       ],
       next_cursor: cursor,
+      trace_complete: true,
+    },
+  }
+}
+
+function completedUpdate(): SSEEventData {
+  return {
+    type: 'execution_update',
+    data: {
+      run_id: 'run-1',
+      input_event_id: 'input-1',
+      schema_version: 1,
+      nodes: [{
+        node_id: 'completion:run-1',
+        parent_node_id: 'run:run-1',
+        kind: 'completion',
+        phase: 'finalize',
+        status: 'succeeded',
+        title: '任务已完成',
+        summary: '任务已完成',
+        cursor: 2,
+        metrics: {},
+      }],
+      next_cursor: 2,
       trace_complete: true,
     },
   }

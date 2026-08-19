@@ -11,9 +11,10 @@ from app.core.agent.base import (
     ProjectedMessageDelta,
 )
 from app.core.entities.app_config import AgentConfig
-from app.core.entities.event import MessageEvent, ToolEvent
+from app.core.entities.event import InteractionEvent, MessageEvent, ToolEvent
 from app.core.entities.memory import Memory
 from app.core.entities.session import BranchContextMessage
+from app.core.entities.tool_config import ToolConfig
 from app.core.entities.tool_result import ToolResult
 from app.core.llm.base import (
     LLMStreamCompleted,
@@ -22,6 +23,9 @@ from app.core.llm.base import (
 )
 from app.core.llm.failure import ModelFailureCode, ModelRuntimeError, model_failure
 from app.core.tools.base import BaseTool, tool
+from app.core.tools.a2a import A2ATool
+from app.core.tools.factory import ToolFactory
+from app.core.tools.mcp import MCPTool
 
 
 pytestmark = pytest.mark.anyio
@@ -208,6 +212,8 @@ def make_agent(
     trace=None,
     max_retries: int = 2,
     tools: list[BaseTool] | None = None,
+    tool_registry=None,
+    runtime_tool_scope=None,
 ) -> tuple[ExampleAgent, MemoryRepository]:
     repository = MemoryRepository()
     agent = ExampleAgent(
@@ -218,6 +224,8 @@ def make_agent(
         json_parser=JsonParser(),
         tools=tools or [],
         trace_service=trace,
+        tool_registry=tool_registry,
+        runtime_tool_scope=runtime_tool_scope,
     )
     agent._retry_interval = 0
     return agent, repository
@@ -472,4 +480,87 @@ async def test_tool_loop_streams_only_the_post_tool_visible_field() -> None:
     assert events[2].delta == "tool finished"
     assert "secret" not in events[2].delta
     assert events[3].message == payload
+    assert llm.stream_calls == 2
+
+
+@pytest.mark.parametrize(
+    ("function_name", "arguments", "expected_message"),
+    [
+        (
+            "browser_navigate",
+            '{"url":"https://example.test"}',
+            "当前步骤能力范围",
+        ),
+        ("totally_unknown_tool", "{}", "未知工具"),
+    ],
+)
+async def test_unavailable_tool_becomes_observation_instead_of_crashing(
+    function_name: str,
+    arguments: str,
+    expected_message: str,
+) -> None:
+    tool_message = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {
+                "id": "call-browser",
+                "type": "function",
+                "function": {
+                    "name": function_name,
+                    "arguments": arguments,
+                },
+            }
+        ],
+        "_trace_metadata": {},
+    }
+    payload = '{"answer":"continued after rejected tool"}'
+    llm = StreamingLLM(
+        [
+            [
+                LLMStreamCompleted(
+                    message=tool_message,
+                    model="stream-test-model",
+                    finish_reason="tool_calls",
+                    usage={},
+                    ttft_ms=3,
+                )
+            ],
+            [LLMStreamDelta(content=payload), completed(payload)],
+        ]
+    )
+    factory = ToolFactory(ToolConfig())
+    tools = factory.build(
+        sandbox=object(),
+        browser=object(),
+        search_engine=object(),
+        mcp_tool=MCPTool(),
+        a2a_tool=A2ATool(),
+    )
+    agent, _ = make_agent(
+        llm,
+        tools=tools,
+        tool_registry=factory.registry,
+        runtime_tool_scope=factory.runtime_scope,
+    )
+    agent.set_runtime_tool_scope(
+        ["search"],
+        provider_ids=["builtin.search"],
+        tool_ids=["builtin.search.search_web"],
+    )
+
+    events = [
+        event
+        async for event in agent.invoke("research", stream_field="answer")
+    ]
+
+    tool_events = [event for event in events if isinstance(event, ToolEvent)]
+    assert len(tool_events) == 2
+    assert tool_events[0].function_name == function_name
+    assert tool_events[1].function_result is not None
+    assert tool_events[1].function_result.success is False
+    assert expected_message in (tool_events[1].function_result.message or "")
+    assert not any(isinstance(event, InteractionEvent) for event in events)
+    assert isinstance(events[-1], MessageEvent)
+    assert events[-1].message == payload
     assert llm.stream_calls == 2

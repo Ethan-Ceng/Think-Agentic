@@ -17,12 +17,15 @@ import { useRunExecutions } from '@/composables/useRunExecutions'
 import { useSettingsModal } from '@/composables/useSettingsModal'
 import { useToast } from '@/composables/useToast'
 import { sessionApi } from '@/lib/api/session'
+import { runsApi } from '@/lib/api/runs'
 import { ApiError } from '@/lib/api/fetch'
 import type {
   BranchFamilyResponse,
   BranchOperation,
+  ExecutionNode,
   ResolveInteractionParams,
   ResumeMode,
+  ToolCallRecord,
   ToolEvent,
 } from '@/lib/api/types'
 import type { InlineChatArtifact } from '@/lib/chat-artifacts'
@@ -108,6 +111,7 @@ const branchFamilyError = ref('')
 const lastFocusedEvent = ref('')
 let focusTimer = 0
 let branchFamilyRequestVersion = 0
+let toolPreviewRequestVersion = 0
 
 const detail = useSessionDetail(
   computed(() => props.sessionId),
@@ -918,6 +922,57 @@ function handleToolClick(tool: ToolEvent) {
   }
 }
 
+async function handleExecutionToolClick(runId: string, node: ExecutionNode) {
+  const detailId = node.detail_kind === 'tool' ? node.detail_id : null
+  if (!detailId) return
+  const version = ++toolPreviewRequestVersion
+  const sessionId = props.sessionId
+  let after: string | undefined
+
+  try {
+    while (true) {
+      const data = await runsApi.listToolCalls(runId, { after, limit: 200 })
+      if (version !== toolPreviewRequestVersion || sessionId !== props.sessionId) return
+      const call = data.tool_calls.find(
+        (item) => item.tool_call_id === detailId || item.id === detailId,
+      )
+      if (call) {
+        handleToolClick(toolCallRecordToEvent(call))
+        return
+      }
+      if (!data.has_more || !data.next_cursor || data.next_cursor === after) break
+      after = data.next_cursor
+    }
+    toast.error('未找到对应的工具执行详情')
+  } catch (error) {
+    if (version !== toolPreviewRequestVersion || sessionId !== props.sessionId) return
+    toast.error(error instanceof Error ? error.message : '工具执行详情加载失败')
+  }
+}
+
+function toolCallRecordToEvent(call: ToolCallRecord): ToolEvent {
+  const running = ['started', 'running', 'calling'].includes(call.status)
+  const safeResult = Object.keys(call.result || {}).length > 0
+    ? call.result
+    : call.result_preview
+      ? { result: call.result_preview }
+      : undefined
+  const success = call.success ?? !['failed', 'blocked'].includes(call.status)
+  return {
+    name: call.tool_name || call.tool_id,
+    function: call.function_name,
+    args: call.arguments || {},
+    content: safeResult,
+    status: running ? 'calling' : 'called',
+    tool_call_id: call.tool_call_id,
+    function_result: {
+      success,
+      message: call.error || (success ? '' : call.result_preview),
+      data: safeResult,
+    },
+  }
+}
+
 function handleArtifactOpen(artifact: InlineChatArtifact) {
   previewSelection.value = {
     kind: 'artifact',
@@ -979,6 +1034,7 @@ watch(
   () => props.sessionId,
   (sessionId, previousSessionId) => {
     if (!previousSessionId || sessionId === previousSessionId) return
+    toolPreviewRequestVersion += 1
     previewSelection.value = null
     vncOpen.value = false
     prevToolCount.value = 0
@@ -1124,6 +1180,7 @@ async function handleStop() {
                   "
                   :state="runExecutions.byInputEventId.value[item.sourceEventId]"
                   @toggle="runExecutions.toggle"
+                  @tool-click="handleExecutionToolClick"
                 />
               </template>
 

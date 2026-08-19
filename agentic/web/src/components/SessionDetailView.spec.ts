@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   stopSession: vi.fn(),
   listRuns: vi.fn(),
   getExecution: vi.fn(),
+  listToolCalls: vi.fn(),
   openSettings: vi.fn(),
 }))
 
@@ -50,6 +51,7 @@ vi.mock('@/lib/api/runs', () => ({
   runsApi: {
     listRuns: mocks.listRuns,
     getExecution: mocks.getExecution,
+    listToolCalls: mocks.listToolCalls,
   },
 }))
 
@@ -312,6 +314,12 @@ beforeEach(() => {
   mocks.listRuns.mockReset()
   mocks.listRuns.mockResolvedValue({ runs: [] })
   mocks.getExecution.mockReset()
+  mocks.listToolCalls.mockReset()
+  mocks.listToolCalls.mockResolvedValue({
+    tool_calls: [],
+    next_cursor: null,
+    has_more: false,
+  })
 })
 
 describe('SessionDetailView failure recovery commands', () => {
@@ -535,6 +543,112 @@ describe('SessionDetailView run execution placement', () => {
     expect(runIndex).toBe(userIndex + 1)
     expect(wrapper.text()).toContain('正在制定并执行计划')
     expect(wrapper.find('.plan-panel').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('opens a safe Tool preview from an execution node detail reference', async () => {
+    mocks.getBranchFamily.mockReset()
+    mocks.getBranchFamily.mockResolvedValue(null)
+    mocks.listToolCalls.mockResolvedValue({
+      tool_calls: [{
+        id: 'record-1',
+        run_id: 'run-1',
+        run_step_id: 'step-record-1',
+        step_id: 'step-1',
+        session_id: 'session-1',
+        tool_call_id: 'call-1',
+        tool_id: 'builtin.search.search_web',
+        tool_name: 'search',
+        function_name: 'search_web',
+        provider_id: 'builtin.search',
+        source_type: 'builtin',
+        executor_type: 'builtin',
+        requires_sandbox: false,
+        requires_browser: false,
+        requires_credentials: false,
+        status: 'completed',
+        arguments: { query: 'agent ux' },
+        arguments_preview: 'agent ux',
+        arguments_hash: 'hash',
+        result: {},
+        result_preview: '找到 3 条结果',
+        success: true,
+        created_at: '2026-08-19T10:00:00Z',
+      }],
+      next_cursor: null,
+      has_more: false,
+    })
+    mocks.detail = makeDetail({
+      status: 'running',
+      events: [
+        {
+          type: 'message',
+          data: {
+            role: 'user',
+            message: '检查 Agent UX',
+            event_id: 'input-1',
+          },
+        },
+        {
+          type: 'execution_update',
+          data: {
+            run_id: 'run-1',
+            input_event_id: 'input-1',
+            schema_version: 1,
+            nodes: [
+              {
+                node_id: 'strategy:run-1',
+                parent_node_id: 'run:run-1',
+                kind: 'strategy',
+                phase: 'decide',
+                status: 'succeeded',
+                title: '计划执行',
+                summary: '任务较复杂，先制定计划',
+                cursor: 1,
+                metrics: {},
+              },
+              {
+                node_id: 'step:step-1',
+                parent_node_id: 'plan:plan-1',
+                kind: 'step',
+                phase: 'execute',
+                status: 'running',
+                title: '搜索资料',
+                summary: '正在搜索资料',
+                cursor: 2,
+                metrics: {},
+              },
+              {
+                node_id: 'tool:call-1',
+                parent_node_id: 'step:step-1',
+                kind: 'tool',
+                phase: 'execute',
+                status: 'succeeded',
+                title: '搜索网页',
+                summary: '找到 3 条结果',
+                cursor: 3,
+                metrics: {},
+                detail_kind: 'tool',
+                detail_id: 'call-1',
+              },
+            ],
+            next_cursor: 3,
+            trace_complete: true,
+          },
+        },
+      ],
+    })
+
+    const { wrapper } = await mountView('/sessions/session-1', 'session-1')
+    await flushPromises()
+    await wrapper.get('.kind-tool .execution-node').trigger('click')
+    await flushPromises()
+
+    expect(mocks.listToolCalls).toHaveBeenCalledWith('run-1', {
+      after: undefined,
+      limit: 200,
+    })
+    expect(wrapper.get('.stub-tool-preview').attributes('data-tool-id')).toBe('call-1')
     wrapper.unmount()
   })
 })

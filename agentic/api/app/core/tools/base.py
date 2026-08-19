@@ -100,6 +100,10 @@ class BaseTool:
                 return True
         return False
 
+    def has_registered_tool(self, tool_name: str) -> bool:
+        """Return whether the bundle owns a function, independent of runtime policy."""
+        return self.has_tool(tool_name)
+
     def get_risk_level(self, tool_name: str) -> Literal["low", "medium", "high"]:
         """返回当前函数的有效风险等级；未受治理包装的工具默认低风险。"""
         return "low"

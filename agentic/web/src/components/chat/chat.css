@@ -93,6 +93,25 @@
   border-radius: 8px;
 }
 
+.execution-node-action {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.execution-node-action:hover {
+  background: #f8fafc;
+}
+
+.execution-node-action:focus-visible {
+  outline: 2px solid #93c5fd;
+  outline-offset: 1px;
+}
+
 .execution-node-icon {
   display: inline-flex;
   flex: 0 0 18px;
@@ -144,6 +163,11 @@
   margin-left: auto;
   color: #94a3b8;
   font-size: 11px;
+}
+
+.execution-node-title-row .execution-node-state {
+  margin-left: auto;
+  color: #64748b;
 }
 
 .execution-node-copy p {

@@ -209,6 +209,13 @@ class BaseAgent(ABC):
 
         raise ValueError(f"未知工具: {tool_name}")
 
+    def _get_registered_tool(self, tool_name: str) -> BaseTool | None:
+        """Find the owning bundle without treating runtime visibility as existence."""
+        for tool in self._tools:
+            if tool.has_registered_tool(tool_name):
+                return tool
+        return None
+
     async def _prepare_tool_schemas(self) -> None:
         """Resolve selected external schemas before a model call, never globally."""
         for tool in self._tools:
@@ -608,17 +615,25 @@ class BaseAgent(ABC):
                 function_args = await self._json_parser.invoke(
                     tool_call["function"]["arguments"]
                 )
-                tool = self._get_tool(function_name)
+                tool = self._get_registered_tool(function_name)
+                tool_bundle_name = tool.name if tool is not None else "unknown"
 
                 yield ToolEvent(
                     tool_call_id=tool_call_id,
-                    tool_name=tool.name,
+                    tool_name=tool_bundle_name,
                     function_name=function_name,
                     function_args=function_args,
                     status=ToolEventStatus.CALLING,
                 )
 
-                if function_name == "message_ask_user":
+                if tool is None:
+                    result = ToolResult(
+                        success=False,
+                        message=f"未知工具: {function_name}",
+                    )
+                elif function_name == "message_ask_user" and tool.has_tool(
+                    function_name
+                ):
                     yield self._build_interaction_event(
                         tool,
                         tool_call_id,
@@ -626,9 +641,7 @@ class BaseAgent(ABC):
                         function_args,
                     )
                     return
-
-                execution_policy = tool.get_execution_policy(function_name)
-                if execution_policy == "deny":
+                elif tool.get_execution_policy(function_name) == "deny":
                     result = ToolResult(
                         success=False,
                         message="工具策略已禁止执行该调用。",
@@ -638,7 +651,7 @@ class BaseAgent(ABC):
 
                 yield ToolEvent(
                     tool_call_id=tool_call_id,
-                    tool_name=tool.name,
+                    tool_name=tool_bundle_name,
                     function_name=function_name,
                     function_args=function_args,
                     function_result=result,
