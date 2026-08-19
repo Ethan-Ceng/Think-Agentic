@@ -25,7 +25,7 @@ class TraceRepository(Protocol):
     async def update_model_call(self, model_call_id: str, data: Dict[str, Any]) -> None:
         ...
 
-    async def append_event(self, data: Dict[str, Any]) -> None:
+    async def append_event(self, data: Dict[str, Any]) -> int:
         ...
 
     async def save_run_skill(self, data: Dict[str, Any]) -> None:
@@ -51,16 +51,31 @@ class TraceRepository(Protocol):
     async def get_run(self, user_id: str, run_id: str) -> Optional[Dict[str, Any]]:
         ...
 
-    async def list_trace_events(self, run_id: str) -> List[Dict[str, Any]]:
+    async def list_trace_events(
+        self,
+        run_id: str,
+        after: Optional[int] = None,
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
         ...
 
-    async def list_steps(self, run_id: str) -> List[Dict[str, Any]]:
+    async def list_steps(self, run_id: str, limit: int = 200) -> List[Dict[str, Any]]:
         ...
 
-    async def list_tool_calls(self, run_id: str) -> List[Dict[str, Any]]:
+    async def list_tool_calls(
+        self,
+        run_id: str,
+        after: Optional[str] = None,
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
         ...
 
-    async def list_model_calls(self, run_id: str) -> List[Dict[str, Any]]:
+    async def list_model_calls(
+        self,
+        run_id: str,
+        after: Optional[str] = None,
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
         ...
 
     async def list_run_skills(

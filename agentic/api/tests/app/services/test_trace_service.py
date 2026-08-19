@@ -31,6 +31,7 @@ class FakeTraceRepository:
         self.tool_calls: Dict[str, Dict[str, Any]] = {}
         self.model_calls: Dict[str, Dict[str, Any]] = {}
         self.events: List[Dict[str, Any]] = []
+        self.run_skills: List[Dict[str, Any]] = []
 
     async def create_run(self, data: Dict[str, Any]) -> None:
         self.runs[data["id"]] = data
@@ -58,8 +59,13 @@ class FakeTraceRepository:
     async def update_model_call(self, model_call_id: str, data: Dict[str, Any]) -> None:
         self.model_calls[model_call_id].update(data)
 
-    async def append_event(self, data: Dict[str, Any]) -> None:
-        self.events.append(data)
+    async def append_event(self, data: Dict[str, Any]) -> int:
+        stored = {**data, "ingest_seq": len(self.events) + 1}
+        self.events.append(stored)
+        return stored["ingest_seq"]
+
+    async def save_run_skill(self, data: Dict[str, Any]) -> None:
+        self.run_skills.append(data)
 
     async def list_runs(
         self,
@@ -73,17 +79,53 @@ class FakeTraceRepository:
         run = self.runs.get(run_id)
         return run if run and run["user_id"] == user_id else None
 
-    async def list_trace_events(self, run_id: str) -> List[Dict[str, Any]]:
-        return [event for event in self.events if event["run_id"] == run_id]
+    async def list_trace_events(
+        self,
+        run_id: str,
+        after: int | None = None,
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        events = [
+            event
+            for event in self.events
+            if event["run_id"] == run_id
+            and (after is None or event["ingest_seq"] > after)
+        ]
+        return events[:limit]
 
-    async def list_steps(self, run_id: str) -> List[Dict[str, Any]]:
-        return [step for step in self.steps.values() if step["run_id"] == run_id]
+    async def list_steps(self, run_id: str, limit: int = 200) -> List[Dict[str, Any]]:
+        return [step for step in self.steps.values() if step["run_id"] == run_id][:limit]
 
-    async def list_tool_calls(self, run_id: str) -> List[Dict[str, Any]]:
-        return [call for call in self.tool_calls.values() if call["run_id"] == run_id]
+    async def list_tool_calls(
+        self,
+        run_id: str,
+        after: str | None = None,
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        calls = [call for call in self.tool_calls.values() if call["run_id"] == run_id]
+        if after:
+            ids = [call["id"] for call in calls]
+            calls = calls[ids.index(after) + 1 :] if after in ids else []
+        return calls[:limit]
 
-    async def list_model_calls(self, run_id: str) -> List[Dict[str, Any]]:
-        return [call for call in self.model_calls.values() if call["run_id"] == run_id]
+    async def list_model_calls(
+        self,
+        run_id: str,
+        after: str | None = None,
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        calls = [call for call in self.model_calls.values() if call["run_id"] == run_id]
+        if after:
+            ids = [call["id"] for call in calls]
+            calls = calls[ids.index(after) + 1 :] if after in ids else []
+        return calls[:limit]
+
+    async def list_run_skills(
+        self,
+        user_id: str,
+        run_id: str,
+    ) -> List[Dict[str, Any]]:
+        return [skill for skill in self.run_skills if skill["run_id"] == run_id]
 
 
 class FakeUow:
@@ -191,7 +233,13 @@ def test_trace_service_projects_run_step_tool_and_model_call() -> None:
         )
 
         assert repo.runs[run_id]["status"] == "running"
-        assert repo.runs[run_id]["llm_config_snapshot"]["api_key"] == "******"
+        assert repo.runs[run_id]["llm_config_snapshot"] == {
+            "provider": "deepseek",
+            "model_name": "deepseek-chat",
+            "temperature": 0.2,
+            "max_tokens": 1024,
+        }
+        assert repo.runs[run_id]["input_summary"] == ""
 
         stored_step = next(iter(repo.steps.values()))
         assert stored_step["step_id"] == "step-1"
@@ -201,7 +249,11 @@ def test_trace_service_projects_run_step_tool_and_model_call() -> None:
         assert stored_tool_call["tool_id"] == "builtin.shell.shell_execute"
         assert stored_tool_call["risk_level"] == "high"
         assert stored_tool_call["executor_type"] == "builtin"
-        assert stored_tool_call["arguments"]["api_key"] == "******"
+        assert stored_tool_call["arguments"] == {}
+        assert stored_tool_call["arguments_preview"] == ""
+        assert stored_tool_call["result"] == {}
+        assert stored_tool_call["result_preview"] == ""
+        assert stored_tool_call["arguments_hash"]
         assert stored_tool_call["status"] == "called"
         assert stored_tool_call["success"] is True
 
@@ -212,6 +264,15 @@ def test_trace_service_projects_run_step_tool_and_model_call() -> None:
         assert stored_model_call["total_tokens"] == 18
         assert stored_model_call["latency_ms"] == 25
         assert stored_model_call["ttft_ms"] == 8
+        assert stored_model_call["base_url"] == ""
+        assert stored_model_call["request_preview"] == {
+            "capability_groups": [],
+            "provider_ids": [],
+            "tool_ids": [],
+            "tool_schema_bytes": 0,
+            "tool_scope_excluded_count": 0,
+        }
+        assert stored_model_call["response_preview"] == {}
 
         event_types = {event["event_type"] for event in repo.events}
         expected = {"run.started", "step.started", "tool.calling", "tool.called", "model.started", "model.succeeded"}
@@ -229,6 +290,9 @@ def test_trace_service_projects_run_step_tool_and_model_call() -> None:
             "no_sandbox": 5,
         }
         assert "shell_execute" not in str(registry_summary)
+        assert "run pytest" not in str(run_started)
+        assert all(event["schema_version"] == 2 for event in repo.events)
+        assert all(event["node_id"] for event in repo.events)
 
     asyncio.run(run())
 
@@ -512,13 +576,14 @@ def test_trace_records_tool_schema_bytes_without_persisting_full_schema() -> Non
         stored = repo.model_calls[model_call_id]
         assert stored["tool_schema_count"] == 1
         assert stored["request_preview"]["tool_schema_bytes"] == tool_schema_bytes(tools)
-        assert stored["request_preview"]["tools"] == ["api_private_search"]
         assert stored["request_preview"]["capability_groups"] == ["search"]
         assert stored["request_preview"]["provider_ids"] == ["builtin.search"]
         assert stored["request_preview"]["tool_ids"] == [
             "builtin.search.search_web"
         ]
         assert stored["request_preview"]["tool_scope_excluded_count"] == 26
+        assert "messages" not in stored["request_preview"]
+        assert "tools" not in stored["request_preview"]
         assert "private schema description" not in str(stored)
 
         started = next(event for event in repo.events if event["event_type"] == "model.started")
@@ -528,6 +593,130 @@ def test_trace_records_tool_schema_bytes_without_persisting_full_schema() -> Non
         assert started["payload"]["provider_ids"] == ["builtin.search"]
         assert started["payload"]["tool_ids"] == ["builtin.search.search_web"]
         assert started["payload"]["tool_scope_excluded_count"] == 26
+
+    asyncio.run(run())
+
+
+def test_trace_drops_model_reasoning_prompts_and_unknown_provider_url() -> None:
+    repo = FakeTraceRepository()
+
+    class PrivateLLM(FakeLLM):
+        base_url = "https://llm.internal.example.test/private?tenant=secret"
+
+    service = TraceService(uow_factory=lambda: FakeUow(repo))
+
+    async def run() -> None:
+        await service.start_run(
+            user_id="user-1",
+            session_id="session-1",
+            task_id="task-1",
+            input_event=MessageEvent(role="user", message="private user prompt"),
+        )
+        model_call_id = await service.record_model_call_started(
+            agent_name="lead",
+            llm=PrivateLLM(),
+            messages=[
+                {"role": "system", "content": "private system prompt"},
+                {"role": "user", "content": "private user prompt"},
+            ],
+            tools=[],
+            response_format=None,
+            tool_choice=None,
+        )
+        await service.record_model_call_finished(
+            model_call_id,
+            message={
+                "role": "assistant",
+                "content": "private response",
+                "reasoning_content": "hidden chain of thought",
+                "_trace_metadata": {"finish_reason": "stop", "usage": {}},
+            },
+            latency_ms=9,
+        )
+
+        stored = repo.model_calls[model_call_id]
+        serialized = str(stored)
+        assert stored["provider"] == "openai-compatible"
+        assert stored["base_url"] == ""
+        assert stored["request_preview"]["tool_schema_bytes"] == 0
+        assert stored["response_preview"] == {}
+        assert "private" not in serialized
+        assert "hidden chain" not in serialized
+        assert "internal.example" not in serialized
+
+    asyncio.run(run())
+
+
+def test_trace_query_projection_sanitizes_historical_records_and_pages_directly() -> None:
+    repo = FakeTraceRepository()
+    service = TraceService(uow_factory=lambda: FakeUow(repo))
+
+    async def run() -> None:
+        run_id = await service.start_run(
+            user_id="user-1",
+            session_id="session-1",
+            task_id="task-1",
+            input_event=MessageEvent(role="user", message="sensitive input"),
+        )
+        repo.model_calls["model-old"] = {
+            "id": "model-old",
+            "run_id": run_id,
+            "session_id": "session-1",
+            "agent_name": "lead",
+            "provider": "private.internal",
+            "base_url": "https://private.internal/api?token=secret",
+            "model_name": "model",
+            "request_preview": {"messages": [{"content": "secret prompt"}]},
+            "response_preview": {"reasoning_content": "hidden"},
+            "created_at": repo.events[0]["created_at"],
+        }
+        repo.tool_calls[f"{run_id}:old"] = {
+            "id": "tool-old",
+            "run_id": run_id,
+            "session_id": "session-1",
+            "tool_call_id": "old",
+            "tool_name": "shell",
+            "function_name": "shell_execute",
+            "arguments": {"command": "cat /secret"},
+            "arguments_preview": "cat /secret",
+            "arguments_hash": "hash",
+            "result": {"output": "secret"},
+            "result_preview": "secret",
+            "created_at": repo.events[0]["created_at"],
+        }
+        repo.events.append(
+            {
+                "id": "legacy-event",
+                "trace_id": f"run:{run_id}",
+                "run_id": run_id,
+                "session_id": "session-1",
+                "event_id": "legacy",
+                "event_type": "message.created",
+                "payload": {"message": "secret historical message"},
+                "created_at": repo.events[0]["created_at"],
+                "ingest_seq": 2,
+                "schema_version": 1,
+                "node_id": "",
+                "parent_node_id": None,
+                "visibility": "user",
+                "summary": "",
+            }
+        )
+
+        detail = await service.get_run_detail("user-1", run_id)
+        assert detail["run"]["input_summary"] == ""
+        assert detail["run"]["tool_config_snapshot"] == {}
+        assert detail["tool_calls"][0]["arguments"] == {}
+        assert detail["tool_calls"][0]["result"] == {}
+        assert detail["model_calls"][0]["base_url"] == ""
+        assert detail["model_calls"][0]["request_preview"] == {}
+        assert detail["model_calls"][0]["response_preview"] == {}
+        assert "secret historical message" not in str(detail["events"])
+
+        page = await service.list_events("user-1", run_id, after=1, limit=1)
+        assert len(page["events"]) == 1
+        assert page["events"][0]["ingest_seq"] == 2
+        assert page["next_cursor"] == 2
 
     asyncio.run(run())
 

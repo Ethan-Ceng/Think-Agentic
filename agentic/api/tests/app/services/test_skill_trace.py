@@ -220,10 +220,7 @@ async def test_skill_failure_and_model_preview_do_not_store_sensitive_content() 
         for event in repository.events
         if event["event_type"] == "skill.selection.failed"
     )
-    assert failure["payload"] == {
-        "error_type": "RuntimeError",
-        "message": "Skill selection or materialization failed.",
-    }
+    assert failure["payload"] == {"error_type": "RuntimeError"}
     model_call = next(iter(repository.model_calls.values()))
     assert "private full SKILL.md" not in str(model_call["request_preview"])
-    assert "skill runtime context omitted" in str(model_call["request_preview"])
+    assert "messages" not in model_call["request_preview"]

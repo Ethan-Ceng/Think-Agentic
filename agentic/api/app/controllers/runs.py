@@ -50,25 +50,52 @@ async def list_run_skills(
 @router.get("/{run_id}/events", summary="获取运行事件")
 async def list_run_events(
     run_id: str,
+    after: Optional[int] = Query(default=None, ge=0),
+    limit: int = Query(default=200, ge=1, le=500),
     current_user: User = Depends(get_current_user),
     service: TraceService = Depends(get_trace_service),
 ) -> Response[dict]:
-    return Response.success(data={"events": await service.list_events(current_user.id, run_id)})
+    return Response.success(
+        data=await service.list_events(
+            current_user.id,
+            run_id,
+            after=after,
+            limit=limit,
+        )
+    )
 
 
 @router.get("/{run_id}/tool-calls", summary="获取工具调用记录")
 async def list_run_tool_calls(
     run_id: str,
+    after: Optional[str] = None,
+    limit: int = Query(default=200, ge=1, le=500),
     current_user: User = Depends(get_current_user),
     service: TraceService = Depends(get_trace_service),
 ) -> Response[dict]:
-    return Response.success(data={"tool_calls": await service.list_tool_calls(current_user.id, run_id)})
+    return Response.success(
+        data=await service.list_tool_calls(
+            current_user.id,
+            run_id,
+            after=after,
+            limit=limit,
+        )
+    )
 
 
 @router.get("/{run_id}/model-calls", summary="获取模型调用记录")
 async def list_run_model_calls(
     run_id: str,
+    after: Optional[str] = None,
+    limit: int = Query(default=200, ge=1, le=500),
     current_user: User = Depends(get_current_user),
     service: TraceService = Depends(get_trace_service),
 ) -> Response[dict]:
-    return Response.success(data={"model_calls": await service.list_model_calls(current_user.id, run_id)})
+    return Response.success(
+        data=await service.list_model_calls(
+            current_user.id,
+            run_id,
+            after=after,
+            limit=limit,
+        )
+    )

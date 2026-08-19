@@ -4,7 +4,7 @@
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
@@ -82,8 +82,11 @@ class DBTraceRepository(TraceRepository):
             .values(**self._with_updated_at(data))
         )
 
-    async def append_event(self, data: Dict[str, Any]) -> None:
-        self.db_session.add(TraceEventModel(**data))
+    async def append_event(self, data: Dict[str, Any]) -> int:
+        record = TraceEventModel(**data)
+        self.db_session.add(record)
+        await self.db_session.flush()
+        return record.ingest_seq
 
     async def save_run_skill(self, data: Dict[str, Any]) -> None:
         self.db_session.add(RunSkillModel(**data))
@@ -178,35 +181,78 @@ class DBTraceRepository(TraceRepository):
         record = result.scalar_one_or_none()
         return self._to_dict(record) if record is not None else None
 
-    async def list_trace_events(self, run_id: str) -> List[Dict[str, Any]]:
+    async def list_trace_events(
+        self,
+        run_id: str,
+        after: Optional[int] = None,
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        stmt = select(TraceEventModel).where(TraceEventModel.run_id == run_id)
+        if after is not None:
+            stmt = stmt.where(TraceEventModel.ingest_seq > after)
         result = await self.db_session.execute(
-            select(TraceEventModel)
-            .where(TraceEventModel.run_id == run_id)
-            .order_by(TraceEventModel.created_at.asc())
+            stmt.order_by(TraceEventModel.ingest_seq.asc()).limit(limit)
         )
         return [self._to_dict(record) for record in result.scalars().all()]
 
-    async def list_steps(self, run_id: str) -> List[Dict[str, Any]]:
+    async def list_steps(self, run_id: str, limit: int = 200) -> List[Dict[str, Any]]:
         result = await self.db_session.execute(
             select(RunStepModel)
             .where(RunStepModel.run_id == run_id)
-            .order_by(RunStepModel.created_at.asc())
+            .order_by(RunStepModel.created_at.asc(), RunStepModel.id.asc())
+            .limit(limit)
         )
         return [self._to_dict(record) for record in result.scalars().all()]
 
-    async def list_tool_calls(self, run_id: str) -> List[Dict[str, Any]]:
+    async def list_tool_calls(
+        self,
+        run_id: str,
+        after: Optional[str] = None,
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        cursor = await self._record_cursor(ToolCallModel, run_id, after)
+        if after and cursor is None:
+            return []
+        stmt = select(ToolCallModel).where(ToolCallModel.run_id == run_id)
+        if cursor is not None:
+            created_at, record_id = cursor
+            stmt = stmt.where(
+                or_(
+                    ToolCallModel.created_at > created_at,
+                    and_(
+                        ToolCallModel.created_at == created_at,
+                        ToolCallModel.id > record_id,
+                    ),
+                )
+            )
         result = await self.db_session.execute(
-            select(ToolCallModel)
-            .where(ToolCallModel.run_id == run_id)
-            .order_by(ToolCallModel.created_at.asc())
+            stmt.order_by(ToolCallModel.created_at.asc(), ToolCallModel.id.asc()).limit(limit)
         )
         return [self._to_dict(record) for record in result.scalars().all()]
 
-    async def list_model_calls(self, run_id: str) -> List[Dict[str, Any]]:
+    async def list_model_calls(
+        self,
+        run_id: str,
+        after: Optional[str] = None,
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        cursor = await self._record_cursor(ModelCallModel, run_id, after)
+        if after and cursor is None:
+            return []
+        stmt = select(ModelCallModel).where(ModelCallModel.run_id == run_id)
+        if cursor is not None:
+            created_at, record_id = cursor
+            stmt = stmt.where(
+                or_(
+                    ModelCallModel.created_at > created_at,
+                    and_(
+                        ModelCallModel.created_at == created_at,
+                        ModelCallModel.id > record_id,
+                    ),
+                )
+            )
         result = await self.db_session.execute(
-            select(ModelCallModel)
-            .where(ModelCallModel.run_id == run_id)
-            .order_by(ModelCallModel.created_at.asc())
+            stmt.order_by(ModelCallModel.created_at.asc(), ModelCallModel.id.asc()).limit(limit)
         )
         return [self._to_dict(record) for record in result.scalars().all()]
 
@@ -227,6 +273,25 @@ class DBTraceRepository(TraceRepository):
     @classmethod
     def _with_updated_at(cls, data: Dict[str, Any]) -> Dict[str, Any]:
         return {**data, "updated_at": datetime.now()}
+
+    async def _record_cursor(
+        self,
+        model: Any,
+        run_id: str,
+        record_id: Optional[str],
+    ) -> Optional[tuple[datetime, str]]:
+        if not record_id:
+            return None
+        result = await self.db_session.execute(
+            select(model.created_at, model.id).where(
+                model.run_id == run_id,
+                model.id == record_id,
+            )
+        )
+        row = result.one_or_none()
+        if row is None:
+            return None
+        return row.created_at, row.id
 
     @classmethod
     def _to_dict(cls, record: Any) -> Dict[str, Any]:

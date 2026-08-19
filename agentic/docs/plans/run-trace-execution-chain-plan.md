@@ -10,10 +10,10 @@
 
 ## 当前进度
 
-- 整体状态：`PLAN_READY`
-- 当前阶段：planning
-- 当前任务：无
-- 已完成：0 / 5
+- 整体状态：`IN_PROGRESS`
+- 当前阶段：T2 RunExecutionView contract
+- 当前任务：Task 2
+- 已完成：1 / 5
 - 阻塞问题：无
 - 最近更新时间：2026-08-19（Asia/Shanghai）
 
@@ -26,7 +26,7 @@
 - 新旧 Run API 保持兼容；新页面只消费安全的 `RunExecutionView`，旧 API 在兼容期内保留但不再返回敏感字段。
 - Planner 是 Plan 模式的一等节点；`PlanEvent.UPDATED` 按稳定 `step_id` 更新，已完成步骤不因 Replan 被改写。
 - `execution_update` 仅通过当前 SSE 传输，不写入 `sessions.events`；刷新和断线后以 execution API 为准。
-- 数据库迁移在代码中提供并在隔离数据库验证；本次不会直接清理生产数据库。历史敏感字段由迁移在部署时清空，部署方必须在应用迁移前按既有数据库策略完成加密备份。
+- 数据库结构迁移在代码中提供并在隔离数据库验证；本次不会直接清理生产数据库。新写入立即停止保存敏感内容，公共 API 对历史数据强制安全投影。历史数据的物理清理由于不可逆，必须在用户明确授权、备份和保留周期确认后另行执行。
 - 每个 Task 只推进对应 Stage，局部验证通过并回写证据后才能进入下一 Task。
 
 ## 状态变更记录
@@ -34,10 +34,12 @@
 | 日期时间 | 整体状态 | 当前任务 | 变更原因 |
 | --- | --- | --- | --- |
 | 2026-08-19（Asia/Shanghai） | `PLAN_READY` | 无 | 最终设计已确认，分支、四阶段提交边界和验证命令已确定 |
+| 2026-08-19（Asia/Shanghai） | `IN_PROGRESS` | Task 1 | 计划文档已提交，开始 Trace 安全、游标、分页与迁移实现 |
+| 2026-08-19（Asia/Shanghai） | `IN_PROGRESS` | Task 2 | T1 安全投影、游标分页和非破坏性迁移已完成并验证，进入统一 Execution View 合同与 API |
 
 ## Task 1：T1 Trace 安全、游标、分页与迁移
 
-状态：pending
+状态：completed
 
 ### 目标
 
@@ -65,7 +67,7 @@
 ### 实施步骤
 
 1. 先增加失败测试，覆盖 reasoning/message/base_url/raw Tool 数据不落库或不出 API、当前用户隔离、游标顺序、分页边界和子接口不触发全量详情查询。
-2. 新增迁移：为 `trace_events` 增加 `ingest_seq/schema_version/node_id/parent_node_id/visibility/summary` 及 `(run_id, ingest_seq)` 索引；为历史记录生成稳定游标；清空历史 Model request/response preview 与 base_url，并清空 Tool raw arguments/result/previews，保留 hash、状态、耗时和安全元数据。
+2. 新增非破坏性迁移：为 `trace_events` 增加 `ingest_seq/schema_version/node_id/parent_node_id/visibility/summary` 及 `(run_id, ingest_seq)` 索引，并为历史记录生成稳定游标；不在未获明确授权时物理删除历史数据。
 3. 将 TraceService 新写入改为白名单快照：Model 仅保留 provider/model、消息与 Tool 数量、schema bytes、token、TTFT、耗时和 finish reason；Tool 仅保留 descriptor、arguments hash 和受控摘要；TraceEvent payload 按事件类型构造。
 4. 扩展 Repository 协议和数据库实现，使 `append_event` 返回持久化游标，并让 Events、Tool Calls、Model Calls 支持 `after/limit`、稳定二级排序和 `has_more/next_cursor`。
 5. Controller 增加参数校验和分页 envelope；旧 `GET /runs/{id}` 使用安全投影并设置子集合上限与 `truncated`，不再被子接口间接调用。
@@ -81,21 +83,25 @@
 ### 完成条件
 
 - 新 Trace 和公共 API 均不包含设计禁止字段。
-- 历史字段清理迁移可前进、可回退结构且不会恢复已清除内容。
+- 结构迁移可前进、可回退；历史敏感字段即使仍在库内，也无法通过公共 API 返回。
 - 三个子接口独立分页查询，用户越权统一返回 404。
 - T1 局部测试、Ruff 和迁移往返通过，并形成独立提交。
 
 ### 执行结果
 
-待执行。
+已完成 TraceEvent v2 结构与非破坏性迁移、稳定 `ingest_seq`、新写入白名单化、历史记录公共安全投影，以及 Events/Tool Calls/Model Calls 的独立分页查询。迁移不会物理清除历史数据；历史敏感字段只能在获得明确授权后另行治理。
 
 ### 验证证据
 
-待执行。
+- `uv run pytest tests/app/services/test_trace_service.py tests/app/services/test_skill_trace.py tests/app/integration/test_skill_runtime_flow.py tests/app/controllers/test_runs.py -q`：16 passed。
+- `uv run ruff check ... alembic/versions/20260819_0001_trace_execution_v2.py`：All checks passed。
+- 隔离 PostgreSQL 17：`alembic upgrade head`、`downgrade 20260818_0001`、再次 `upgrade head` 均退出 0。
+- 历史同时间戳事件回填验证：按 `(created_at, id)` 得到 `e1 -> ingest_seq 1`、`e2 -> ingest_seq 2`，且历史 `schema_version=1`。
+- `git diff --check`：退出 0。
 
 ## Task 2：T2 RunExecutionView 合同与增量 API
 
-状态：pending
+状态：in_progress
 
 ### 目标
 
@@ -340,6 +346,7 @@
 | 日期 | 变更内容 | 原因 | 影响任务 | 是否影响设计 |
 | --- | --- | --- | --- | --- |
 | 2026-08-19 | 初始计划按 T1–T4 和最终门禁拆分 | 与最终设计和独立 Stage 提交要求对齐 | 全部 | 否 |
+| 2026-08-19 | 历史物理清理由自动迁移改为显式授权的运维步骤 | 自动清空历史数据不可逆；当前授权只覆盖功能实施与推送 | Task 1、Task 5 | 否，公共安全边界不变 |
 
 ## 最终验证
 
@@ -374,7 +381,7 @@ git log --oneline develop..HEAD
 - [ ] Direct、ReAct、Plan 和 Ask/Resume 生成稳定、可增量恢复的 Execution View。
 - [ ] Planner 在对应消息 Run 内展示，Plan 更新按稳定 Step 覆盖并显示 Replan 次数。
 - [ ] 新 Trace 与公共 API 不保存或返回隐藏 reasoning、完整 Prompt/响应、完整 URL、凭据或未治理 Tool 原始数据。
-- [ ] 历史敏感字段不再通过 API 暴露，并由受控迁移清理。
+- [ ] 历史敏感字段不再通过 API 暴露；物理清理已明确标记为需单独授权的运维步骤。
 - [ ] execution API 支持 cursor、limit、幂等节点覆盖和当前用户隔离。
 - [ ] 聊天页与 TracePanel 使用相同 ExecutionNode 合同，实时、断线和历史加载一致。
 - [ ] Trace 故障不终止 Agent，页面能区分 Run 失败与记录不完整。

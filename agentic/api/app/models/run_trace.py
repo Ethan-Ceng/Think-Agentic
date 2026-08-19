@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     DateTime,
     Float,
@@ -13,6 +14,7 @@ from sqlalchemy import (
     Index,
     Integer,
     PrimaryKeyConstraint,
+    SmallInteger,
     String,
     Text,
     text,
@@ -287,7 +289,9 @@ class TraceEventModel(Base):
         ),
         Index("ix_trace_events_trace_created_at", "trace_id", "created_at"),
         Index("ix_trace_events_run_created_at", "run_id", "created_at"),
+        Index("ix_trace_events_run_ingest_seq", "run_id", "ingest_seq"),
         Index("ix_trace_events_session_created_at", "session_id", "created_at"),
+        Index("ux_trace_events_ingest_seq", "ingest_seq", unique=True),
     )
 
     id: Mapped[str] = mapped_column(String(255), nullable=False, primary_key=True, default=_new_id)
@@ -296,6 +300,32 @@ class TraceEventModel(Base):
     session_id: Mapped[str] = mapped_column(String(255), nullable=False)
     event_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     event_type: Mapped[str] = mapped_column(String(255), nullable=False)
+    ingest_seq: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+        server_default=text("nextval('trace_events_ingest_seq_seq'::regclass)"),
+    )
+    schema_version: Mapped[int] = mapped_column(
+        SmallInteger,
+        nullable=False,
+        server_default=text("2"),
+    )
+    node_id: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+        server_default=text("''::character varying"),
+    )
+    parent_node_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    visibility: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        server_default=text("'user'::character varying"),
+    )
+    summary: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        server_default=text("''::text"),
+    )
     source: Mapped[str] = mapped_column(
         String(64),
         nullable=False,
