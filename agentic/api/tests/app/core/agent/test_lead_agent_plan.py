@@ -248,6 +248,12 @@ async def test_successful_plan_does_not_call_model_replanner() -> None:
 
     events = await collect(lead, Message(message="Do the complex task"))
 
+    plan_message = next(
+        event
+        for event in events
+        if isinstance(event, MessageEvent) and event.message == "Starting the task."
+    )
+    assert plan_message.visible is False
     assert planner.update_calls == []
     assert react.execute_calls == ["step-1", "step-2"]
     assert react.summarize_calls == 1

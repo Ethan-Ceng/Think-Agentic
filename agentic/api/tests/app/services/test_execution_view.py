@@ -65,20 +65,39 @@ def test_assembler_builds_plan_tree_and_replaces_nodes_by_cursor() -> None:
         ),
         _event(
             4,
+            "step.started",
+            "step:s1",
+            {"step_id": "s1", "description": "检查实现", "status": "running"},
+            "plan:plan-1",
+        ),
+        _event(
+            5,
             "tool.calling",
             "tool:t1",
             {"tool_call_id": "t1", "function_name": "search", "success": None},
             "step:s1",
         ),
         _event(
-            5,
+            6,
             "tool.called",
             "tool:t1",
             {"tool_call_id": "t1", "function_name": "search", "success": True},
             "step:s1",
         ),
         _event(
-            6,
+            7,
+            "step.completed",
+            "step:s1",
+            {
+                "step_id": "s1",
+                "description": "检查实现",
+                "status": "completed",
+                "result_summary": "已完成",
+            },
+            "plan:plan-1",
+        ),
+        _event(
+            8,
             "plan.updated",
             "plan:plan-1",
             {
@@ -102,21 +121,25 @@ def test_assembler_builds_plan_tree_and_replaces_nodes_by_cursor() -> None:
     ]
 
     view = ExecutionViewAssembler().assemble(
-        run=_run(), events=reversed(events), next_cursor=6, has_more=False
+        run=_run(), events=reversed(events), next_cursor=8, has_more=False
     )
 
     by_id = {node.node_id: node for node in view.nodes}
     assert view.run.mode == "plan"
-    assert view.next_cursor == 6
+    assert view.next_cursor == 8
     assert by_id["plan:plan-1"].metrics.revision == 2
     assert by_id["plan:plan-1"].metrics.replan_count == 1
     assert by_id["step:s1"].status == ExecutionNodeStatus.SUCCEEDED
-    assert by_id["step:s1"].cursor == 6
+    assert by_id["step:s1"].cursor == 8
+    assert by_id["step:s1"].ordinal == 0
+    assert by_id["step:s2"].ordinal == 1
+    assert by_id["step:s1"].started_at == NOW + timedelta(milliseconds=4)
+    assert by_id["step:s1"].finished_at == NOW + timedelta(milliseconds=7)
     assert by_id["step:s2"].status == ExecutionNodeStatus.RUNNING
     assert by_id["tool:t1"].status == ExecutionNodeStatus.SUCCEEDED
     assert by_id["tool:t1"].parent_node_id == "step:s1"
-    assert by_id["tool:t1"].started_at == NOW + timedelta(milliseconds=4)
-    assert by_id["tool:t1"].finished_at == NOW + timedelta(milliseconds=5)
+    assert by_id["tool:t1"].started_at == NOW + timedelta(milliseconds=5)
+    assert by_id["tool:t1"].finished_at == NOW + timedelta(milliseconds=6)
     assert len([node for node in view.nodes if node.node_id == "tool:t1"]) == 1
 
 
@@ -202,7 +225,7 @@ def test_assembler_marks_historical_v1_as_degraded_and_uses_stable_fallback_ids(
     assert view.nodes[0].status == ExecutionNodeStatus.SUCCEEDED
 
 
-def test_assembler_detail_mode_controls_model_metrics() -> None:
+def test_assembler_keeps_model_metrics_in_summary_and_detail_modes() -> None:
     events = [
         _event(
             7,
@@ -222,7 +245,6 @@ def test_assembler_detail_mode_controls_model_metrics() -> None:
             "model:m1",
             {
                 "model_call_id": "m1",
-                "agent_name": "planner",
                 "latency_ms": 120,
                 "ttft_ms": 15,
                 "usage": {
@@ -242,13 +264,59 @@ def test_assembler_detail_mode_controls_model_metrics() -> None:
         run=_run(), events=events, next_cursor=8, has_more=False, detail="detail"
     )
 
-    assert summary.nodes[0].metrics.total_tokens is None
+    assert summary.nodes[0].metrics.total_tokens == 28
+    assert summary.run.metrics.prompt_tokens == 20
+    assert summary.run.metrics.completion_tokens == 8
+    assert summary.run.metrics.total_tokens == 28
     assert detail.nodes[0].metrics.total_tokens == 28
     assert detail.nodes[0].metrics.message_count == 3
     assert detail.nodes[0].metrics.tool_schema_count == 2
     assert detail.nodes[0].started_at == NOW + timedelta(milliseconds=7)
     assert detail.nodes[0].finished_at == NOW + timedelta(milliseconds=8)
     assert detail.nodes[0].phase.value == "plan"
+
+
+def test_assembler_marks_multiple_active_plan_steps_as_degraded() -> None:
+    event = _event(
+        3,
+        "plan.updated",
+        "plan:plan-1",
+        {
+            "plan_id": "plan-1",
+            "status": "running",
+            "steps": [
+                {"step_id": "s1", "description": "第一步", "status": "running"},
+                {"step_id": "s2", "description": "第二步", "status": "running"},
+            ],
+        },
+        "run:run-1",
+    )
+
+    view = ExecutionViewAssembler().assemble(
+        run=_run(), events=[event], next_cursor=3, has_more=False
+    )
+
+    assert view.trace_complete is False
+    assert "plan_parallel_state" in view.warnings
+
+
+def test_assembler_projects_lead_fallback_as_diagnostic_strategy() -> None:
+    event = _event(
+        2,
+        "lead.fallback",
+        "strategy:run-1:fallback",
+        {"reason_code": "feature_disabled"},
+        "run:run-1",
+    )
+
+    view = ExecutionViewAssembler().assemble(
+        run=_run(), events=[event], next_cursor=2, has_more=False
+    )
+
+    node = view.nodes[0]
+    assert node.kind == ExecutionNodeKind.STRATEGY
+    assert node.title == "已回退兼容执行链"
+    assert node.summary == "feature_disabled"
 
 
 def test_failed_lead_completion_is_not_overwritten_by_done() -> None:

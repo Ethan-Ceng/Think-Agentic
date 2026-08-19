@@ -427,7 +427,11 @@ class LeadAgent:
         plan = self._plan_from_decision(decision)
         yield TitleEvent(title=plan.title)
         if plan.message:
-            yield MessageEvent(role="assistant", message=plan.message)
+            yield MessageEvent(
+                role="assistant",
+                message=plan.message,
+                visible=False,
+            )
         yield PlanEvent(plan=plan, status=PlanEventStatus.CREATED)
         async for event in self._continue_plan(plan, message):
             yield event

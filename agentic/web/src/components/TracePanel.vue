@@ -17,7 +17,7 @@ import ExecutionTree from '@/components/chat/ExecutionTree.vue'
 import RunSkillsPanel from '@/components/skills/RunSkillsPanel.vue'
 import UiState from '@/components/ui/UiState.vue'
 import { runsApi } from '@/lib/api/runs'
-import { mergeExecutionNodes } from '@/lib/run-execution'
+import { executionMetricsFromNodes, mergeExecutionNodes } from '@/lib/run-execution'
 import type {
   AgentRun,
   ModelCallRecord,
@@ -73,16 +73,13 @@ let pollTimer: ReturnType<typeof setInterval> | null = null
 const selectedRun = computed(
   () => runs.value.find((run) => run.id === selectedRunId.value) || null,
 )
-const totalTokens = computed(() =>
-  modelCalls.value.reduce((sum, call) => sum + Number(call.total_tokens || 0), 0),
-)
 const summaryStats = computed(() => {
   const metrics = execution.value?.run.metrics || {}
   return [
     { label: '步骤', value: metrics.step_count ?? 0, icon: ListTree },
     { label: '工具', value: metrics.tool_count ?? 0, icon: Wrench },
     { label: '模型', value: metrics.model_count ?? 0, icon: Bot },
-    { label: 'Token', value: totalTokens.value || '-', icon: Braces },
+    { label: 'Token', value: metrics.total_tokens ?? '-', icon: Braces },
     { label: '耗时', value: formatElapsed(execution.value?.run.latency_ms), icon: Timer },
     { label: 'Trace', value: execution.value?.trace_complete === false ? '不完整' : '完整', icon: Activity },
   ]
@@ -90,8 +87,8 @@ const summaryStats = computed(() => {
 const tabs = computed<Array<{ key: TraceTab; label: string; icon: Component; count?: number }>>(() => [
   { key: 'execution', label: '执行链', icon: ListTree, count: execution.value?.nodes.length || 0 },
   { key: 'overview', label: '概览', icon: Activity },
-  { key: 'tools', label: '工具', icon: Wrench, count: toolCalls.value.length },
-  { key: 'models', label: '模型', icon: Bot, count: modelCalls.value.length },
+  { key: 'tools', label: '工具', icon: Wrench, count: execution.value?.run.metrics.tool_count ?? toolCalls.value.length },
+  { key: 'models', label: '模型', icon: Bot, count: execution.value?.run.metrics.model_count ?? modelCalls.value.length },
   { key: 'skills', label: 'Skills', icon: Sparkles, count: skills.value.length },
   { key: 'events', label: '技术事件', icon: Clock3, count: events.value.length },
 ])
@@ -298,7 +295,6 @@ function mergeExecutionViews(
 ): RunExecutionView {
   if (!current) return incoming
   const mergedNodes = mergeExecutionNodes(current.nodes, incoming.nodes)
-  const stepNodes = mergedNodes.filter((node) => node.kind === 'step')
   return {
     ...incoming,
     run: {
@@ -309,14 +305,7 @@ function mergeExecutionViews(
       metrics: {
         ...current.run.metrics,
         ...incoming.run.metrics,
-        step_count: stepNodes.length,
-        completed_steps: stepNodes.filter((node) => node.status === 'succeeded').length,
-        tool_count: mergedNodes.filter((node) => node.kind === 'tool').length,
-        model_count: mergedNodes.filter((node) => node.kind === 'model').length,
-        replan_count: Math.max(
-          ...mergedNodes.map((node) => node.metrics.replan_count || 0),
-          0,
-        ),
+        ...executionMetricsFromNodes(mergedNodes),
       },
     },
     nodes: mergedNodes,
@@ -437,6 +426,9 @@ function errorMessage(value: unknown, fallback: string): string {
               <dt>开始时间</dt><dd>{{ formatDateTime(execution.run.started_at) }}</dd>
               <dt>结束时间</dt><dd>{{ formatDateTime(execution.run.finished_at) }}</dd>
               <dt>总耗时</dt><dd>{{ formatElapsed(execution.run.latency_ms) }}</dd>
+              <dt>输入 Token</dt><dd>{{ execution.run.metrics.prompt_tokens ?? '-' }}</dd>
+              <dt>输出 Token</dt><dd>{{ execution.run.metrics.completion_tokens ?? '-' }}</dd>
+              <dt>总 Token</dt><dd>{{ execution.run.metrics.total_tokens ?? '-' }}</dd>
               <dt>最新摘要</dt><dd>{{ execution.run.summary || '-' }}</dd>
             </dl>
           </section>

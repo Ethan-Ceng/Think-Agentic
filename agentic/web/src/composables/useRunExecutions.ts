@@ -1,6 +1,6 @@
 import { computed, ref, unref, watch, type Ref } from 'vue'
 import { runsApi } from '@/lib/api/runs'
-import { mergeExecutionNodes } from '@/lib/run-execution'
+import { executionMetricsFromNodes, mergeExecutionNodes } from '@/lib/run-execution'
 import type {
   AgentRun,
   ExecutionNode,
@@ -61,12 +61,11 @@ export function useRunExecutions(
   }
 
   function modeFromNodes(nodes: ExecutionNode[]): 'direct' | 'react' | 'plan' | null {
+    if (nodes.some(
+      (node) => node.kind === 'plan' || node.parent_node_id?.startsWith('plan:'),
+    )) return 'plan'
     const strategy = [...nodes].reverse().find((node) => node.kind === 'strategy')
-    if (!strategy) {
-      return nodes.some(
-        (node) => node.kind === 'plan' || node.parent_node_id?.startsWith('plan:'),
-      ) ? 'plan' : null
-    }
+    if (!strategy) return null
     if (strategy.title.includes('直接')) return 'direct'
     if (strategy.title.includes('计划')) return 'plan'
     return 'react'
@@ -75,8 +74,6 @@ export function useRunExecutions(
   function syntheticOverview(update: ExecutionUpdateEvent): RunExecutionOverview {
     const status = statusFromUpdate(update.nodes)
     const mode = modeFromNodes(update.nodes)
-    const stepNodes = update.nodes.filter((node) => node.kind === 'step')
-    const planNode = [...update.nodes].reverse().find((node) => node.kind === 'plan')
     return {
       run_id: update.run_id,
       session_id: String(unref(sessionId) || ''),
@@ -87,13 +84,7 @@ export function useRunExecutions(
       started_at: update.nodes.find((node) => node.kind === 'run')?.started_at,
       finished_at: status === 'succeeded' || status === 'failed' ? update.nodes.at(-1)?.finished_at : null,
       latency_ms: null,
-      metrics: {
-        step_count: stepNodes.length,
-        completed_steps: stepNodes.filter((node) => node.status === 'succeeded').length,
-        tool_count: update.nodes.filter((node) => node.kind === 'tool').length,
-        model_count: update.nodes.filter((node) => node.kind === 'model').length,
-        replan_count: planNode?.metrics.replan_count ?? 0,
-      },
+      metrics: executionMetricsFromNodes(update.nodes),
     }
   }
 
@@ -150,16 +141,22 @@ export function useRunExecutions(
 
   function mergeView(view: RunExecutionView, hydrated: boolean): void {
     const current = states.value[view.run.run_id]
+    const nodes = mergeExecutionNodes(current?.nodes || [], view.nodes)
     const run = {
       ...(current?.run || view.run),
       ...view.run,
       mode: view.run.mode || current?.run.mode || null,
+      metrics: {
+        ...(current?.run.metrics || {}),
+        ...view.run.metrics,
+        ...executionMetricsFromNodes(nodes),
+      },
     }
     replaceState({
       runId: view.run.run_id,
       inputEventId: view.run.input_event_id || current?.inputEventId || null,
       run,
-      nodes: mergeExecutionNodes(current?.nodes || [], view.nodes),
+      nodes,
       cursor: Math.max(current?.cursor || 0, view.next_cursor || 0) || null,
       expanded: nextExpanded(current, run),
       userToggled: current?.userToggled ?? false,

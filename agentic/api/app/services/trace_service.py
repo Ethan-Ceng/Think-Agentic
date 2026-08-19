@@ -88,7 +88,6 @@ class TraceService:
         self._active_plan_id: str | None = None
         self._active_step_id: str | None = None
         self._active_run_step_id: str | None = None
-        self._plan_revisions: Dict[str, int] = {}
         self._replan_count = 0
         self._tool_started_at: Dict[str, datetime] = {}
         self._terminal_failed = False
@@ -113,7 +112,6 @@ class TraceService:
         self._active_plan_id = None
         self._active_step_id = None
         self._active_run_step_id = None
-        self._plan_revisions = {}
         self._replan_count = 0
         self._tool_started_at = {}
         self._terminal_failed = False
@@ -762,11 +760,7 @@ class TraceService:
         event_type = _event_type(event)
         payload = _event_payload(event)
         if isinstance(event, PlanEvent):
-            revision = self._plan_revisions.get(event.plan.id, 0)
-            if event.status.value in {"created", "updated"}:
-                revision += 1
-            revision = max(1, revision)
-            self._plan_revisions[event.plan.id] = revision
+            revision = max(1, 1 + self._replan_count)
             payload.update(
                 {
                     "revision": revision,
@@ -841,7 +835,6 @@ class TraceService:
     async def _project_plan_steps(self, uow: IUnitOfWork, event: PlanEvent) -> None:
         """Materialize Planner steps so detail references remain stable."""
         for index, step in enumerate(event.plan.steps):
-            terminal = step.status.value in {"completed", "failed"}
             await uow.trace.upsert_step(
                 self.run_id,
                 step.id,
@@ -858,7 +851,6 @@ class TraceService:
                     "result_summary": _preview(step.result or "", 300),
                     "error": "Step failed" if step.error else None,
                     "attachments": [],
-                    "finished_at": event.created_at if terminal else None,
                 },
             )
 
@@ -1456,6 +1448,8 @@ def _trace_node_identity(
         return root, None
     if event_type == "lead.strategy_selected":
         return f"strategy:{run_id}", root
+    if event_type == "lead.fallback":
+        return f"strategy:{run_id}:fallback", root
     if event_type == "lead.replanned":
         return f"replan:{run_id}:{payload.get('count', 0)}", (
             f"plan:{active_plan_id}" if active_plan_id else root
@@ -1505,6 +1499,8 @@ def _event_summary(event_type: str, payload: Dict[str, Any]) -> str:
             "plan": "任务较复杂，先制定计划",
         }
         return labels.get(str(mode), "已选择执行策略")
+    if event_type == "lead.fallback":
+        return str(payload.get("reason_code") or "已回退兼容执行链")
     if event_type.startswith("plan."):
         return str(payload.get("title") or payload.get("goal") or "任务计划")
     if event_type.startswith("step."):

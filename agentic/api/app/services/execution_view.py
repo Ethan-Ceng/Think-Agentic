@@ -56,6 +56,20 @@ class ExecutionViewAssembler:
                     latest[node.node_id] = _merge_node(current, node)
 
         nodes = sorted(latest.values(), key=lambda item: (item.cursor, item.node_id))
+        active_steps_by_plan: dict[str, int] = {}
+        for node in nodes:
+            if (
+                node.kind == ExecutionNodeKind.STEP
+                and node.parent_node_id
+                and node.status
+                in {ExecutionNodeStatus.RUNNING, ExecutionNodeStatus.WAITING}
+            ):
+                active_steps_by_plan[node.parent_node_id] = (
+                    active_steps_by_plan.get(node.parent_node_id, 0) + 1
+                )
+        if any(count > 1 for count in active_steps_by_plan.values()):
+            trace_complete = False
+            warnings.append("plan_parallel_state")
         overview = self._overview(run, nodes, mode)
         return RunExecutionView(
             run=overview,
@@ -123,6 +137,23 @@ class ExecutionViewAssembler:
                     ),
                 )
             ], mode
+
+        if event_type == "lead.fallback":
+            reason_code = str(payload.get("reason_code") or "strategy_unavailable")
+            return [
+                ExecutionNode(
+                    node_id=node_id,
+                    parent_node_id=str(parent_node_id or run_root),
+                    kind=ExecutionNodeKind.STRATEGY,
+                    phase=ExecutionPhase.DECIDE,
+                    status=ExecutionNodeStatus.SUCCEEDED,
+                    title="已回退兼容执行链",
+                    summary=reason_code,
+                    cursor=cursor,
+                    started_at=created_at,
+                    finished_at=created_at,
+                )
+            ], None
 
         if event_type.startswith("plan."):
             return self._plan_nodes(run, event, payload, summary), "plan"
@@ -254,7 +285,7 @@ class ExecutionViewAssembler:
                     started_at=created_at if status == ExecutionNodeStatus.RUNNING else None,
                     finished_at=created_at if status != ExecutionNodeStatus.RUNNING else None,
                     latency_ms=_non_negative(payload.get("latency_ms")),
-                    metrics=metrics if detail == "detail" else ExecutionMetrics(),
+                    metrics=metrics,
                     failure=(
                         _generic_failure("MODEL_CALL_FAILED", "模型调用失败", "operation")
                         if status == ExecutionNodeStatus.FAILED
@@ -426,11 +457,7 @@ class ExecutionViewAssembler:
                     title=_clip(str(step.get("description") or f"步骤 {index + 1}"), 120),
                     summary=_clip(str(step.get("result_summary") or ""), 500),
                     cursor=cursor,
-                    finished_at=(
-                        created_at
-                        if status in {ExecutionNodeStatus.SUCCEEDED, ExecutionNodeStatus.FAILED}
-                        else None
-                    ),
+                    ordinal=index,
                     failure=(
                         _generic_failure("STEP_FAILED", "步骤执行失败", "step")
                         if status == ExecutionNodeStatus.FAILED
@@ -466,6 +493,10 @@ class ExecutionViewAssembler:
             finished_at=finished_at,
             latency_ms=latency_ms,
             metrics=ExecutionMetrics(
+                prompt_tokens=_sum_metric(model_nodes, "prompt_tokens"),
+                completion_tokens=_sum_metric(model_nodes, "completion_tokens"),
+                total_tokens=_sum_metric(model_nodes, "total_tokens"),
+                ttft_ms=_min_metric(model_nodes, "ttft_ms"),
                 step_count=len(step_nodes),
                 completed_steps=sum(
                     1 for item in step_nodes if item.status == ExecutionNodeStatus.SUCCEEDED
@@ -497,7 +528,13 @@ def _merge_node(
     return incoming.model_copy(
         update={
             "parent_node_id": incoming.parent_node_id or current.parent_node_id,
+            "phase": current.phase,
             "summary": incoming.summary or current.summary,
+            "ordinal": (
+                incoming.ordinal
+                if incoming.ordinal is not None
+                else current.ordinal
+            ),
             "started_at": current.started_at or incoming.started_at,
             "finished_at": incoming.finished_at or current.finished_at,
             "latency_ms": (
@@ -514,6 +551,24 @@ def _merge_node(
 
 def _clip(value: str, limit: int) -> str:
     return value if len(value) <= limit else value[:limit]
+
+
+def _sum_metric(nodes: list[ExecutionNode], field: str) -> int | None:
+    values = [
+        value
+        for node in nodes
+        if (value := getattr(node.metrics, field)) is not None
+    ]
+    return sum(values) if values else None
+
+
+def _min_metric(nodes: list[ExecutionNode], field: str) -> int | None:
+    values = [
+        value
+        for node in nodes
+        if (value := getattr(node.metrics, field)) is not None
+    ]
+    return min(values) if values else None
 
 
 def _datetime(value: Any) -> datetime | None:

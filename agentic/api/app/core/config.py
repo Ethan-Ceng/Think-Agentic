@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     local_storage_path: str = "/app/storage/files"
     deleted_file_retention_days: int = 7
     file_purge_interval_seconds: int = 60 * 60
-    lead_agent_enabled: bool = False
+    lead_agent_enabled: bool = True
     token_delta_streaming_enabled: bool = False
     mcp_schema_snapshot_ttl_seconds: float = 300.0
     mcp_schema_snapshot_max_entries: int = 2048

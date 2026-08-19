@@ -141,7 +141,7 @@ async def test_goal_streams_message_and_final_uses_same_stream_id() -> None:
     assert {event.stream_id for event in deltas} == {final.stream_id}
 
 
-async def test_step_streams_result_before_authoritative_step_message() -> None:
+async def test_step_result_is_hidden_from_visible_chat_stream() -> None:
     payload = json.dumps(
         {"success": True, "result": "Step complete", "attachments": []},
         ensure_ascii=False,
@@ -163,9 +163,9 @@ async def test_step_streams_result_before_authoritative_step_message() -> None:
     final = events[-1]
     assert len(step_events) == 2
     assert isinstance(final, MessageEvent)
-    assert "".join(event.delta for event in deltas) == "Step complete"
+    assert deltas == []
     assert final.message == "Step complete"
-    assert {event.stream_id for event in deltas} == {final.stream_id}
+    assert final.visible is False
 
 
 async def test_summarizer_streams_message_field() -> None:

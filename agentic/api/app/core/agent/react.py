@@ -160,7 +160,11 @@ class ReActAgent(BaseAgent):
         try:
             async for event in self.invoke(
                 query,
-                stream_field="result" if self._streaming_enabled else None,
+                stream_field=(
+                    "__hidden_step_result__"
+                    if self._streaming_enabled
+                    else None
+                ),
             ):
                 # 4.判断事件类型执行不同操作
                 if isinstance(event, ProjectedMessageDelta):
@@ -211,6 +215,7 @@ class ReActAgent(BaseAgent):
                             role="assistant",
                             message=step.result,
                             stream_id=visible_stream.final_stream_id,
+                            visible=False,
                         )
                     continue
                 elif isinstance(event, ErrorEvent):
@@ -252,7 +257,11 @@ class ReActAgent(BaseAgent):
         try:
             async for event in self.resume_interaction(
                 resolution,
-                stream_field="result" if self._streaming_enabled else None,
+                stream_field=(
+                    "__hidden_step_result__"
+                    if self._streaming_enabled
+                    else None
+                ),
             ):
                 if isinstance(event, ProjectedMessageDelta):
                     yield visible_stream.map(event)
@@ -292,6 +301,7 @@ class ReActAgent(BaseAgent):
                             role="assistant",
                             message=step.result,
                             stream_id=visible_stream.final_stream_id,
+                            visible=False,
                         )
                     continue
                 if isinstance(event, ErrorEvent):

@@ -678,6 +678,18 @@ class BaseAgent(ABC):
                     failure=model_failure(ModelFailureCode.INVALID_RESPONSE)
                 )
                 return
+            await self._ensure_memory()
+            compacted = self._memory.compact_consumed_tool_results(
+                preserve_recent=0,
+                min_content_chars=2000,
+            )
+            if compacted:
+                async with self._uow:
+                    await self._uow.session.save_memory(
+                        self._session_id,
+                        self.name,
+                        self._memory,
+                    )
             message = next_message
         else:
             yield ErrorEvent(failure=run_failure(RunFailureCode.ITERATION_LIMIT))

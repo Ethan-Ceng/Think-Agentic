@@ -28,10 +28,10 @@ const emit = defineEmits<{
 type FlatNode = { node: ExecutionNode; depth: number; stepNumber?: number }
 
 const visibleNodes = computed<FlatNode[]>(() => {
-  const source = props.nodes.filter((node) => (
-    node.kind !== 'run' &&
-    (props.density === 'diagnostic' || (node.kind !== 'model' && node.kind !== 'skill'))
-  ))
+  const nonRootNodes = props.nodes.filter((node) => node.kind !== 'run')
+  const source = props.density === 'diagnostic'
+    ? nonRootNodes
+    : chatNodes(nonRootNodes)
   const sourceIds = new Set(source.map((node) => node.node_id))
   const children = new Map<string, ExecutionNode[]>()
   const roots: ExecutionNode[] = []
@@ -46,8 +46,11 @@ const visibleNodes = computed<FlatNode[]>(() => {
     children.set(node.parent_node_id, list)
   }
 
-  const sort = (items: ExecutionNode[]) =>
-    [...items].sort((a, b) => a.cursor - b.cursor || a.node_id.localeCompare(b.node_id))
+  const sort = (items: ExecutionNode[]) => [...items].sort((a, b) => {
+    const leftOrdinal = a.ordinal ?? Number.MAX_SAFE_INTEGER
+    const rightOrdinal = b.ordinal ?? Number.MAX_SAFE_INTEGER
+    return leftOrdinal - rightOrdinal || a.cursor - b.cursor || a.node_id.localeCompare(b.node_id)
+  })
   const flattened: FlatNode[] = []
   const seen = new Set<string>()
   let stepNumber = 0
@@ -65,6 +68,27 @@ const visibleNodes = computed<FlatNode[]>(() => {
   for (const node of sort(source)) visit(node, 0)
   return flattened
 })
+
+function chatNodes(nodes: ExecutionNode[]): ExecutionNode[] {
+  const persistent = nodes.filter((node) => node.kind === 'plan' || node.kind === 'step')
+  const failures = nodes.filter((node) => (
+    node.kind === 'error' ||
+    (node.status === 'failed' && node.kind !== 'step')
+  ))
+  const active = nodes
+    .filter((node) => (
+      (node.status === 'running' || node.status === 'waiting') &&
+      (node.kind === 'model' || node.kind === 'tool' || node.kind === 'interaction') &&
+      node.title !== 'message_notify_user'
+    ))
+    .sort((left, right) => left.cursor - right.cursor)
+    .at(-1)
+  const unique = new Map<string, ExecutionNode>()
+  for (const node of [...persistent, ...failures, ...(active ? [active] : [])]) {
+    unique.set(node.node_id, node)
+  }
+  return [...unique.values()]
+}
 
 const kindIcons: Record<ExecutionNodeKind, Component> = {
   run: Route,
@@ -114,7 +138,7 @@ function statusLabel(status: ExecutionNodeStatus): string {
       :class="[`kind-${item.node.kind}`, `status-${item.node.status}`]"
       :style="{ '--execution-depth': item.depth }"
     >
-      <PlannerNode v-if="item.node.kind === 'plan'" :node="item.node" />
+      <PlannerNode v-if="item.node.kind === 'plan'" :node="item.node" :density="density" />
       <component
         :is="item.node.kind === 'tool' ? 'button' : 'div'"
         v-else
@@ -142,7 +166,9 @@ function statusLabel(status: ExecutionNodeStatus): string {
             </span>
             <span v-if="formatDuration(item.node.latency_ms)">{{ formatDuration(item.node.latency_ms) }}</span>
           </div>
-          <p v-if="item.node.summary && item.node.summary !== item.node.title">{{ item.node.summary }}</p>
+          <p
+            v-if="item.node.summary && item.node.summary !== item.node.title && (density === 'diagnostic' || item.node.kind !== 'step')"
+          >{{ item.node.summary }}</p>
           <small v-if="density === 'diagnostic'">
             {{ item.node.phase }} · #{{ item.node.cursor }} · {{ item.node.node_id }}
           </small>

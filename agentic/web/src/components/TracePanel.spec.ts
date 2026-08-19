@@ -42,7 +42,15 @@ const execution = {
     started_at: '2026-08-18T04:00:00Z',
     finished_at: '2026-08-18T04:00:02Z',
     latency_ms: 2000,
-    metrics: { step_count: 1, completed_steps: 1, tool_count: 1, model_count: 1 },
+    metrics: {
+      step_count: 1,
+      completed_steps: 1,
+      tool_count: 1,
+      model_count: 1,
+      prompt_tokens: 90,
+      completion_tokens: 30,
+      total_tokens: 120,
+    },
   },
   nodes: [
     {
@@ -85,6 +93,7 @@ describe('TracePanel', () => {
     expect(mocks.listToolCalls).not.toHaveBeenCalled()
     expect(mocks.listModelCalls).not.toHaveBeenCalled()
     expect(wrapper.text()).toContain('检查实现')
+    expect(wrapper.text()).toContain('Token120')
   })
 
   it('loads model diagnostics lazily and separates TTFT from total latency', async () => {

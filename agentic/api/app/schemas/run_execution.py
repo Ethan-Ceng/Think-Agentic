@@ -87,6 +87,7 @@ class ExecutionNode(BaseModel):
     title: str = Field(max_length=120)
     summary: str = Field(default="", max_length=500)
     cursor: int = Field(ge=0)
+    ordinal: int | None = Field(default=None, ge=0)
     started_at: datetime | None = None
     finished_at: datetime | None = None
     latency_ms: int | None = Field(default=None, ge=0)

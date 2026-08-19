@@ -30,26 +30,48 @@ describe('ExecutionTree', () => {
     expect(rows[2].attributes('style')).toContain('--execution-depth: 2')
   })
 
-  it('keeps model diagnostics out of chat density and emits tool detail clicks', async () => {
+  it('keeps plan steps and only the latest active micro action in chat density', async () => {
     const wrapper = mount(ExecutionTree, {
       props: {
         density: 'chat',
         nodes: [
-          node('model:m1', 'step:s1', 'model', '模型处理中', 4),
-          node('tool:t1', 'step:s1', 'tool', '搜索资料', 5),
-          node('step:s1', 'plan:p1', 'step', '检查实现', 3),
+          { ...node('model:m1', 'step:s1', 'model', '模型处理中', 4), status: 'running' },
+          { ...node('tool:done', 'step:s1', 'tool', '已完成搜索', 5), status: 'succeeded' },
+          { ...node('tool:t1', 'step:s1', 'tool', '正在读取页面', 6), status: 'running' },
+          { ...node('step:s1', 'plan:p1', 'step', '检查实现', 3), ordinal: 0 },
+          { ...node('step:s2', 'plan:p1', 'step', '实现页面', 2), ordinal: 1, status: 'pending' },
+          node('plan:p1', 'run:r1', 'plan', '任务计划', 1, { step_count: 2 }),
         ],
       },
     })
 
     expect(wrapper.text()).not.toContain('模型处理中')
-    expect(wrapper.text()).toContain('搜索资料')
+    expect(wrapper.text()).not.toContain('已完成搜索')
+    expect(wrapper.text()).toContain('正在读取页面')
+    expect(wrapper.text().indexOf('1. 检查实现')).toBeLessThan(
+      wrapper.text().indexOf('2. 实现页面'),
+    )
     await wrapper.get('.kind-tool .execution-node').trigger('click')
     expect(wrapper.emitted('toolClick')?.[0]?.[0]).toMatchObject({
       node_id: 'tool:t1',
       detail_kind: 'tool',
       detail_id: 't1',
     })
+  })
+
+  it('hides plan and step summaries in chat density', () => {
+    const wrapper = mount(ExecutionTree, {
+      props: {
+        density: 'chat',
+        nodes: [
+          { ...node('plan:p1', 'run:r1', 'plan', '任务计划', 1), summary: '不要展示计划摘要' },
+          { ...node('step:s1', 'plan:p1', 'step', '检查实现', 2), summary: '不要展示步骤总结' },
+        ],
+      },
+    })
+
+    expect(wrapper.text()).not.toContain('不要展示计划摘要')
+    expect(wrapper.text()).not.toContain('不要展示步骤总结')
   })
 })
 

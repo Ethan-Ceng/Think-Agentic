@@ -647,6 +647,15 @@ def test_trace_service_exposes_incremental_execution_view_and_plan_revision() ->
         plan.steps[0].success = True
         plan.steps[0].result = "完成"
         await service.project_event(
+            StepEvent(
+                id="step-event-1",
+                step=plan.steps[0],
+                status=StepEventStatus.COMPLETED,
+            )
+        )
+        step_key = f"{run_id}:step-1"
+        step_finished_at = repo.steps[step_key]["finished_at"]
+        await service.project_event(
             PlanEvent(id="plan-event-2", plan=plan, status=PlanEventStatus.UPDATED)
         )
 
@@ -664,6 +673,7 @@ def test_trace_service_exposes_incremental_execution_view_and_plan_revision() ->
         assert plan_node["metrics"]["revision"] == 2
         assert plan_node["metrics"]["replan_count"] == 1
         assert repo.steps[f"{run_id}:step-1"]["step_index"] == 0
+        assert repo.steps[step_key]["finished_at"] == step_finished_at
 
     asyncio.run(run())
 

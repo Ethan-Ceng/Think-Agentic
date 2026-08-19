@@ -19,6 +19,7 @@ def _overlaps(left: str, right: str) -> bool:
 def test_default_local_skill_storage_is_separate_from_managed_files() -> None:
     settings = Settings(_env_file=None)
 
+    assert settings.lead_agent_enabled is True
     assert settings.token_delta_streaming_enabled is False
     assert settings.local_storage_path == "/app/storage/files"
     assert settings.skill_package_storage_path == "/app/storage/skills/packages"

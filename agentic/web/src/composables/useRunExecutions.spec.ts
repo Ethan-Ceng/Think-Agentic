@@ -117,6 +117,35 @@ describe('useRunExecutions', () => {
     expect(result.states.value['run-1'].run.status).toBe('failed')
     scope.stop()
   })
+
+  it('tracks token totals from transient execution nodes', async () => {
+    const events = ref<SSEEventData[]>([])
+    const scope = effectScope()
+    const result = scope.run(() => useRunExecutions(ref('session-1'), events))!
+    await nextTick()
+
+    result.applyExecutionUpdate({
+      run_id: 'run-token',
+      input_event_id: 'input-token',
+      schema_version: 1,
+      nodes: [{
+        node_id: 'model:1',
+        parent_node_id: 'run:run-token',
+        kind: 'model',
+        phase: 'respond',
+        status: 'succeeded',
+        title: '模型调用',
+        summary: '',
+        cursor: 2,
+        metrics: { prompt_tokens: 90, completion_tokens: 10, total_tokens: 100 },
+      }],
+      next_cursor: 2,
+      trace_complete: true,
+    })
+
+    expect(result.states.value['run-token'].run.metrics.total_tokens).toBe(100)
+    scope.stop()
+  })
 })
 
 function executionUpdate(cursor: number, status: 'running' | 'succeeded'): SSEEventData {

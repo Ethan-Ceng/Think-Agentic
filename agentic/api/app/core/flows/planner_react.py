@@ -202,7 +202,11 @@ class PlannerReActFlow(BaseFlow):
 
                         # 13.在计划中同步生成了会话标题+初始AI消息
                         yield TitleEvent(title=event.plan.title)
-                        yield MessageEvent(role="assistant", message=event.plan.message)
+                        yield MessageEvent(
+                            role="assistant",
+                            message=event.plan.message,
+                            visible=False,
+                        )
 
                     # 14.将生成的事件直接输出(一般来说是PlanEvent)
                     yield event
@@ -246,8 +250,12 @@ class PlannerReActFlow(BaseFlow):
                 logger.info(f"压缩{self.react.name} Agent记忆/上下文")
                 await self.react.compact_memory()
 
-                # 22.将状态更新为updating
-                self.status = FlowStatus.UPDATING
+                # 22.成功步骤直接推进；只有失败或模型明确要求时才重新规划
+                if not step.success or step.needs_replan:
+                    self.status = FlowStatus.UPDATING
+                else:
+                    yield PlanEvent(plan=self.plan, status=PlanEventStatus.UPDATED)
+                    self.status = FlowStatus.EXECUTING
             elif self.status == FlowStatus.UPDATING:
                 # 23.流状态为更新表示需要更新计划
                 logger.info("Planner&ReAct流开始更新计划")

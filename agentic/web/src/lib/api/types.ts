@@ -507,6 +507,7 @@ export type ExecutionNode = {
   title: string
   summary: string
   cursor: number
+  ordinal?: number | null
   started_at?: string | null
   finished_at?: string | null
   latency_ms?: number | null

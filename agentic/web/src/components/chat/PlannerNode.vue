@@ -5,6 +5,7 @@ import type { ExecutionNode } from '@/lib/api/types'
 
 const props = defineProps<{
   node: ExecutionNode
+  density?: 'chat' | 'diagnostic'
 }>()
 
 const progress = computed(() => {
@@ -22,7 +23,7 @@ const progress = computed(() => {
         <strong>{{ node.title }}</strong>
         <span v-if="progress" class="execution-node-progress">{{ progress }}</span>
       </div>
-      <p v-if="node.summary">{{ node.summary }}</p>
+      <p v-if="density === 'diagnostic' && node.summary">{{ node.summary }}</p>
       <small v-if="node.metrics.replan_count">计划已调整 {{ node.metrics.replan_count }} 次</small>
     </div>
   </div>

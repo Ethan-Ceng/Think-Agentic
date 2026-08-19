@@ -623,7 +623,7 @@ describe('SessionDetailView run execution placement', () => {
                 parent_node_id: 'step:step-1',
                 kind: 'tool',
                 phase: 'execute',
-                status: 'succeeded',
+                status: 'running',
                 title: '搜索网页',
                 summary: '找到 3 条结果',
                 cursor: 3,
