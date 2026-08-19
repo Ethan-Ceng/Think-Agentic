@@ -841,9 +841,21 @@ export type MessageDeltaEvent = {
   [key: string]: unknown
 }
 
+export type ExecutionUpdateEvent = {
+  run_id: string
+  input_event_id?: string | null
+  schema_version: number
+  nodes: ExecutionNode[]
+  next_cursor?: number | null
+  trace_complete: boolean
+  event_id?: string
+  created_at?: number | string
+}
+
 export type SSEEventType =
   | 'message'
   | 'message_delta'
+  | 'execution_update'
   | 'title'
   | 'plan'
   | 'step'
@@ -856,6 +868,7 @@ export type SSEEventType =
 export type SSEEventData =
   | { type: 'message'; data: ChatMessage }
   | { type: 'message_delta'; data: MessageDeltaEvent }
+  | { type: 'execution_update'; data: ExecutionUpdateEvent }
   | { type: 'title'; data: { title: string; [key: string]: unknown } }
   | { type: 'plan'; data: PlanEvent }
   | { type: 'step'; data: StepEvent }

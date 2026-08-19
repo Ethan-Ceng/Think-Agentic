@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field, ConfigDict
 
 from app.core.entities.event import (
     Event,
+    ExecutionUpdateEvent,
     InteractionDecision,
     InteractionEvent,
     InteractionOption,
@@ -119,6 +120,26 @@ class MessageDeltaSSEEvent(BaseSSEEvent):
     @classmethod
     def from_event(cls, event: MessageDeltaEvent) -> Self:
         return cls(data=MessageDeltaEventData.from_event(event))
+
+
+class ExecutionUpdateEventData(BaseEventData):
+    """Incremental RunExecutionView payload; never persisted in Session events."""
+
+    run_id: str
+    input_event_id: Optional[str] = None
+    schema_version: int = 1
+    nodes: List[Dict[str, Any]] = Field(default_factory=list)
+    next_cursor: Optional[int] = None
+    trace_complete: bool = True
+
+
+class ExecutionUpdateSSEEvent(BaseSSEEvent):
+    event: Literal["execution_update"] = "execution_update"
+    data: ExecutionUpdateEventData
+
+    @classmethod
+    def from_event(cls, event: ExecutionUpdateEvent) -> Self:
+        return cls(data=ExecutionUpdateEventData.from_event(event))
 
 
 class MessageSSEEvent(BaseSSEEvent):
@@ -318,6 +339,7 @@ class ErrorSSEEvent(BaseSSEEvent):
 AgentSSEEvent = Union[
     CommonSSEEvent,
     MessageDeltaSSEEvent,
+    ExecutionUpdateSSEEvent,
     MessageSSEEvent,
     TitleSSEEvent,
     StepSSEEvent,

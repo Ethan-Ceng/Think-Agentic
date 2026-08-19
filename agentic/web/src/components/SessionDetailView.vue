@@ -7,12 +7,13 @@ import ArchivedSessionsDialog from '@/components/ArchivedSessionsDialog.vue'
 import BranchVersionNavigator from '@/components/chat/BranchVersionNavigator.vue'
 import ChatInput from '@/components/chat/ChatInput.vue'
 import ChatMessage from '@/components/chat/ChatMessage.vue'
-import PlanPanel from '@/components/chat/PlanPanel.vue'
+import RunProcessBlock from '@/components/chat/RunProcessBlock.vue'
 import ThinkingIndicator from '@/components/chat/ThinkingIndicator.vue'
 import SessionHeader from '@/components/SessionHeader.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import UiState from '@/components/ui/UiState.vue'
 import { useSessionDetail } from '@/composables/useSessionDetail'
+import { useRunExecutions } from '@/composables/useRunExecutions'
 import { useSettingsModal } from '@/composables/useSettingsModal'
 import { useToast } from '@/composables/useToast'
 import { sessionApi } from '@/lib/api/session'
@@ -32,7 +33,7 @@ import {
 import type { ComposerAttachmentMetadata } from '@/lib/composer-attachments'
 import type { AttachmentFile, TimelineItem, UserMessageStatus } from '@/lib/session-events'
 import type { SendMessageInput, SkillRef } from '@/types/skill'
-import { eventsToTimeline, formatMessageTimeLabel, getLatestPlanFromEvents } from '@/lib/session-events'
+import { eventsToTimeline, formatMessageTimeLabel } from '@/lib/session-events'
 import { getToolKind } from '@/lib/tool-utils'
 import { createQueuedRunIntent } from '@/lib/session-init'
 import type { FailureRecoveryCommand } from '@/lib/failure-recovery'
@@ -112,6 +113,11 @@ const detail = useSessionDetail(
   computed(() => props.sessionId),
   computed(() => props.hasInitialMessage || props.runQueued),
 )
+const runExecutions = useRunExecutions(
+  computed(() => props.sessionId),
+  detail.events,
+  computed(() => detail.session.value?.status),
+)
 
 const baseTimeline = computed(() => eventsToTimeline(detail.events.value))
 const isArchived = computed(() => Boolean(detail.session.value?.archived_at))
@@ -157,7 +163,24 @@ const timeline = computed<TimelineItem[]>(() => {
 
   return items
 })
-const planSteps = computed(() => getLatestPlanFromEvents(detail.events.value))
+const visibleTimeline = computed<TimelineItem[]>(() => {
+  let segmentHasExecution = false
+  return timeline.value.filter((item) => {
+    if (item.kind === 'user') {
+      segmentHasExecution = Boolean(
+        item.sourceEventId && runExecutions.byInputEventId.value[item.sourceEventId],
+      )
+      return true
+    }
+    if (segmentHasExecution && (item.kind === 'step' || item.kind === 'tool')) return false
+    return true
+  })
+})
+const hasActiveExecution = computed(() =>
+  Object.values(runExecutions.states.value).some(
+    (state) => state.run.status === 'running' || state.run.status === 'waiting',
+  ),
+)
 const hasStreamingAssistantDraft = computed(() =>
   timeline.value.some((item) => item.kind === 'assistant' && item.streaming),
 )
@@ -1052,9 +1075,8 @@ async function handleStop() {
                 description="在下方输入任务或提问。"
               />
 
-              <ChatMessage
-                v-for="item in timeline"
-                :key="item.id"
+              <template v-for="item in visibleTimeline" :key="item.id">
+                <ChatMessage
                 :item="item"
                 :dom-id="item.sourceEventId ? `event-${item.sourceEventId}` : undefined"
                 :show-recovery-actions="
@@ -1093,13 +1115,24 @@ async function handleStop() {
                 @branch-action="handleBranchAction"
                 @edit-submit="handleEditBranchSubmit"
                 @edit-cancel="cancelEditBranch"
-              />
+                />
+                <RunProcessBlock
+                  v-if="
+                    item.kind === 'user' &&
+                    item.sourceEventId &&
+                    runExecutions.byInputEventId.value[item.sourceEventId]
+                  "
+                  :state="runExecutions.byInputEventId.value[item.sourceEventId]"
+                  @toggle="runExecutions.toggle"
+                />
+              </template>
 
               <div
                 v-if="
                   (detail.session.value.status === 'running' ||
                     (hasInitialMessage && !initialMessageSent)) &&
-                  !hasStreamingAssistantDraft
+                  !hasStreamingAssistantDraft &&
+                  !hasActiveExecution
                 "
                 class="thinking-state"
               >
@@ -1129,7 +1162,6 @@ async function handleStop() {
           </button>
 
           <div class="composer-shell">
-            <PlanPanel :steps="planSteps" />
             <div
               v-if="detail.session.value.next_message"
               class="next-message-card"

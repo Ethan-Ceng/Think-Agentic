@@ -11,9 +11,9 @@
 ## 当前进度
 
 - 整体状态：`IN_PROGRESS`
-- 当前阶段：T3 Chat execution experience
-- 当前任务：Task 3
-- 已完成：2 / 5
+- 当前阶段：T4 TracePanel convergence
+- 当前任务：Task 4
+- 已完成：3 / 5
 - 阻塞问题：无
 - 最近更新时间：2026-08-19（Asia/Shanghai）
 
@@ -37,6 +37,7 @@
 | 2026-08-19（Asia/Shanghai） | `IN_PROGRESS` | Task 1 | 计划文档已提交，开始 Trace 安全、游标、分页与迁移实现 |
 | 2026-08-19（Asia/Shanghai） | `IN_PROGRESS` | Task 2 | T1 安全投影、游标分页和非破坏性迁移已完成并验证，进入统一 Execution View 合同与 API |
 | 2026-08-19（Asia/Shanghai） | `IN_PROGRESS` | Task 3 | T2 版本化节点合同、Planner 投影和增量 execution API 已完成，进入聊天页实时执行详情 |
+| 2026-08-19（Asia/Shanghai） | `IN_PROGRESS` | Task 4 | T3 transport-only 实时更新和消息级执行卡已完成，进入 TracePanel 合同收敛与按需诊断 |
 
 ## Task 1：T1 Trace 安全、游标、分页与迁移
 
@@ -165,7 +166,7 @@
 
 ## Task 3：T3 聊天页思考与执行详情
 
-状态：in_progress
+状态：completed
 
 ### 目标
 
@@ -224,15 +225,18 @@
 
 ### 执行结果
 
-待执行。
+已新增 transport-only `execution_update` 领域/SSE 合同，AgentTaskRunner 在 Trace 投影后按 cursor 排出安全更新，并对 Token Delta 路径做 250ms 节流；通知失败不影响 Agent。聊天页新增 `useRunExecutions`、`RunProcessBlock`、`ExecutionTree` 和 `PlannerNode`，按 `input_event_id` 固定绑定到用户消息，首次展开才加载完整历史，刷新/终态按 execution API 补拉。Composer 全局 PlanPanel 已移除；有 Execution View 的 Run 不再重复渲染旧 Step/Tool 链，旧记录仍保留 fallback。
 
 ### 验证证据
 
-待执行。
+- `uv run pytest tests/app/core/agent tests/app/schemas/test_execution_update_event.py tests/app/services/test_trace_service.py -q`：147 passed。
+- `uv run ruff check`（T3 后端实现与测试文件）：All checks passed。
+- `pnpm test:run -- src/lib/session-events.spec.ts src/composables/useRunExecutions.spec.ts src/components/chat/RunProcessBlock.spec.ts src/components/chat/ExecutionTree.spec.ts src/components/SessionDetailView.spec.ts`：5 files / 32 tests passed。
+- `pnpm type-check`：退出 0。
 
 ## Task 4：T4 TracePanel 统一执行链重构
 
-状态：pending
+状态：in_progress
 
 ### 目标
 

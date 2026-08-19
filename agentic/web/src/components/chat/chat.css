@@ -6,6 +6,194 @@
   overflow: hidden;
 }
 
+.run-process-block {
+  width: min(680px, calc(100% - 44px));
+  margin: -8px 0 -4px 42px;
+  color: #475569;
+}
+
+.run-process-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  min-height: 32px;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.run-process-toggle:hover {
+  background: #f8fafc;
+  color: #1e293b;
+}
+
+.run-process-chevron {
+  flex: 0 0 auto;
+  transition: transform 0.16s ease;
+}
+
+.run-process-block.expanded .run-process-chevron {
+  transform: rotate(90deg);
+}
+
+.run-process-label {
+  color: #334155;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.run-process-summary {
+  margin-left: auto;
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+.run-process-block.status-failed .run-process-toggle {
+  color: #dc2626;
+}
+
+.run-process-block.status-waiting .run-process-toggle {
+  color: #d97706;
+}
+
+.run-process-detail {
+  margin: 4px 0 8px 13px;
+  padding: 8px 0 4px 17px;
+  border-left: 1px solid #e2e8f0;
+}
+
+.run-process-current {
+  margin: 0 0 8px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.execution-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.execution-tree-row {
+  min-width: 0;
+  margin-left: calc(var(--execution-depth) * 18px);
+}
+
+.execution-node {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: 8px;
+}
+
+.execution-node-icon {
+  display: inline-flex;
+  flex: 0 0 18px;
+  align-items: center;
+  justify-content: center;
+  min-height: 18px;
+  color: #94a3b8;
+}
+
+.execution-tree-row.status-succeeded .execution-node-icon {
+  color: #16a34a;
+}
+
+.execution-tree-row.status-running .execution-node-icon {
+  color: #2563eb;
+}
+
+.execution-tree-row.status-waiting .execution-node-icon {
+  color: #d97706;
+}
+
+.execution-tree-row.status-failed .execution-node-icon {
+  color: #dc2626;
+}
+
+.execution-node-copy {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.execution-node-title-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.execution-node-title-row strong {
+  overflow: hidden;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 620;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.execution-node-title-row span,
+.execution-node-copy small {
+  margin-left: auto;
+  color: #94a3b8;
+  font-size: 11px;
+}
+
+.execution-node-copy p {
+  margin: 2px 0 0;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.execution-node-plan {
+  background: #f8fafc;
+}
+
+.execution-node-progress {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #e2e8f0;
+}
+
+.run-process-loading,
+.run-process-error,
+.run-process-warning {
+  padding: 6px 8px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.run-process-error {
+  color: #dc2626;
+}
+
+.run-process-warning {
+  color: #b45309;
+}
+
+@media (max-width: 680px) {
+  .run-process-block {
+    width: calc(100% - 10px);
+    margin-left: 10px;
+  }
+
+  .run-process-summary {
+    display: none;
+  }
+
+  .execution-tree-row {
+    margin-left: calc(var(--execution-depth) * 12px);
+  }
+}
+
 .conversation-inner {
   position: relative;
   display: flex;

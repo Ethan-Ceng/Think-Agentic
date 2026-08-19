@@ -11,6 +11,7 @@ from app.core.entities.event import (
     DoneEvent,
     ErrorEvent,
     Event,
+    ExecutionUpdateEvent,
     MessageDeltaEvent,
     MessageEvent,
     TitleEvent,
@@ -133,6 +134,7 @@ def make_runner() -> tuple[AgentTaskRunner, FakeSessionRepository]:
     uow = FakeUow(session_repo)
     runner = object.__new__(AgentTaskRunner)
     runner._session_id = "session-1"
+    runner._user_id = "user-1"
     runner._uow = uow
     runner._sandbox_runtime = type(
         "Runtime",
@@ -145,6 +147,8 @@ def make_runner() -> tuple[AgentTaskRunner, FakeSessionRepository]:
     runner._a2a_config = object()
     runner._a2a_tool = type("A2A", (), {"initialize": AsyncMock()})()
     runner._trace_service = type("Trace", (), {"project_event": AsyncMock()})()
+    runner._last_execution_cursor = None
+    runner._execution_poll_at = 0.0
     runner._sync_message_attachments_to_sandbox = AsyncMock()
     runner._prepare_skill_runtime = AsyncMock()
     runner._cleanup_tools = AsyncMock()
@@ -410,6 +414,55 @@ def test_message_delta_is_transient_but_final_message_remains_persisted() -> Non
     assert [event.type for event in session_repo.events] == ["message", "done"]
     projected = runner._trace_service.project_event.await_args_list
     assert [call.args[0].type for call in projected] == ["message", "done"]
+
+
+def test_execution_update_is_transient_incremental_and_not_session_history() -> None:
+    runner, session_repo = make_runner()
+
+    class TraceWithExecution:
+        run_id = "run-1"
+
+        def __init__(self) -> None:
+            self.after_values = []
+
+        async def get_execution_view(self, user_id, run_id, *, after, limit, detail):
+            self.after_values.append(after)
+            cursor = 1 if after is None else 2
+            return {
+                "schema_version": 1,
+                "run": {"input_event_id": "input-1"},
+                "nodes": [
+                    {
+                        "node_id": "run:run-1",
+                        "parent_node_id": None,
+                        "kind": "run",
+                        "phase": "decide",
+                        "status": "running",
+                        "title": "开始处理请求",
+                        "summary": "开始处理请求",
+                        "cursor": cursor,
+                        "metrics": {},
+                    }
+                ],
+                "next_cursor": cursor,
+                "trace_complete": True,
+            }
+
+    trace = TraceWithExecution()
+    runner._trace_service = trace
+    task = FakeTask([])
+
+    async def emit_twice() -> None:
+        await runner._emit_execution_update(task, force=True)
+        await runner._emit_execution_update(task, force=True)
+
+    asyncio.run(emit_twice())
+
+    output_events = parse_output_events(task)
+    assert all(isinstance(event, ExecutionUpdateEvent) for event in output_events)
+    assert [event.next_cursor for event in output_events] == [1, 2]
+    assert trace.after_values == [None, 1]
+    assert session_repo.events == []
 
 
 def test_flow_error_aborts_an_unfinished_transient_draft() -> None:

@@ -8,6 +8,7 @@
 import asyncio
 import base64
 import logging
+from time import monotonic
 from typing import List, AsyncGenerator, Callable, BinaryIO
 
 from fastapi import UploadFile
@@ -25,7 +26,7 @@ from app.core.search.base import SearchEngine
 from app.core.task.base import TaskRunner, Task
 from app.core.entities.app_config import AgentConfig, LLMConfig, MCPConfig, A2AConfig
 from app.core.entities.tool_config import ToolConfig
-from app.core.entities.event import ErrorEvent, Event, MessageDeltaEvent, MessageEvent, BaseEvent, ToolEvent, ToolEventStatus, \
+from app.core.entities.event import ErrorEvent, Event, ExecutionUpdateEvent, MessageDeltaEvent, MessageEvent, BaseEvent, ToolEvent, ToolEventStatus, \
     BrowserToolContent, SearchToolContent, ShellToolContent, FileToolContent, MCPToolContent, A2AToolContent, \
     TitleEvent, WaitEvent, DoneEvent
 from app.core.entities.file import File
@@ -138,6 +139,8 @@ class AgentTaskRunner(TaskRunner):
             else None,
         )
         self._trace_service.set_tool_registry(self._flow.tool_registry)
+        self._last_execution_cursor: int | None = None
+        self._execution_poll_at = 0.0
         self._skill_runtime_service: SkillRuntimeService | None = None
         if skill_package_storage is not None:
             async def llm_provider(_: str) -> LLM:
@@ -173,10 +176,52 @@ class AgentTaskRunner(TaskRunner):
         await self._trace_service.project_event(event)
 
     @staticmethod
-    async def _put_transient_event(task: Task, event: MessageDeltaEvent) -> None:
-        """只写实时输出流，不把草稿增量投影为会话事实。"""
+    async def _put_transient_event(
+        task: Task, event: MessageDeltaEvent | ExecutionUpdateEvent
+    ) -> None:
+        """只写实时输出流，不把草稿或执行通知投影为会话事实。"""
         event_id = await task.output_stream.put(event.model_dump_json())
         event.id = event_id
+
+    async def _emit_execution_update(self, task: Task, *, force: bool = False) -> None:
+        """Best-effort transport update; Trace/API remains reconnect authority."""
+        get_view = getattr(self._trace_service, "get_execution_view", None)
+        run_id = getattr(self._trace_service, "run_id", None)
+        user_id = getattr(self, "_user_id", None)
+        if get_view is None or not run_id or not user_id:
+            return
+        now = monotonic()
+        if not force and now - getattr(self, "_execution_poll_at", 0.0) < 0.25:
+            return
+        self._execution_poll_at = now
+        try:
+            view = await get_view(
+                user_id,
+                run_id,
+                after=getattr(self, "_last_execution_cursor", None),
+                limit=500,
+                detail="summary",
+            )
+            next_cursor = view.get("next_cursor")
+            if next_cursor is not None:
+                self._last_execution_cursor = int(next_cursor)
+            nodes = view.get("nodes") or []
+            if not nodes:
+                return
+            run = view.get("run") or {}
+            await self._put_transient_event(
+                task,
+                ExecutionUpdateEvent(
+                    run_id=run_id,
+                    input_event_id=run.get("input_event_id"),
+                    schema_version=int(view.get("schema_version") or 1),
+                    nodes=nodes,
+                    next_cursor=self._last_execution_cursor,
+                    trace_complete=bool(view.get("trace_complete", True)),
+                ),
+            )
+        except Exception as exc:
+            logger.warning("发送 execution_update 失败，客户端将通过 API 补拉: %s", exc)
 
     async def _abort_active_streams(
             self,
@@ -416,6 +461,8 @@ class AgentTaskRunner(TaskRunner):
             task_id=task.id,
             input_event=event,
         )
+        self._last_execution_cursor = None
+        self._execution_poll_at = 0.0
         if self._skill_runtime_service is None:
             if event.skills:
                 raise SkillRuntimeError("Skill runtime is not configured")
@@ -513,6 +560,7 @@ class AgentTaskRunner(TaskRunner):
                                 task,
                                 final_done_event or DoneEvent(),
                             )
+                            await self._emit_execution_update(task, force=True)
                             return
                         current_event = await self._accept_next_message(task, next_message)
 
@@ -537,7 +585,8 @@ class AgentTaskRunner(TaskRunner):
                     if event.interaction_response is not None:
                         await self._trace_service.project_interaction_resolution(
                             event.interaction_response
-                    )
+                        )
+                    await self._emit_execution_update(task, force=True)
                     logger.info(f"AgentTaskRunner接收到新消息: {message[:50]}...")
 
                 message_obj = Message(
@@ -572,6 +621,11 @@ class AgentTaskRunner(TaskRunner):
                             and flow_event.stream_id
                         ):
                             active_streams.pop(flow_event.stream_id, None)
+
+                    await self._emit_execution_update(
+                        task,
+                        force=not isinstance(flow_event, MessageDeltaEvent),
+                    )
 
                     if isinstance(flow_event, TitleEvent):
                         async with self._uow:
@@ -619,11 +673,13 @@ class AgentTaskRunner(TaskRunner):
                 if record_cancellation is not None:
                     await record_cancellation(cancellation)
                 await self._put_and_add_event(task, DoneEvent())
+                await self._emit_execution_update(task, force=True)
                 raise
             await self._put_and_add_event(
                 task,
                 ErrorEvent(failure=run_failure(RunFailureCode.INTERNAL_ERROR)),
             )
+            await self._emit_execution_update(task, force=True)
         except ModelRuntimeError as e:
             logger.warning(
                 "模型运行失败: code=%s debug_id=%s",
@@ -638,6 +694,7 @@ class AgentTaskRunner(TaskRunner):
                 )
             await self._abort_active_streams(task, active_streams)
             await self._put_and_add_event(task, ErrorEvent(failure=e.failure))
+            await self._emit_execution_update(task, force=True)
         except ProviderRuntimeError as e:
             logger.warning(
                 "MCP Provider运行失败: code=%s provider_id=%s debug_id=%s",
@@ -653,6 +710,7 @@ class AgentTaskRunner(TaskRunner):
                 )
             await self._abort_active_streams(task, active_streams)
             await self._put_and_add_event(task, ErrorEvent(failure=e.failure))
+            await self._emit_execution_update(task, force=True)
         except Exception as e:
             logger.exception(f"AgentTaskRunner运行出错: {str(e)}")
             async with self._uow:
@@ -663,6 +721,7 @@ class AgentTaskRunner(TaskRunner):
                 task,
                 ErrorEvent(failure=run_failure(RunFailureCode.INTERNAL_ERROR)),
             )
+            await self._emit_execution_update(task, force=True)
         finally:
             await self._cleanup_tools()
 

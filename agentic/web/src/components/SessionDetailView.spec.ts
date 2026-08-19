@@ -15,6 +15,8 @@ const mocks = vi.hoisted(() => ({
   getBranchFamily: vi.fn(),
   createBranch: vi.fn(),
   stopSession: vi.fn(),
+  listRuns: vi.fn(),
+  getExecution: vi.fn(),
   openSettings: vi.fn(),
 }))
 
@@ -41,6 +43,13 @@ vi.mock('@/lib/api/session', () => ({
     getBranchFamily: mocks.getBranchFamily,
     createBranch: mocks.createBranch,
     stopSession: mocks.stopSession,
+  },
+}))
+
+vi.mock('@/lib/api/runs', () => ({
+  runsApi: {
+    listRuns: mocks.listRuns,
+    getExecution: mocks.getExecution,
   },
 }))
 
@@ -299,6 +308,12 @@ async function mountView(
   return { router, wrapper }
 }
 
+beforeEach(() => {
+  mocks.listRuns.mockReset()
+  mocks.listRuns.mockResolvedValue({ runs: [] })
+  mocks.getExecution.mockReset()
+})
+
 describe('SessionDetailView failure recovery commands', () => {
   beforeEach(() => {
     mocks.openSettings.mockReset()
@@ -462,6 +477,64 @@ describe('SessionDetailView interaction blocking', () => {
 
     expect(wrapper.get('.stub-chat-input').attributes('data-disabled')).toBe('false')
     expect(wrapper.text()).toContain('旧审批已停用，可继续输入')
+    wrapper.unmount()
+  })
+})
+
+describe('SessionDetailView run execution placement', () => {
+  it('places the matching Run process directly after its user message', async () => {
+    mocks.getBranchFamily.mockReset()
+    mocks.getBranchFamily.mockResolvedValue(null)
+    mocks.detail = makeDetail({
+      status: 'running',
+      events: [
+        {
+          type: 'message',
+          data: {
+            role: 'user',
+            message: '请升级 Agent',
+            event_id: 'input-1',
+          },
+        },
+        {
+          type: 'execution_update',
+          data: {
+            run_id: 'run-1',
+            input_event_id: 'input-1',
+            schema_version: 1,
+            nodes: [
+              {
+                node_id: 'strategy:run-1',
+                parent_node_id: 'run:run-1',
+                kind: 'strategy',
+                phase: 'decide',
+                status: 'succeeded',
+                title: '计划执行',
+                summary: '任务较复杂，先制定计划',
+                cursor: 2,
+                metrics: {},
+              },
+            ],
+            next_cursor: 2,
+            trace_complete: true,
+          },
+        },
+      ],
+    })
+
+    const { wrapper } = await mountView('/sessions/session-1', 'session-1')
+    await flushPromises()
+
+    const timelineChildren = wrapper.find('.timeline').element.children
+    const userIndex = [...timelineChildren].findIndex((item) =>
+      item.classList.contains('stub-chat-message'),
+    )
+    const runIndex = [...timelineChildren].findIndex((item) =>
+      item.classList.contains('run-process-block'),
+    )
+    expect(runIndex).toBe(userIndex + 1)
+    expect(wrapper.text()).toContain('正在制定并执行计划')
+    expect(wrapper.find('.plan-panel').exists()).toBe(false)
     wrapper.unmount()
   })
 })

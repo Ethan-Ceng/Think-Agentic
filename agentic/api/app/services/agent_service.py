@@ -28,6 +28,7 @@ from app.core.entities.event import (
     DoneEvent,
     ErrorEvent,
     Event,
+    ExecutionUpdateEvent,
     InteractionDecision,
     InteractionEvent,
     InteractionResolution,
@@ -556,7 +557,7 @@ class AgentService:
                 logger.debug(f"从会话[{session_id}]中获取事件: {type(event).__name__}")
 
                 # 14.将未读消息数重置为0
-                if not isinstance(event, MessageDeltaEvent):
+                if not isinstance(event, (MessageDeltaEvent, ExecutionUpdateEvent)):
                     async with self._uow:
                         await self._uow.session.update_unread_message_count(session_id, 0)
 

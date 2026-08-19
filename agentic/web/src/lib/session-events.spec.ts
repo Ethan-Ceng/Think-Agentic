@@ -1,8 +1,25 @@
 import { describe, expect, it } from 'vitest'
 import type { SSEEventData } from '@/lib/api/types'
-import { eventsToTimeline } from './session-events'
+import { eventsToTimeline, normalizeEvent } from './session-events'
 
 describe('eventsToTimeline', () => {
+  it('accepts execution updates without adding a duplicate chat timeline item', () => {
+    const update = normalizeEvent({
+      event: 'execution_update',
+      data: {
+        run_id: 'run-1',
+        input_event_id: 'input-1',
+        schema_version: 1,
+        nodes: [],
+        next_cursor: 1,
+        trace_complete: true,
+      },
+    })
+
+    expect(update?.type).toBe('execution_update')
+    expect(eventsToTimeline(update ? [update] : [])).toEqual([])
+  })
+
   it('keeps ordinary messages visible and omits internal recovery instructions', () => {
     const events = [
       {

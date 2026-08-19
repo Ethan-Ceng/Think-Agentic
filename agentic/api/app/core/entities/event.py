@@ -153,6 +153,18 @@ class MessageDeltaEvent(BaseEvent):
         return self
 
 
+class ExecutionUpdateEvent(BaseEvent):
+    """Transport-only, safe execution-node updates for the active Run."""
+
+    type: Literal["execution_update"] = "execution_update"
+    run_id: str = Field(min_length=1)
+    input_event_id: Optional[str] = None
+    schema_version: int = Field(default=1, ge=1)
+    nodes: List[Dict[str, Any]] = Field(default_factory=list)
+    next_cursor: Optional[int] = Field(default=None, ge=0)
+    trace_complete: bool = True
+
+
 class BrowserToolContent(BaseModel):
     """浏览器工具扩展内容"""
     screenshot: str  # 浏览器快照截图
@@ -268,6 +280,7 @@ Event = Annotated[
         TitleEvent,
         StepEvent,
         MessageDeltaEvent,
+        ExecutionUpdateEvent,
         MessageEvent,
         ToolEvent,
         InteractionEvent,
