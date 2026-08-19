@@ -203,10 +203,10 @@ class AgentTaskRunner(TaskRunner):
                 detail="summary",
             )
             next_cursor = view.get("next_cursor")
-            if next_cursor is not None:
-                self._last_execution_cursor = int(next_cursor)
             nodes = view.get("nodes") or []
             if not nodes:
+                if next_cursor is not None:
+                    self._last_execution_cursor = int(next_cursor)
                 return
             run = view.get("run") or {}
             await self._put_transient_event(
@@ -216,10 +216,12 @@ class AgentTaskRunner(TaskRunner):
                     input_event_id=run.get("input_event_id"),
                     schema_version=int(view.get("schema_version") or 1),
                     nodes=nodes,
-                    next_cursor=self._last_execution_cursor,
+                    next_cursor=int(next_cursor) if next_cursor is not None else None,
                     trace_complete=bool(view.get("trace_complete", True)),
                 ),
             )
+            if next_cursor is not None:
+                self._last_execution_cursor = int(next_cursor)
         except Exception as exc:
             logger.warning("发送 execution_update 失败，客户端将通过 API 补拉: %s", exc)
 

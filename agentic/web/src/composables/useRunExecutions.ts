@@ -1,5 +1,6 @@
 import { computed, ref, unref, watch, type Ref } from 'vue'
 import { runsApi } from '@/lib/api/runs'
+import { mergeExecutionNodes } from '@/lib/run-execution'
 import type {
   AgentRun,
   ExecutionNode,
@@ -45,17 +46,9 @@ export function useRunExecutions(
     states.value = { ...states.value, [state.runId]: state }
   }
 
-  function mergeNodes(existing: ExecutionNode[], updates: ExecutionNode[]): ExecutionNode[] {
-    const byId = new Map(existing.map((node) => [node.node_id, node]))
-    for (const node of updates) {
-      const current = byId.get(node.node_id)
-      if (!current || node.cursor >= current.cursor) byId.set(node.node_id, node)
-    }
-    return [...byId.values()].sort((a, b) => a.cursor - b.cursor || a.node_id.localeCompare(b.node_id))
-  }
-
   function statusFromUpdate(nodes: ExecutionNode[]): ExecutionNodeStatus {
     if (nodes.some((node) => node.kind === 'error' && node.status === 'failed')) return 'failed'
+    if (nodes.some((node) => node.kind === 'completion' && node.status === 'failed')) return 'failed'
     if (nodes.some((node) => node.kind === 'interaction' && node.status === 'waiting')) {
       return 'waiting'
     }
@@ -103,7 +96,7 @@ export function useRunExecutions(
     if (seenUpdates.has(key)) return
     seenUpdates.add(key)
     const current = states.value[update.run_id]
-    const nodes = mergeNodes(current?.nodes || [], update.nodes)
+    const nodes = mergeExecutionNodes(current?.nodes || [], update.nodes)
     const patchOverview = syntheticOverview({ ...update, nodes })
     replaceState({
       runId: update.run_id,
@@ -157,7 +150,7 @@ export function useRunExecutions(
         ...view.run,
         mode: view.run.mode || current?.run.mode || null,
       },
-      nodes: mergeNodes(current?.nodes || [], view.nodes),
+      nodes: mergeExecutionNodes(current?.nodes || [], view.nodes),
       cursor: Math.max(current?.cursor || 0, view.next_cursor || 0) || null,
       expanded: current?.expanded ?? false,
       hydrated: hydrated || current?.hydrated || false,

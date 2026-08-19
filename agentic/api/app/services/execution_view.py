@@ -53,7 +53,7 @@ class ExecutionViewAssembler:
             for node in projected:
                 current = latest.get(node.node_id)
                 if current is None or node.cursor >= current.cursor:
-                    latest[node.node_id] = node
+                    latest[node.node_id] = _merge_node(current, node)
 
         nodes = sorted(latest.values(), key=lambda item: (item.cursor, item.node_id))
         overview = self._overview(run, nodes, mode)
@@ -307,7 +307,35 @@ class ExecutionViewAssembler:
                 )
             ], None
 
-        if event_type in {"lead.completed", "done.created"}:
+        if event_type == "lead.completed":
+            completion_status = _status(payload.get("status") or "completed")
+            mode = str(payload.get("mode") or "") or None
+            if completion_status == ExecutionNodeStatus.WAITING:
+                return [], mode
+            failed = completion_status == ExecutionNodeStatus.FAILED
+            return [
+                ExecutionNode(
+                    node_id=node_id,
+                    parent_node_id=str(parent_node_id or run_root),
+                    kind=ExecutionNodeKind.COMPLETION,
+                    phase=ExecutionPhase.FINALIZE,
+                    status=completion_status,
+                    title="本次执行未完成" if failed else "任务已完成",
+                    summary=summary or ("本次执行未完成" if failed else "任务已完成"),
+                    cursor=cursor,
+                    started_at=created_at,
+                    finished_at=created_at,
+                    failure=(
+                        _generic_failure("AGENT_RUN_FAILED", "本次执行未完成", "run")
+                        if failed
+                        else None
+                    ),
+                )
+            ], mode
+
+        if event_type == "done.created":
+            if _status(run.get("status")) == ExecutionNodeStatus.FAILED:
+                return [], None
             return [
                 ExecutionNode(
                     node_id=node_id,
@@ -453,6 +481,35 @@ class ExecutionViewAssembler:
 
 def _cursor(event: dict[str, Any]) -> int:
     return max(0, int(event.get("ingest_seq") or 0))
+
+
+def _merge_node(
+    current: ExecutionNode | None,
+    incoming: ExecutionNode,
+) -> ExecutionNode:
+    """Apply a newer node update without losing lifecycle metadata."""
+    if current is None:
+        return incoming
+    metrics = {
+        **current.metrics.model_dump(exclude_none=True),
+        **incoming.metrics.model_dump(exclude_none=True),
+    }
+    return incoming.model_copy(
+        update={
+            "parent_node_id": incoming.parent_node_id or current.parent_node_id,
+            "summary": incoming.summary or current.summary,
+            "started_at": current.started_at or incoming.started_at,
+            "finished_at": incoming.finished_at or current.finished_at,
+            "latency_ms": (
+                incoming.latency_ms
+                if incoming.latency_ms is not None
+                else current.latency_ms
+            ),
+            "metrics": ExecutionMetrics(**metrics),
+            "detail_kind": incoming.detail_kind or current.detail_kind,
+            "detail_id": incoming.detail_id or current.detail_id,
+        }
+    )
 
 
 def _clip(value: str, limit: int) -> str:

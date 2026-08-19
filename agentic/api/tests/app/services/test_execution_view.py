@@ -115,6 +115,8 @@ def test_assembler_builds_plan_tree_and_replaces_nodes_by_cursor() -> None:
     assert by_id["step:s2"].status == ExecutionNodeStatus.RUNNING
     assert by_id["tool:t1"].status == ExecutionNodeStatus.SUCCEEDED
     assert by_id["tool:t1"].parent_node_id == "step:s1"
+    assert by_id["tool:t1"].started_at == NOW + timedelta(milliseconds=4)
+    assert by_id["tool:t1"].finished_at == NOW + timedelta(milliseconds=5)
     assert len([node for node in view.nodes if node.node_id == "tool:t1"]) == 1
 
 
@@ -201,27 +203,75 @@ def test_assembler_marks_historical_v1_as_degraded_and_uses_stable_fallback_ids(
 
 
 def test_assembler_detail_mode_controls_model_metrics() -> None:
-    event = _event(
-        8,
-        "model.succeeded",
-        "model:m1",
-        {
-            "model_call_id": "m1",
-            "agent_name": "planner",
-            "latency_ms": 120,
-            "ttft_ms": 15,
-            "usage": {"prompt_tokens": 20, "completion_tokens": 8, "total_tokens": 28},
-        },
-        "run:run-1",
-    )
+    events = [
+        _event(
+            7,
+            "model.started",
+            "model:m1",
+            {
+                "model_call_id": "m1",
+                "agent_name": "planner",
+                "message_count": 3,
+                "tool_schema_count": 2,
+            },
+            "run:run-1",
+        ),
+        _event(
+            8,
+            "model.succeeded",
+            "model:m1",
+            {
+                "model_call_id": "m1",
+                "agent_name": "planner",
+                "latency_ms": 120,
+                "ttft_ms": 15,
+                "usage": {
+                    "prompt_tokens": 20,
+                    "completion_tokens": 8,
+                    "total_tokens": 28,
+                },
+            },
+            "run:run-1",
+        ),
+    ]
 
     summary = ExecutionViewAssembler().assemble(
-        run=_run(), events=[event], next_cursor=8, has_more=False, detail="summary"
+        run=_run(), events=events, next_cursor=8, has_more=False, detail="summary"
     )
     detail = ExecutionViewAssembler().assemble(
-        run=_run(), events=[event], next_cursor=8, has_more=False, detail="detail"
+        run=_run(), events=events, next_cursor=8, has_more=False, detail="detail"
     )
 
     assert summary.nodes[0].metrics.total_tokens is None
     assert detail.nodes[0].metrics.total_tokens == 28
+    assert detail.nodes[0].metrics.message_count == 3
+    assert detail.nodes[0].metrics.tool_schema_count == 2
+    assert detail.nodes[0].started_at == NOW + timedelta(milliseconds=7)
+    assert detail.nodes[0].finished_at == NOW + timedelta(milliseconds=8)
     assert detail.nodes[0].phase.value == "plan"
+
+
+def test_failed_lead_completion_is_not_overwritten_by_done() -> None:
+    events = [
+        _event(
+            9,
+            "lead.completed",
+            "completion:run-1",
+            {"mode": "plan", "status": "failed"},
+            "run:run-1",
+        ),
+        _event(10, "done.created", "completion:run-1", {}, "run:run-1"),
+    ]
+
+    view = ExecutionViewAssembler().assemble(
+        run=_run(status="failed", finished_at=NOW + timedelta(milliseconds=10)),
+        events=events,
+        next_cursor=10,
+        has_more=False,
+    )
+
+    completion = next(node for node in view.nodes if node.kind == ExecutionNodeKind.COMPLETION)
+    assert completion.status == ExecutionNodeStatus.FAILED
+    assert completion.title == "本次执行未完成"
+    assert view.run.status == ExecutionNodeStatus.FAILED
+    assert view.run.mode == "plan"

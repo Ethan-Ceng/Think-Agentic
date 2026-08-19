@@ -179,6 +179,74 @@ describe('TracePanel', () => {
     expect(wrapper.text()).toContain('model:1')
     expect(wrapper.text()).not.toContain('must-not-render')
   })
+
+  it('discards lazy diagnostics that resolve after the session changes', async () => {
+    let resolveOldTools: ((value: unknown) => void) | undefined
+    mocks.listToolCalls.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveOldTools = resolve
+      }),
+    )
+    mocks.listRuns
+      .mockResolvedValueOnce({ runs: [run] })
+      .mockResolvedValueOnce({
+        runs: [{ ...run, id: 'run-2', session_id: 'session-2' }],
+      })
+    mocks.getExecution.mockImplementation((runId: string) =>
+      Promise.resolve({
+        ...execution,
+        run: { ...execution.run, run_id: runId, session_id: `session-${runId.at(-1)}` },
+      }),
+    )
+    const wrapper = await mountPanel()
+
+    const toolsTab = wrapper.findAll('.trace-tabs button').find((item) => item.text().includes('工具'))
+    await toolsTab!.trigger('click')
+    await wrapper.setProps({ sessionId: 'session-2' })
+    await flushPromises()
+    resolveOldTools?.({
+      tool_calls: [toolCall('stale-tool')],
+      next_cursor: 'stale-tool',
+      has_more: false,
+    })
+    await flushPromises()
+    await clickTab(wrapper, '工具')
+
+    expect(mocks.listToolCalls).toHaveBeenLastCalledWith('run-2', {
+      after: undefined,
+      limit: 100,
+    })
+    expect(wrapper.text()).not.toContain('stale-tool')
+  })
+
+  it('polls active runs incrementally and stops after the terminal pull', async () => {
+    vi.useFakeTimers()
+    mocks.listRuns
+      .mockResolvedValueOnce({
+        runs: [{ ...run, status: 'running', finished_at: null }],
+      })
+      .mockResolvedValueOnce({ runs: [run] })
+    const wrapper = await mountPanel()
+    await clickTab(wrapper, '工具')
+
+    await vi.advanceTimersByTimeAsync(2000)
+    await flushPromises()
+
+    expect(mocks.listRuns).toHaveBeenCalledTimes(2)
+    expect(mocks.getExecution).toHaveBeenNthCalledWith(2, 'run-1', {
+      after: 2,
+      limit: 200,
+      detail: 'detail',
+    })
+    expect(mocks.listToolCalls).toHaveBeenCalledTimes(2)
+
+    await vi.advanceTimersByTimeAsync(4000)
+    await flushPromises()
+    expect(mocks.listRuns).toHaveBeenCalledTimes(2)
+
+    wrapper.unmount()
+    vi.useRealTimers()
+  })
 })
 
 async function mountPanel() {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch, type Component } from 'vue'
+import { computed, onUnmounted, ref, watch, type Component } from 'vue'
 import {
   Activity,
   AlertCircle,
@@ -17,6 +17,7 @@ import ExecutionTree from '@/components/chat/ExecutionTree.vue'
 import RunSkillsPanel from '@/components/skills/RunSkillsPanel.vue'
 import UiState from '@/components/ui/UiState.vue'
 import { runsApi } from '@/lib/api/runs'
+import { mergeExecutionNodes } from '@/lib/run-execution'
 import type {
   AgentRun,
   ModelCallRecord,
@@ -67,6 +68,7 @@ const resourceCursor = ref<Record<'tools' | 'models' | 'events', string | number
   events: null,
 })
 let requestVersion = 0
+let pollTimer: ReturnType<typeof setInterval> | null = null
 
 const selectedRun = computed(
   () => runs.value.find((run) => run.id === selectedRunId.value) || null,
@@ -96,13 +98,33 @@ const tabs = computed<Array<{ key: TraceTab; label: string; icon: Component; cou
 
 watch(
   () => props.sessionId,
-  () => void loadRuns(false),
+  () => {
+    activeTab.value = 'execution'
+    void loadRuns(false)
+  },
   { immediate: true },
 )
 
 watch(activeTab, (tab) => {
   if (tab !== 'execution' && tab !== 'overview') void loadResource(tab)
 })
+
+watch(
+  () => selectedRun.value?.status,
+  (status, previous) => {
+    syncPolling(status)
+    if (
+      isActiveStatus(previous) &&
+      !isActiveStatus(status) &&
+      activeTab.value !== 'execution' &&
+      activeTab.value !== 'overview'
+    ) {
+      void loadResource(activeTab.value, true)
+    }
+  },
+)
+
+onUnmounted(stopPolling)
 
 async function loadRuns(keepSelection = true): Promise<void> {
   const version = ++requestVersion
@@ -168,12 +190,37 @@ function selectRun(run: AgentRun): void {
   void loadExecution(run.id, false)
 }
 
-function refreshTrace(): void {
+function refreshTrace(refreshResource = true): void {
   void loadRuns(true).then(() => {
-    if (activeTab.value !== 'execution' && activeTab.value !== 'overview') {
+    if (
+      refreshResource &&
+      activeTab.value !== 'execution' &&
+      activeTab.value !== 'overview'
+    ) {
       void loadResource(activeTab.value, true)
     }
   })
+}
+
+function syncPolling(status?: string): void {
+  if (!isActiveStatus(status)) {
+    stopPolling()
+    return
+  }
+  if (pollTimer) return
+  pollTimer = setInterval(() => {
+    if (!loadingRuns.value && !loadingExecution.value) refreshTrace(false)
+  }, 2000)
+}
+
+function isActiveStatus(status?: string): boolean {
+  return status === 'pending' || status === 'running' || status === 'waiting'
+}
+
+function stopPolling(): void {
+  if (!pollTimer) return
+  clearInterval(pollTimer)
+  pollTimer = null
 }
 
 function resetRunResources(): void {
@@ -183,12 +230,14 @@ function resetRunResources(): void {
   events.value = []
   skills.value = []
   resourceLoaded.value = { tools: false, models: false, skills: false, events: false }
+  resourceLoading.value = { tools: false, models: false, skills: false, events: false }
   resourceHasMore.value = { tools: false, models: false, events: false }
   resourceCursor.value = { tools: null, models: null, events: null }
 }
 
 async function loadResource(tab: ResourceTab, reset = false): Promise<void> {
   const runId = selectedRunId.value
+  const version = requestVersion
   if (!runId || resourceLoading.value[tab]) return
   if (!reset && resourceLoaded.value[tab] && tab === 'skills') return
   if (
@@ -204,6 +253,7 @@ async function loadResource(tab: ResourceTab, reset = false): Promise<void> {
         after: reset ? undefined : (resourceCursor.value.tools as string | null) || undefined,
         limit: 100,
       })
+      if (version !== requestVersion || runId !== selectedRunId.value) return
       toolCalls.value = reset ? data.tool_calls : mergeRecords(toolCalls.value, data.tool_calls)
       resourceCursor.value = { ...resourceCursor.value, tools: data.next_cursor }
       resourceHasMore.value = { ...resourceHasMore.value, tools: data.has_more }
@@ -212,6 +262,7 @@ async function loadResource(tab: ResourceTab, reset = false): Promise<void> {
         after: reset ? undefined : (resourceCursor.value.models as string | null) || undefined,
         limit: 100,
       })
+      if (version !== requestVersion || runId !== selectedRunId.value) return
       modelCalls.value = reset ? data.model_calls : mergeRecords(modelCalls.value, data.model_calls)
       resourceCursor.value = { ...resourceCursor.value, models: data.next_cursor }
       resourceHasMore.value = { ...resourceHasMore.value, models: data.has_more }
@@ -220,17 +271,24 @@ async function loadResource(tab: ResourceTab, reset = false): Promise<void> {
         after: reset ? undefined : Number(resourceCursor.value.events || 0) || undefined,
         limit: 100,
       })
+      if (version !== requestVersion || runId !== selectedRunId.value) return
       events.value = reset ? data.events : mergeRecords(events.value, data.events)
       resourceCursor.value = { ...resourceCursor.value, events: data.next_cursor }
       resourceHasMore.value = { ...resourceHasMore.value, events: data.has_more }
     } else {
-      skills.value = await runsApi.listSkills(runId)
+      const data = await runsApi.listSkills(runId)
+      if (version !== requestVersion || runId !== selectedRunId.value) return
+      skills.value = data
     }
     resourceLoaded.value = { ...resourceLoaded.value, [tab]: true }
   } catch (reason) {
-    error.value = errorMessage(reason, `加载${tab}记录失败`)
+    if (version === requestVersion && runId === selectedRunId.value) {
+      error.value = errorMessage(reason, `加载${tab}记录失败`)
+    }
   } finally {
-    resourceLoading.value = { ...resourceLoading.value, [tab]: false }
+    if (version === requestVersion && runId === selectedRunId.value) {
+      resourceLoading.value = { ...resourceLoading.value, [tab]: false }
+    }
   }
 }
 
@@ -239,14 +297,7 @@ function mergeExecutionViews(
   incoming: RunExecutionView,
 ): RunExecutionView {
   if (!current) return incoming
-  const nodes = new Map(current.nodes.map((node) => [node.node_id, node]))
-  for (const node of incoming.nodes) {
-    const existing = nodes.get(node.node_id)
-    if (!existing || node.cursor >= existing.cursor) nodes.set(node.node_id, node)
-  }
-  const mergedNodes = [...nodes.values()].sort(
-    (a, b) => a.cursor - b.cursor || a.node_id.localeCompare(b.node_id),
-  )
+  const mergedNodes = mergeExecutionNodes(current.nodes, incoming.nodes)
   const stepNodes = mergedNodes.filter((node) => node.kind === 'step')
   return {
     ...incoming,
@@ -333,7 +384,7 @@ function errorMessage(value: unknown, fallback: string): string {
         <div><p>运行 Trace</p><span>{{ selectedRun ? runLabel(selectedRun) : '无运行记录' }}</span></div>
       </div>
       <div class="trace-actions">
-        <button class="icon-button subtle" type="button" title="刷新 Trace" :disabled="loadingRuns || loadingExecution" @click="refreshTrace">
+        <button class="icon-button subtle" type="button" title="刷新 Trace" :disabled="loadingRuns || loadingExecution" @click="refreshTrace()">
           <RefreshCw :size="16" :class="{ spinning: loadingRuns || loadingExecution }" />
         </button>
         <button class="icon-button subtle" type="button" aria-label="关闭 Trace" @click="emit('close')"><X :size="16" /></button>

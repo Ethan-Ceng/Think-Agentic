@@ -300,7 +300,7 @@ TracePanel 已改为以 `RunExecutionView` 为唯一首屏数据源，并复用�
 
 ## Task 5：完整验证、代码审查、整改与远端推送
 
-状态：pending
+状态：in_progress
 
 ### 目标
 
@@ -348,11 +348,18 @@ TracePanel 已改为以 `RunExecutionView` 为唯一首屏数据源，并复用�
 
 ### 执行结果
 
-待执行。
+四阶段实现已完成全量验证和正式代码审查。首次无隔离依赖的后端全量测试中，590 项通过、24 项失败和 1 项错误均由 `.env` 指向未启动的 PostgreSQL/Redis 测试端口导致；在独立 PostgreSQL 数据库与 Redis DB 15 中重跑后全部通过。审查发现并修复节点生命周期字段丢失、异步诊断请求串 Run、TracePanel 缺少运行中/终态补拉、Lead 失败被投影成功、历史 failure 子对象透传，以及 SSE cursor 提前推进问题。审查结论为 `APPROVED`，当前仅剩提交、远端推送与 upstream 核对。
 
 ### 验证证据
 
-待执行。
+- 后端全量：隔离 PostgreSQL/Redis 下 `uv run pytest -o addopts="" -q --tb=short --basetemp=.pytest_tmp_final`，618 passed。
+- 后端静态：`uv run ruff check app tests`，All checks passed。
+- 后端编译：`uv run python -m compileall -q app tests`，退出 0。
+- 前端全量：`pnpm test:run`，53 files / 222 tests passed。
+- 前端类型与构建：`pnpm type-check`、`pnpm build`，均退出 0。
+- 数据库：隔离 PostgreSQL 17 从空库 upgrade 到 head，随后 downgrade `20260818_0001`、re-upgrade，最终 `20260819_0001 (head)`。
+- 安全与 Git：公共字段扫描和 `git diff --check` 通过。
+- 代码审查：`docs/reviews/run-trace-execution-chain-review.md`，结论 `APPROVED`，无未处理 blocking/major/minor。
 
 ## 计划变更
 

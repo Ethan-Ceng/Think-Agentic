@@ -85,6 +85,37 @@ describe('useRunExecutions', () => {
     expect(result.states.value['run-1'].hydrated).toBe(true)
     scope.stop()
   })
+
+  it('treats a failed completion node as a failed run', async () => {
+    const events = ref<SSEEventData[]>([])
+    const scope = effectScope()
+    const result = scope.run(() => useRunExecutions(ref('session-1'), events))!
+    await nextTick()
+
+    result.applyExecutionUpdate({
+      run_id: 'run-1',
+      input_event_id: 'input-1',
+      schema_version: 1,
+      nodes: [
+        {
+          node_id: 'completion:run-1',
+          parent_node_id: 'run:run-1',
+          kind: 'completion',
+          phase: 'finalize',
+          status: 'failed',
+          title: '本次执行未完成',
+          summary: '本次执行未完成',
+          cursor: 4,
+          metrics: {},
+        },
+      ],
+      next_cursor: 4,
+      trace_complete: true,
+    })
+
+    expect(result.states.value['run-1'].run.status).toBe('failed')
+    scope.stop()
+  })
 })
 
 function executionUpdate(cursor: number, status: 'running' | 'succeeded'): SSEEventData {

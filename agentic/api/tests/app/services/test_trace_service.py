@@ -452,6 +452,24 @@ def test_trace_service_records_lead_strategy_lifecycle() -> None:
     }
 
 
+def test_failed_lead_completion_marks_run_terminal_before_done_event() -> None:
+    repo = FakeTraceRepository()
+    service = TraceService(uow_factory=lambda: FakeUow(repo))
+
+    async def run() -> None:
+        run_id = await service.start_run(
+            user_id="user-1",
+            session_id="session-1",
+            task_id="task-1",
+            input_event=MessageEvent(role="user", message="execute plan"),
+        )
+        await service.record_lead_completion(mode="plan", status="failed")
+        assert repo.runs[run_id]["status"] == "failed"
+        assert repo.runs[run_id]["finished_at"] is not None
+
+    asyncio.run(run())
+
+
 def test_trace_service_keeps_ttft_null_for_non_streaming_calls() -> None:
     repo = FakeTraceRepository()
     service = TraceService(uow_factory=lambda: FakeUow(repo))
@@ -755,6 +773,32 @@ def test_trace_query_projection_sanitizes_historical_records_and_pages_directly(
                 "summary": "",
             }
         )
+        repo.events.append(
+            {
+                "id": "legacy-error",
+                "trace_id": f"run:{run_id}",
+                "run_id": run_id,
+                "session_id": "session-1",
+                "event_id": "legacy-error",
+                "event_type": "error.created",
+                "payload": {
+                    "has_failure": True,
+                    "failure": {
+                        "code": "MODEL_UNAVAILABLE",
+                        "message": "模型服务暂时不可用",
+                        "reasoning_content": "hidden historical reasoning",
+                        "messages": [{"content": "secret historical prompt"}],
+                    },
+                },
+                "created_at": repo.events[0]["created_at"],
+                "ingest_seq": 3,
+                "schema_version": 1,
+                "node_id": "error:legacy",
+                "parent_node_id": f"run:{run_id}",
+                "visibility": "user",
+                "summary": "模型服务暂时不可用",
+            }
+        )
 
         detail = await service.get_run_detail("user-1", run_id)
         assert detail["run"]["input_summary"] == ""
@@ -770,6 +814,12 @@ def test_trace_query_projection_sanitizes_historical_records_and_pages_directly(
         assert len(page["events"]) == 1
         assert page["events"][0]["ingest_seq"] == 2
         assert page["next_cursor"] == 2
+
+        error_page = await service.list_events("user-1", run_id, after=2, limit=1)
+        serialized_error = str(error_page["events"][0])
+        assert error_page["events"][0]["payload"]["failure"]["code"] == "MODEL_UNAVAILABLE"
+        assert "hidden historical reasoning" not in serialized_error
+        assert "secret historical prompt" not in serialized_error
 
     asyncio.run(run())
 

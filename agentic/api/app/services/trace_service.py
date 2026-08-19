@@ -290,14 +290,38 @@ class TraceService:
         status: str,
         replan_count: int = 0,
     ) -> None:
-        await self._record_lead_event(
-            "lead.completed",
-            {
-                "mode": mode,
-                "status": status,
-                "replan_count": max(0, int(replan_count)),
-            },
-        )
+        if not self.run_id:
+            return
+        normalized_status = status if status in {"completed", "waiting", "failed"} else "failed"
+        now = datetime.now()
+        if normalized_status == "failed":
+            self._terminal_failed = True
+
+        async def write(uow: IUnitOfWork) -> None:
+            await uow.trace.append_event(
+                self._trace_event_data(
+                    event_type="lead.completed",
+                    payload={
+                        "mode": mode,
+                        "status": normalized_status,
+                        "replan_count": max(0, int(replan_count)),
+                    },
+                    created_at=now,
+                )
+            )
+            if normalized_status == "waiting":
+                await uow.trace.update_run(self.run_id, {"status": "waiting"})
+            elif normalized_status == "failed":
+                await uow.trace.update_run(
+                    self.run_id,
+                    {
+                        "status": "failed",
+                        "error": "Agent run failed",
+                        "finished_at": now,
+                    },
+                )
+
+        await self._write(write)
 
     async def project_event(self, event: BaseEvent) -> None:
         """Project one runtime event into trace tables."""
@@ -1328,7 +1352,25 @@ def _safe_trace_payload(event_type: str, payload: Dict[str, Any]) -> Dict[str, A
             )
         )
     if event_type == "error.created":
-        return _snapshot(_allowlist(payload, "has_failure", "failure"))
+        failure = payload.get("failure") if isinstance(payload.get("failure"), dict) else {}
+        return _snapshot(
+            {
+                "has_failure": bool(payload.get("has_failure") or failure),
+                "failure": _allowlist(
+                    failure,
+                    "code",
+                    "category",
+                    "scope",
+                    "source",
+                    "message",
+                    "retryable",
+                    "recovery_actions",
+                    "provider_id",
+                    "tool_call_id",
+                    "debug_id",
+                ),
+            }
+        )
     if event_type in {"wait.created", "done.created"}:
         return _snapshot(_allowlist(payload, "status"))
     if event_type.startswith("sandbox."):

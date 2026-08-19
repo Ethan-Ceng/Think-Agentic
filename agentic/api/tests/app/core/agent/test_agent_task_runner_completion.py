@@ -465,6 +465,54 @@ def test_execution_update_is_transient_incremental_and_not_session_history() -> 
     assert session_repo.events == []
 
 
+def test_execution_update_retries_cursor_after_transient_delivery_failure() -> None:
+    runner, _ = make_runner()
+
+    class TraceWithExecution:
+        run_id = "run-1"
+
+        def __init__(self) -> None:
+            self.after_values = []
+
+        async def get_execution_view(self, user_id, run_id, *, after, limit, detail):
+            self.after_values.append(after)
+            return {
+                "schema_version": 1,
+                "run": {"input_event_id": "input-1"},
+                "nodes": [
+                    {
+                        "node_id": "run:run-1",
+                        "parent_node_id": None,
+                        "kind": "run",
+                        "phase": "decide",
+                        "status": "running",
+                        "title": "开始处理请求",
+                        "summary": "开始处理请求",
+                        "cursor": 1,
+                        "metrics": {},
+                    }
+                ],
+                "next_cursor": 1,
+                "trace_complete": True,
+            }
+
+    trace = TraceWithExecution()
+    runner._trace_service = trace
+    runner._put_transient_event = AsyncMock(
+        side_effect=[RuntimeError("transport unavailable"), None]
+    )
+    task = FakeTask([])
+
+    async def emit_twice() -> None:
+        await runner._emit_execution_update(task, force=True)
+        await runner._emit_execution_update(task, force=True)
+
+    asyncio.run(emit_twice())
+
+    assert trace.after_values == [None, None]
+    assert runner._last_execution_cursor == 1
+
+
 def test_flow_error_aborts_an_unfinished_transient_draft() -> None:
     runner, session_repo = make_runner()
 
