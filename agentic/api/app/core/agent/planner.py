@@ -67,11 +67,29 @@ class PlannerAgent(BaseAgent):
             return
         known = self._tool_registry.capability_groups()
         for step in plan.steps:
-            step.capabilities = [
-                capability
-                for capability in step.capabilities
-                if capability in known
-            ]
+            resolver = getattr(
+                self._tool_registry,
+                "resolve_scope_selection",
+                None,
+            )
+            if resolver is None:
+                step.capabilities = [
+                    capability
+                    for capability in step.capabilities
+                    if capability in known
+                ]
+                step.provider_ids = []
+                step.tool_ids = []
+                continue
+            (
+                step.capabilities,
+                step.provider_ids,
+                step.tool_ids,
+            ) = resolver(
+                step.capabilities,
+                step.provider_ids,
+                step.tool_ids,
+            )
 
     async def create_plan(self, message: Message) -> AsyncGenerator[BaseEvent, None]:
         """根据用户传递的消息创建计划/规划，迭代返回对应的事件"""

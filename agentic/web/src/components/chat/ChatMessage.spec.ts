@@ -56,6 +56,24 @@ const errorItem: TimelineItem = {
   timeLabel: '15:14',
 }
 
+const providerErrorItem: TimelineItem = {
+  kind: 'error',
+  id: 'provider-error-1',
+  error: '外部工具服务通信异常。',
+  failure: {
+    code: 'PROVIDER_PROTOCOL_ERROR',
+    category: 'provider',
+    scope: 'operation',
+    source: 'mcp',
+    message: '外部工具服务通信异常。',
+    retryable: true,
+    recovery_actions: ['retry', 'choose_provider'],
+    provider_id: 'mcp.github',
+    debug_id: 'debug-provider-1',
+  },
+  timeLabel: '15:15',
+}
+
 describe('ChatMessage reply failure recovery', () => {
   it('shows a friendly recoverable state without exposing the internal error', () => {
     const wrapper = shallowMount(ChatMessage, {
@@ -88,6 +106,26 @@ describe('ChatMessage reply failure recovery', () => {
     await buttons[1].trigger('click')
 
     expect(wrapper.emitted('recoverTask')).toEqual([['continue'], ['restart']])
+  })
+
+  it('shows provider failures as provider errors instead of model configuration errors', () => {
+    const wrapper = shallowMount(ChatMessage, {
+      props: {
+        item: providerErrorItem,
+        showRecoveryActions: true,
+      },
+    })
+
+    expect(wrapper.text()).toContain('外部工具服务暂时不可用')
+    expect(wrapper.getComponent(MarkdownContent).props('content')).toBe(
+      '外部工具服务通信异常。',
+    )
+    expect(wrapper.getComponent(MarkdownContent).props('content')).not.toContain(
+      '模型配置',
+    )
+    expect(wrapper.getComponent(MarkdownContent).props('content')).not.toContain(
+      '账户余额',
+    )
   })
 
   it('hides recovery actions for historical errors and disables them while recovering', () => {

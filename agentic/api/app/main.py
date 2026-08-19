@@ -15,7 +15,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.extensions import get_db, get_redis
-from app.dependencies.infrastructure import get_file_storage
+from app.dependencies.infrastructure import (
+    get_file_storage,
+    get_mcp_provider_pool,
+    task_cls,
+)
 from app.controllers import router
 from app.schemas.exceptions import AppException
 from app.core.config import get_settings
@@ -40,6 +44,15 @@ async def _purge_deleted_files() -> None:
                 logger.info("Purged %s expired files", purged)
         except Exception:
             logger.exception("Deleted file purge failed")
+
+
+async def _shutdown_resources(shutdown_steps) -> None:
+    """Run every application cleanup even when one resource fails."""
+    for resource_name, cleanup in shutdown_steps:
+        try:
+            await cleanup()
+        except Exception:
+            logger.exception("关闭 %s 失败", resource_name)
 
 
 @asynccontextmanager
@@ -70,8 +83,13 @@ async def lifespan(app: FastAPI):
         purge_task.cancel()
         with suppress(asyncio.CancelledError):
             await purge_task
-        await get_db().shutdown()
-        await get_redis().shutdown()
+        shutdown_steps = (
+            ("agent tasks", task_cls.destroy),
+            ("MCP Provider Pool", get_mcp_provider_pool().close),
+            ("database", get_db().shutdown),
+            ("Redis", get_redis().shutdown),
+        )
+        await _shutdown_resources(shutdown_steps)
         logger.info("MoocManus 关闭完成")
 
 

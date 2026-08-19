@@ -8,7 +8,7 @@
 import logging
 import uuid
 from contextlib import AsyncExitStack
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Callable
 
 import httpx
 
@@ -154,20 +154,39 @@ class A2ATool(BaseTool):
     """A2A工具包，根据传递的完成A2A工具包的初始化"""
     name: str = "a2a"
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        a2a_config: Optional[A2AConfig] = None,
+        *,
+        manager_factory: Callable[[A2AConfig], A2AClientManager] | None = None,
+    ) -> None:
         """构造函数，完成工具包初始化"""
         super().__init__()
+        self._a2a_config = a2a_config or A2AConfig()
+        self._manager_factory = manager_factory or A2AClientManager
         self._initialized: bool = False
         self.manager: Optional[A2AClientManager] = None
+
+    @property
+    def config(self) -> A2AConfig:
+        return self._a2a_config
 
     async def initialize(self, a2a_config: Optional[A2AConfig] = None) -> None:
         """初始化A2A工具包"""
         # 1.判断下是否已初始化
         if not self._initialized:
+            self._a2a_config = a2a_config or self._a2a_config
             # 2.初始化A2A客户端管理器
-            self.manager = A2AClientManager(a2a_config)
+            self.manager = self._manager_factory(self._a2a_config)
             await self.manager.initialize()
             self._initialized = True
+
+    async def _ensure_initialized(self) -> A2AClientManager:
+        if not self._initialized:
+            await self.initialize()
+        if self.manager is None:
+            raise RuntimeError("A2A Provider 初始化未返回运行时")
+        return self.manager
 
     @tool(
         name="get_remote_agent_cards",
@@ -177,9 +196,10 @@ class A2ATool(BaseTool):
     )
     async def get_remote_agent_cards(self) -> ToolResult:
         """获取远程Agent卡片信息列表"""
+        manager = await self._ensure_initialized()
         # 1.重组结构，将id填充到agent_card中
         agent_cards = []
-        for id, agent_card in self.manager.agent_cards.items():
+        for id, agent_card in manager.agent_cards.items():
             agent_cards.append({
                 "id": id,
                 **agent_card,
@@ -209,4 +229,12 @@ class A2ATool(BaseTool):
     )
     async def call_remote_agent(self, id: str, query: str) -> ToolResult:
         """调用远程Agent并完成对应需求"""
-        return await self.manager.invoke(agent_id=id, query=query)
+        manager = await self._ensure_initialized()
+        return await manager.invoke(agent_id=id, query=query)
+
+    async def cleanup(self) -> None:
+        if self.manager is None:
+            return
+        await self.manager.cleanup()
+        self.manager = None
+        self._initialized = False

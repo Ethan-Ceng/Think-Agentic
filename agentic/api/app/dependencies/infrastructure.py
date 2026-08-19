@@ -16,6 +16,8 @@ from app.repositories.file_app_config_repository import FileAppConfigRepository
 from app.services.skill_workspace_service import SkillWorkspaceService
 from app.services.bundled_skill_service import BundledSkillService
 from app.services.user_config_service import UserConfigService
+from app.core.tools.mcp import MCPClientManager
+from app.core.tools.provider_runtime import MCPProviderPool
 
 settings = get_settings()
 
@@ -72,6 +74,21 @@ def get_json_parser():
 
 def get_search_engine():
     return BingSearchEngine()
+
+
+@lru_cache
+def get_mcp_provider_pool() -> MCPProviderPool:
+    return MCPProviderPool(
+        manager_factory=lambda config: MCPClientManager(mcp_config=config),
+        snapshot_ttl_seconds=settings.mcp_schema_snapshot_ttl_seconds,
+        snapshot_max_entries=settings.mcp_schema_snapshot_max_entries,
+        idle_ttl_seconds=settings.mcp_provider_idle_ttl_seconds,
+        operation_timeout_seconds=(
+            settings.mcp_provider_operation_timeout_seconds
+        ),
+        backoff_base_seconds=settings.mcp_provider_backoff_base_seconds,
+        backoff_max_seconds=settings.mcp_provider_backoff_max_seconds,
+    )
 
 
 sandbox_cls = DockerSandbox

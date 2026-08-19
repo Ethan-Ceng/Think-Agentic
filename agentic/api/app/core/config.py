@@ -38,6 +38,12 @@ class Settings(BaseSettings):
     file_purge_interval_seconds: int = 60 * 60
     lead_agent_enabled: bool = False
     token_delta_streaming_enabled: bool = False
+    mcp_schema_snapshot_ttl_seconds: float = 300.0
+    mcp_schema_snapshot_max_entries: int = 2048
+    mcp_provider_idle_ttl_seconds: float = 120.0
+    mcp_provider_operation_timeout_seconds: float = 60.0
+    mcp_provider_backoff_base_seconds: float = 1.0
+    mcp_provider_backoff_max_seconds: float = 30.0
 
     skill_package_storage_path: str = "/app/storage/skills/packages"
     skill_workspace_storage_path: str = "/app/storage/skill-workspaces"
@@ -97,6 +103,26 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_storage_roots(self) -> "Settings":
+        if self.mcp_schema_snapshot_ttl_seconds <= 0:
+            raise ValueError("mcp_schema_snapshot_ttl_seconds must be positive")
+        if self.mcp_schema_snapshot_max_entries <= 0:
+            raise ValueError("mcp_schema_snapshot_max_entries must be positive")
+        if self.mcp_provider_idle_ttl_seconds < 0:
+            raise ValueError("mcp_provider_idle_ttl_seconds cannot be negative")
+        if self.mcp_provider_operation_timeout_seconds <= 0:
+            raise ValueError(
+                "mcp_provider_operation_timeout_seconds must be positive"
+            )
+        if self.mcp_provider_backoff_base_seconds <= 0:
+            raise ValueError("mcp_provider_backoff_base_seconds must be positive")
+        if (
+            self.mcp_provider_backoff_max_seconds
+            < self.mcp_provider_backoff_base_seconds
+        ):
+            raise ValueError(
+                "mcp_provider_backoff_max_seconds must be greater than or equal "
+                "to mcp_provider_backoff_base_seconds"
+            )
         roots = {
             "ordinary files": self.local_storage_path,
             "Skill packages": self.skill_package_storage_path,

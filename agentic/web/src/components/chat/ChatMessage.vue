@@ -23,6 +23,7 @@ import type {
   ResumeMode,
   ToolEvent,
 } from '@/lib/api/types'
+import type { FailureCategory } from '@/lib/api/types'
 import type { InlineChatArtifact } from '@/lib/chat-artifacts'
 import type { AttachmentFile, TimelineItem, UserMessageStatus } from '@/lib/session-events'
 import { getFriendlyToolLabel, getToolKind } from '@/lib/tool-utils'
@@ -62,6 +63,30 @@ const statusIconMap: Record<UserMessageStatus, Component> = {
 }
 
 const friendlyReplyError = '模型服务暂时不可用。请检查模型配置、账户余额或网络连接后重试。'
+const failureTitles: Record<FailureCategory, string> = {
+  model: '模型服务暂时不可用',
+  provider: '外部工具服务暂时不可用',
+  tool: '工具执行未完成',
+  runtime: '本次回复未完成',
+  interaction: '等待用户输入未完成',
+  config: '服务配置需要检查',
+}
+
+function getFailureTitle(item: TimelineItem): string {
+  if (item.kind !== 'error' || !item.failure) return '本次回复未完成'
+  if (item.failure.code === 'RUN_CANCELLED_BY_USER') return '已停止本次执行'
+  if (item.failure.code === 'RUN_CONTEXT_LOST') return '本次运行上下文已丢失'
+  return failureTitles[item.failure.category]
+}
+
+function getFailureMessage(item: TimelineItem): string {
+  if (item.kind === 'error' && item.failure) return item.failure.message
+  return friendlyReplyError
+}
+
+function canRecoverFailure(item: TimelineItem): boolean {
+  return item.kind !== 'error' || item.failure?.retryable !== false
+}
 
 function getUserStatus(item: TimelineItem): UserMessageStatus {
   return item.kind === 'user' && item.status ? item.status : 'sent'
@@ -242,10 +267,10 @@ function handleResolveInteraction(actionId: string, params: ResolveInteractionPa
       <div class="assistant-status-card assistant-error-card">
         <div class="assistant-status-card-title">
           <AlertCircle :size="16" />
-          <strong>本次回复未完成</strong>
+          <strong>{{ getFailureTitle(item) }}</strong>
         </div>
-        <MarkdownContent :content="friendlyReplyError" />
-        <div v-if="showRecoveryActions" class="task-recovery-actions">
+        <MarkdownContent :content="getFailureMessage(item)" />
+        <div v-if="showRecoveryActions && canRecoverFailure(item)" class="task-recovery-actions">
           <button
             class="task-recovery-button is-primary"
             type="button"

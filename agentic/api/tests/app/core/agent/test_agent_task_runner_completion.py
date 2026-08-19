@@ -17,6 +17,7 @@ from app.core.entities.event import (
     WaitEvent,
 )
 from app.core.entities.session import NextMessage, NextMessageState, SessionStatus
+from app.core.task.base import RunCancellationContext, RunCancellationReason
 
 
 class FakeSessionRepository:
@@ -123,6 +124,7 @@ class FakeTask:
     def __init__(self, event: MessageEvent | list[MessageEvent]) -> None:
         self.input_stream = FakeInputStream(event)
         self.output_stream = FakeOutputStream()
+        self.cancellation_context: RunCancellationContext | None = None
 
 
 def make_runner() -> tuple[AgentTaskRunner, FakeSessionRepository]:
@@ -150,6 +152,16 @@ def make_runner() -> tuple[AgentTaskRunner, FakeSessionRepository]:
 
 def parse_output_events(task: FakeTask) -> list[Event]:
     return [TypeAdapter(Event).validate_json(payload) for payload in task.output_stream.payloads]
+
+
+def test_destroy_cleans_tools_when_sandbox_destroy_fails() -> None:
+    runner, _ = make_runner()
+    runner._sandbox.destroy = AsyncMock(side_effect=RuntimeError("sandbox failed"))
+
+    with pytest.raises(RuntimeError, match="sandbox failed"):
+        asyncio.run(runner.destroy())
+
+    runner._cleanup_tools.assert_awaited_once()
 
 
 def test_normal_completion_updates_status_then_emits_done_event() -> None:
@@ -243,12 +255,14 @@ def test_failed_run_updates_status_then_emits_error() -> None:
     assert session_repo.status_updates == [SessionStatus.COMPLETED]
     assert len(output_events) == 1
     assert isinstance(output_events[0], ErrorEvent)
-    assert "broken flow" in output_events[0].error
+    assert output_events[0].failure is not None
+    assert output_events[0].failure.code == "RUN_INTERNAL_ERROR"
+    assert "broken flow" not in output_events[0].error
     assert len(session_repo.next_messages) == 1
     assert session_repo.finish_calls == 0
 
 
-def test_cancelled_run_updates_status_then_emits_done() -> None:
+def test_unattributed_cancel_becomes_internal_error_instead_of_user_stop() -> None:
     runner, session_repo = make_runner()
     session_repo.next_messages.append(NextMessage(message="keep after stop"))
 
@@ -260,13 +274,14 @@ def test_cancelled_run_updates_status_then_emits_done() -> None:
     runner._run_flow = cancelled_flow
     task = FakeTask(MessageEvent(role="user", message="hello"))
 
-    with pytest.raises(asyncio.CancelledError):
-        asyncio.run(runner.invoke(task))
+    asyncio.run(runner.invoke(task))
 
     output_events = parse_output_events(task)
     assert session_repo.status_updates == [SessionStatus.COMPLETED]
     assert len(output_events) == 1
-    assert isinstance(output_events[0], DoneEvent)
+    assert isinstance(output_events[0], ErrorEvent)
+    assert output_events[0].failure is not None
+    assert output_events[0].failure.code == "RUN_INTERNAL_ERROR"
     assert len(session_repo.next_messages) == 1
     assert session_repo.finish_calls == 0
 
@@ -413,6 +428,10 @@ def test_cancellation_aborts_an_unfinished_transient_draft() -> None:
 
     runner._run_flow = cancelled_stream
     task = FakeTask(MessageEvent(role="user", message="hello"))
+    task.cancellation_context = RunCancellationContext(
+        reason=RunCancellationReason.USER,
+        requested_by="user-1",
+    )
 
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(runner.invoke(task))

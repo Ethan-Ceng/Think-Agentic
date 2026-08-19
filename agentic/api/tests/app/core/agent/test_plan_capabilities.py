@@ -47,9 +47,19 @@ def test_old_step_json_without_capabilities_remains_compatible() -> None:
 
 
 def test_step_capabilities_are_trimmed_and_deduplicated() -> None:
-    step = Step(capabilities=[" shell ", "file", "shell", ""])
+    step = Step(
+        capabilities=[" shell ", "file", "shell", ""],
+        provider_ids=[" builtin.shell ", "builtin.shell", ""],
+        tool_ids=[
+            " builtin.shell.shell_execute ",
+            "builtin.shell.shell_execute",
+            "",
+        ],
+    )
 
     assert step.capabilities == ["shell", "file"]
+    assert step.provider_ids == ["builtin.shell"]
+    assert step.tool_ids == ["builtin.shell.shell_execute"]
 
 
 def test_compact_capability_catalog_contains_no_parameter_schemas() -> None:
@@ -62,8 +72,23 @@ def test_compact_capability_catalog_contains_no_parameter_schemas() -> None:
     assert by_group["file"]["requires_sandbox"] is True
     assert by_group["browser"]["requires_browser"] is True
     assert by_group["search"]["requires_sandbox"] is False
+    shell_tools = {
+        item["function_name"]: item
+        for item in by_group["shell"]["tools"]
+    }
+    assert shell_tools["shell_execute"] == {
+        "tool_id": "builtin.shell.shell_execute",
+        "function_name": "shell_execute",
+        "provider_id": "builtin.shell",
+        "source_type": "builtin",
+        "execution_backend": "sandbox",
+        "generality": "general_fallback",
+        "cost_class": "medium",
+        "description": shell_tools["shell_execute"]["description"],
+    }
     assert "parameters" not in serialized
     assert "properties" not in serialized
+    assert "schema" not in serialized.lower()
 
 
 def test_planner_accepts_only_groups_from_current_registry() -> None:

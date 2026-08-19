@@ -20,6 +20,7 @@ from app.schemas.tool_config import (
     ToolRegistration,
     ToolRegistrationTestRequest,
     RuntimeToolPolicy,
+    ToolDescriptor,
 )
 from app.schemas.tool_config import ToolRegistrationCreate, ToolRegistrationUpdate
 from app.services.tool_config_service import ToolConfigService
@@ -83,7 +84,58 @@ def test_tool_registry_lists_builtin_metadata() -> None:
     assert shell_execute.tool_id == "builtin.shell.shell_execute"
     assert shell_execute.group == "shell"
     assert shell_execute.executor_type == "builtin"
+    assert shell_execute.source_type == "builtin"
+    assert shell_execute.execution_backend == "sandbox"
+    assert shell_execute.resource_requirements == ["sandbox"]
+    assert shell_execute.execution_class == "sandbox_local"
+    assert shell_execute.generality == "general_fallback"
+    assert shell_execute.cost_class == "medium"
     assert shell_execute.risk_level == "high"
+
+
+def test_builtin_descriptor_separates_source_backend_and_generality() -> None:
+    descriptors = {
+        item.function_name: item
+        for item in ToolRegistry().list_descriptors()
+    }
+
+    assert descriptors["read_file"].execution_backend == "sandbox"
+    assert descriptors["read_file"].generality == "specialized"
+    assert descriptors["browser_navigate"].execution_backend == "sandbox_browser"
+    assert descriptors["browser_navigate"].resource_requirements == [
+        "sandbox",
+        "browser",
+    ]
+    assert descriptors["browser_console_exec"].generality == "general_fallback"
+    assert descriptors["search_web"].execution_backend == "remote_http"
+    assert descriptors["search_web"].execution_class == "external_read"
+    assert descriptors["message_ask_user"].execution_backend == "in_process"
+    assert descriptors["call_remote_agent"].source_type == "a2a"
+    assert descriptors["call_remote_agent"].execution_backend == "delegation"
+
+
+def test_tool_descriptor_migrates_legacy_metadata_without_losing_compatibility() -> None:
+    descriptor = ToolDescriptor.model_validate(
+        {
+            "tool_id": "builtin.shell.shell_execute",
+            "function_name": "shell_execute",
+            "provider_id": "builtin.shell",
+            "provider_label": "Shell",
+            "group": "shell",
+            "executor_type": "builtin",
+            "label": "执行 Shell 命令",
+            "description": "Run a command",
+            "schema": {},
+            "category": "Shell",
+            "risk_level": "high",
+            "requires_sandbox": True,
+        }
+    )
+
+    assert descriptor.source_type == "builtin"
+    assert descriptor.execution_backend == "sandbox"
+    assert descriptor.resource_requirements == ["sandbox"]
+    assert descriptor.execution_class == "sandbox_local"
 
 
 def test_sandbox_file_writes_are_auto_allowed_by_default() -> None:
@@ -411,6 +463,26 @@ def test_system_builtin_tools_ignore_user_bindings_and_executor_policy() -> None
         not tool_id.startswith("builtin.")
         for tool_id in registry.default_bindings(config)
     )
+
+
+@pytest.mark.parametrize(
+    ("provider_ids", "tool_ids"),
+    [
+        (["missing.provider"], ["builtin.shell.shell_execute"]),
+        (["builtin.shell"], ["missing.tool"]),
+    ],
+)
+def test_scope_resolution_never_drops_invalid_exact_constraints_into_broad_access(
+    provider_ids: list[str],
+    tool_ids: list[str],
+) -> None:
+    resolved = ToolRegistry().resolve_scope_selection(
+        ["shell"],
+        provider_ids=provider_ids,
+        tool_ids=tool_ids,
+    )
+
+    assert resolved == ([], [], [])
 
 
 def test_preflight_ignores_historical_disabled_builtin_bindings() -> None:

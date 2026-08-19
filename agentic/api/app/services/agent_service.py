@@ -22,6 +22,7 @@ from app.core.sandbox.runtime import (
 )
 from app.core.search.base import SearchEngine
 from app.core.task.base import Task
+from app.core.task.base import RunCancellationReason
 from app.core.entities.event import (
     BaseEvent,
     DoneEvent,
@@ -35,6 +36,7 @@ from app.core.entities.event import (
     MessageEvent,
     WaitEvent,
 )
+from app.core.entities.failure import RunFailureCode, run_failure
 from app.core.entities.session import (
     InteractionConflictError,
     InteractionNotFoundError,
@@ -54,6 +56,7 @@ from app.core.agent.agent_task_runner import AgentTaskRunner
 from app.services.user_config_service import UserConfigService
 from app.services.bundled_skill_service import BundledSkillService
 from app.services.skill_workspace_service import SkillWorkspaceService
+from app.core.tools.provider_runtime import MCPProviderPool
 
 logger = logging.getLogger(__name__)
 
@@ -62,8 +65,8 @@ class AgentService:
     """Manus智能体服务"""
 
     ORPHANED_RUN_ERROR = (
-        "任务执行已中断：服务重启后运行上下文已丢失。"
-        "你可以在当前对话中继续未完成的任务，或从头重新执行。"
+        "当前进程已无法继续本次运行。"
+        "你可以基于已有结果继续，或重新执行本次任务。"
     )
     RECOVERY_MESSAGES = {
         "continue": (
@@ -89,6 +92,7 @@ class AgentService:
             skill_package_storage: SkillPackageStorage | None = None,
             bundled_skill_service: BundledSkillService | None = None,
             skill_workspace_service: SkillWorkspaceService | None = None,
+            mcp_provider_pool: MCPProviderPool | None = None,
     ) -> None:
         """构造函数，完成Agent服务初始化"""
         self._uow_factory = uow_factory
@@ -103,6 +107,7 @@ class AgentService:
         self._skill_package_storage = skill_package_storage
         self._bundled_skill_service = bundled_skill_service
         self._skill_workspace_service = skill_workspace_service
+        self._mcp_provider_pool = mcp_provider_pool
         logger.info("AgentService初始化成功")
 
     async def _get_task(self, session: Session) -> Optional[Task]:
@@ -168,6 +173,8 @@ class AgentService:
             lead_goal=resolved.lead_goal,
             lead_language=resolved.lead_language,
             lead_capabilities=resolved.lead_capabilities,
+            lead_provider_ids=resolved.lead_provider_ids,
+            lead_tool_ids=resolved.lead_tool_ids,
             plan_id=resolved.plan_id,
             step_id=resolved.step_id,
             lead_replan_count=resolved.lead_replan_count,
@@ -234,6 +241,7 @@ class AgentService:
             skill_package_storage=self._skill_package_storage,
             bundled_skill_service=self._bundled_skill_service,
             skill_workspace_service=self._skill_workspace_service,
+            mcp_provider_pool=self._mcp_provider_pool,
         )
 
         # 3.创建任务Task并更新会话中的信息
@@ -269,7 +277,8 @@ class AgentService:
             raise ValueError(f"不支持的任务恢复方式: {mode}") from exc
 
     async def _finalize_orphaned_run(self, session: Session) -> ErrorEvent:
-        event = ErrorEvent(error=self.ORPHANED_RUN_ERROR)
+        failure = run_failure(RunFailureCode.CONTEXT_LOST)
+        event = ErrorEvent(error=self.ORPHANED_RUN_ERROR, failure=failure)
         finished_at = datetime.now()
         async with self._uow:
             await self._uow.session.reset_processing_next_message(session.id)
@@ -606,7 +615,10 @@ class AgentService:
         # 2.根据会话获取任务信息
         task = await self._get_task(session)
         if task:
-            task.cancel()
+            task.cancel(
+                reason=RunCancellationReason.USER,
+                requested_by=user_id,
+            )
         elif session.status == SessionStatus.RUNNING:
             await self._finalize_orphaned_run(session)
             return

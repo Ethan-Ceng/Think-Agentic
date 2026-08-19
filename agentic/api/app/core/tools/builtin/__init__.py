@@ -5,6 +5,7 @@
 from .catalog import (
     BUILTIN_TOOL_GROUPS,
     BuiltinToolGroup,
+    generality_for_builtin_function,
     label_for_builtin_function,
     risk_for_builtin_function,
 )
@@ -14,6 +15,7 @@ __all__ = [
     "BUILTIN_TOOL_GROUPS",
     "BuiltinToolGroup",
     "build_builtin_runtime_tools",
+    "generality_for_builtin_function",
     "label_for_builtin_function",
     "risk_for_builtin_function",
 ]

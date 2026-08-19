@@ -41,11 +41,34 @@ export type MCPTransport = 'stdio' | 'sse' | 'streamable_http'
 export type ToolRiskLevel = 'low' | 'medium' | 'high'
 export type ToolExecutorType = 'builtin' | 'mcp' | 'a2a' | 'api'
 export type ToolSourceType = 'builtin' | 'mcp' | 'a2a' | 'api'
+export type FailureCategory = 'model' | 'provider' | 'tool' | 'runtime' | 'interaction' | 'config'
+export type FailureScope = 'operation' | 'step' | 'run'
+export type RecoveryAction =
+  | 'retry'
+  | 'continue'
+  | 'choose_provider'
+  | 'check_config'
+  | 'reauthorize'
+  | 'start_new_run'
+
+export type FailureInfo = {
+  code: string
+  category: FailureCategory
+  scope: FailureScope
+  source: string
+  message: string
+  retryable: boolean
+  recovery_actions: RecoveryAction[]
+  provider_id?: string | null
+  tool_call_id?: string | null
+  debug_id: string
+}
 
 export type ToolFunctionResult = {
   success?: boolean
   message?: string | null
   data?: unknown
+  failure?: FailureInfo | null
   [key: string]: unknown
 }
 
@@ -735,7 +758,7 @@ export type SSEEventData =
   | { type: 'interaction'; data: InteractionEvent }
   | { type: 'wait'; data: Record<string, unknown> }
   | { type: 'done'; data: Record<string, unknown> }
-  | { type: 'error'; data: { error: string; [key: string]: unknown } }
+  | { type: 'error'; data: { error: string; failure?: FailureInfo | null; [key: string]: unknown } }
 
 export type SSEEventHandler = (event: SSEEventData) => void
 

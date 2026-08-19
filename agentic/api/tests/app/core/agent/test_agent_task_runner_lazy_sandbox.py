@@ -120,15 +120,13 @@ async def _noop() -> None:
     return None
 
 
-def test_runner_only_prepares_attachment_manifest_before_flow() -> None:
+def test_runner_does_not_preconnect_external_providers_before_flow() -> None:
     calls: list[str] = []
     runner = make_runner(calls)
 
     asyncio.run(runner.invoke(FakeTask(MessageEvent(role="user", message="hello"))))
 
-    assert calls[:5] == [
-        "mcp",
-        "a2a",
+    assert calls[:3] == [
         "set_attachment_manifest",
         "prepare_trace",
         "flow",

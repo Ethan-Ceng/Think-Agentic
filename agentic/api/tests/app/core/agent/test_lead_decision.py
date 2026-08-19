@@ -83,11 +83,41 @@ class StubToolRegistry:
                 "description": "Search current information.",
                 "requires_sandbox": False,
                 "requires_browser": False,
+                "tools": [
+                    {
+                        "tool_id": "builtin.search.search_web",
+                        "function_name": "search_web",
+                        "provider_id": "builtin.search",
+                    }
+                ],
             }
         ]
 
     def capability_groups(self) -> set[str]:
         return {"search"}
+
+    def resolve_scope_selection(
+        self,
+        capabilities,
+        provider_ids=None,
+        tool_ids=None,
+    ) -> tuple[list[str], list[str], list[str]]:
+        resolved_capabilities = [
+            value for value in capabilities if value == "search"
+        ]
+        resolved_providers = [
+            value
+            for value in provider_ids or []
+            if value == "builtin.search" and resolved_capabilities
+        ]
+        resolved_tools = [
+            value
+            for value in tool_ids or []
+            if value == "builtin.search.search_web"
+            and resolved_capabilities
+            and (not resolved_providers or "builtin.search" in resolved_providers)
+        ]
+        return resolved_capabilities, resolved_providers, resolved_tools
 
 
 def make_policy(content: dict) -> tuple[LeadDecisionPolicy, RecordingLlm]:
@@ -179,6 +209,8 @@ async def test_unknown_capabilities_are_removed() -> None:
             "language": "en",
             "goal": "Find the result",
             "capabilities": ["unknown", "search", "search"],
+            "provider_ids": ["unknown", "builtin.search"],
+            "tool_ids": ["unknown", "builtin.search.search_web"],
         }
     )
 
@@ -186,6 +218,8 @@ async def test_unknown_capabilities_are_removed() -> None:
 
     assert isinstance(decision, ReactDecision)
     assert decision.capabilities == ["search"]
+    assert decision.provider_ids == ["builtin.search"]
+    assert decision.tool_ids == ["builtin.search.search_web"]
 
 
 async def test_single_step_plan_downgrades_to_react() -> None:
@@ -201,6 +235,8 @@ async def test_single_step_plan_downgrades_to_react() -> None:
                     "id": "1",
                     "description": "Find the latest primary source",
                     "capabilities": ["search"],
+                    "provider_ids": ["builtin.search"],
+                    "tool_ids": ["builtin.search.search_web"],
                 }
             ],
         }
@@ -212,6 +248,8 @@ async def test_single_step_plan_downgrades_to_react() -> None:
     assert isinstance(decision, ReactDecision)
     assert decision.goal == "Find the latest primary source"
     assert decision.capabilities == ["search"]
+    assert decision.provider_ids == ["builtin.search"]
+    assert decision.tool_ids == ["builtin.search.search_web"]
 
 
 @pytest.mark.parametrize(

@@ -3,13 +3,47 @@ from __future__ import annotations
 import pytest
 
 from app.core.agent.lead_decision import LeadDecisionPolicy
+from app.core.entities.app_config import A2AConfig, MCPConfig, MCPServerConfig
 from app.core.entities.lead import LeadMode
 from app.core.entities.message import Message
+from app.core.entities.tool_config import ToolConfig
+from app.core.tools.provider_catalog import build_external_provider_descriptors
+from app.core.tools.registry import ToolRegistry
 
 
 class StubToolRegistry:
     def capability_groups(self) -> set[str]:
         return {"browser", "file", "search", "shell"}
+
+    def resolve_scope_selection(
+        self,
+        capabilities,
+        provider_ids=None,
+        tool_ids=None,
+    ):
+        known_capabilities = self.capability_groups()
+        resolved_capabilities = [
+            value for value in capabilities if value in known_capabilities
+        ]
+        allowed = {
+            "browser": ("builtin.browser", "builtin.browser.browser_navigate"),
+            "file": ("builtin.file", "builtin.file.write_file"),
+            "search": ("builtin.search", "builtin.search.search_web"),
+            "shell": ("builtin.shell", "builtin.shell.shell_execute"),
+        }
+        allowed_providers = {
+            allowed[group][0] for group in resolved_capabilities
+        }
+        resolved_providers = [
+            value for value in provider_ids or [] if value in allowed_providers
+        ]
+        allowed_tools = {
+            allowed[group][1] for group in resolved_capabilities
+        }
+        resolved_tools = [
+            value for value in tool_ids or [] if value in allowed_tools
+        ]
+        return resolved_capabilities, resolved_providers, resolved_tools
 
 
 def policy() -> LeadDecisionPolicy:
@@ -19,6 +53,16 @@ def policy() -> LeadDecisionPolicy:
 
 
 ROUTING_CASES = [
+    (
+        "今天几号",
+        {
+            "mode": "direct",
+            "title": "日期",
+            "language": "zh-CN",
+            "answer": "今天是指定日期。",
+        },
+        LeadMode.DIRECT,
+    ),
     (
         "Explain what recursion is in one paragraph",
         {
@@ -79,6 +123,8 @@ ROUTING_CASES = [
             "language": "en",
             "goal": "Run the focused unit test and report its result",
             "capabilities": ["shell"],
+            "provider_ids": ["builtin.shell"],
+            "tool_ids": ["builtin.shell.shell_execute"],
         },
         LeadMode.REACT,
     ),
@@ -188,3 +234,67 @@ def test_representative_suite_has_mode_coverage() -> None:
     assert counts[LeadMode.DIRECT] >= 3
     assert counts[LeadMode.REACT] >= 4
     assert counts[LeadMode.PLAN] >= 3
+
+
+def test_explicit_code_execution_keeps_exact_sandbox_backed_tool_scope() -> None:
+    decision = policy()._normalize_decision(
+        {
+            "mode": "react",
+            "title": "Unit test",
+            "language": "en",
+            "goal": "Run the focused unit test",
+            "capabilities": ["shell"],
+            "provider_ids": ["builtin.shell"],
+            "tool_ids": ["builtin.shell.shell_execute"],
+        },
+        Message(message="Run the focused unit test"),
+    )
+
+    assert decision.provider_ids == ["builtin.shell"]
+    assert decision.tool_ids == ["builtin.shell.shell_execute"]
+
+
+@pytest.mark.parametrize(
+    ("servers", "requested", "expected"),
+    [
+        (["github"], [], ["mcp.github"]),
+        (["github", "gitlab"], [], []),
+        (["github", "gitlab"], ["mcp.github"], ["mcp.github"]),
+    ],
+)
+def test_mcp_provider_selection_is_deterministic_without_global_fallback(
+    servers: list[str],
+    requested: list[str],
+    expected: list[str],
+) -> None:
+    registry = ToolRegistry(tool_config=ToolConfig())
+    registry.register_provider_descriptors(
+        build_external_provider_descriptors(
+            tool_config=ToolConfig(),
+            mcp_config=MCPConfig(
+                mcpServers={
+                    name: MCPServerConfig(url=f"https://{name}.example.test")
+                    for name in servers
+                }
+            ),
+            a2a_config=A2AConfig(),
+        )
+    )
+    instance = object.__new__(LeadDecisionPolicy)
+    instance._tool_registry = registry
+
+    decision = instance._normalize_decision(
+        {
+            "mode": "react",
+            "title": "Search issues",
+            "language": "en",
+            "goal": "Search issue trackers",
+            "capabilities": ["mcp"],
+            "provider_ids": requested,
+            "tool_ids": [],
+        },
+        Message(message="Search issue trackers"),
+    )
+
+    assert decision.capabilities == ["mcp"]
+    assert decision.provider_ids == expected

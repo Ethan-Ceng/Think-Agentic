@@ -5,6 +5,7 @@ from app.dependencies.infrastructure import (
     get_file_storage,
     get_json_parser,
     get_llm,
+    get_mcp_provider_pool,
     get_search_engine,
     get_skill_package_service,
     get_skill_package_storage,
@@ -87,4 +88,5 @@ def get_agent_service() -> AgentService:
         skill_package_storage=get_skill_package_storage(),
         bundled_skill_service=get_bundled_skill_service(),
         skill_workspace_service=get_skill_workspace_service(),
+        mcp_provider_pool=get_mcp_provider_pool(),
     )

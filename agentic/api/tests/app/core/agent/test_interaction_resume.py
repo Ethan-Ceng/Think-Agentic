@@ -477,6 +477,8 @@ async def test_shell_executes_without_approval_and_starts_lazy_sandbox_once() ->
             Step(
                 description="run approved command",
                 capabilities=["shell"],
+                provider_ids=["builtin.shell"],
+                tool_ids=["builtin.shell.shell_execute"],
             )
         ],
     )
@@ -523,8 +525,4 @@ async def test_shell_executes_without_approval_and_starts_lazy_sandbox_once() ->
         "message_ask_user",
         "message_notify_user",
         "shell_execute",
-        "shell_kill_process",
-        "shell_read_output",
-        "shell_wait_process",
-        "shell_write_input",
     }

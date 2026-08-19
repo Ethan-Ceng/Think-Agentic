@@ -18,6 +18,9 @@ from app.core.entities.event import (
 from app.core.entities.plan import Step
 from app.core.entities.tool_config import ToolConfig
 from app.core.entities.tool_result import ToolResult
+from app.core.task.base import RunCancellationContext, RunCancellationReason
+from app.core.tools.provider_runtime import ProviderFailureCode, provider_failure
+from app.core.tools.registry import ToolRegistry
 from app.services.trace_service import TraceService, tool_schema_bytes
 
 
@@ -230,6 +233,115 @@ def test_trace_service_projects_run_step_tool_and_model_call() -> None:
     asyncio.run(run())
 
 
+def test_trace_service_projects_failure_code_and_explicit_cancellation_source() -> None:
+    repo = FakeTraceRepository()
+    service = TraceService(uow_factory=lambda: FakeUow(repo))
+
+    async def run() -> None:
+        input_event = MessageEvent(role="user", message="use provider")
+        input_event.id = "input-provider"
+        await service.start_run(
+            user_id="user-1",
+            session_id="session-1",
+            task_id="task-1",
+            input_event=input_event,
+        )
+        failure = provider_failure(
+            ProviderFailureCode.PROTOCOL_ERROR,
+            provider_id="mcp.github",
+        )
+        await service.project_event(
+            ToolEvent(
+                tool_call_id="tool-call-provider",
+                tool_name="mcp",
+                function_name="mcp_github_search",
+                function_args={},
+                function_result=ToolResult(failure=failure),
+                status=ToolEventStatus.CALLED,
+            )
+        )
+        await service.record_run_cancellation(
+            RunCancellationContext(
+                reason=RunCancellationReason.USER,
+                requested_by="user-1",
+            )
+        )
+
+    asyncio.run(run())
+
+    tool_event = next(
+        event for event in repo.events if event["event_type"] == "tool.called"
+    )
+    assert tool_event["payload"]["error_code"] == "PROVIDER_PROTOCOL_ERROR"
+    assert tool_event["payload"]["failure_category"] == "provider"
+    cancellation = next(
+        event
+        for event in repo.events
+        if event["event_type"] == "run.cancellation_requested"
+    )
+    assert cancellation["payload"]["reason"] == "user"
+    assert cancellation["payload"]["requested_by"] == "user-1"
+
+
+def test_trace_service_uses_shared_dynamic_provider_registry() -> None:
+    repo = FakeTraceRepository()
+    service = TraceService(
+        uow_factory=lambda: FakeUow(repo),
+        tool_config=ToolConfig(),
+    )
+    registry = ToolRegistry(tool_config=ToolConfig())
+    registry.register_runtime_schemas(
+        [
+            {
+                "type": "function",
+                "function": {
+                    "name": "mcp_github_search_issues",
+                    "description": "Search issues",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ],
+        provider_id="mcp.github",
+        provider_label="github",
+        group="mcp",
+        executor_type="mcp",
+        source_type="mcp",
+        execution_backend="external_provider",
+        execution_class="external_read",
+        category="MCP",
+        requires_credentials=True,
+    )
+    service.set_tool_registry(registry)
+
+    async def run() -> None:
+        await service.start_run(
+            user_id="user-1",
+            session_id="session-1",
+            task_id="task-1",
+            input_event=MessageEvent(role="user", message="search issues"),
+        )
+        await service.project_event(
+            ToolEvent(
+                tool_call_id="call-1",
+                tool_name="mcp",
+                function_name="mcp_github_search_issues",
+                function_args={"query": "bug"},
+                status=ToolEventStatus.CALLING,
+            )
+        )
+
+    asyncio.run(run())
+
+    stored = next(iter(repo.tool_calls.values()))
+    assert stored["tool_id"] == "mcp.github.mcp_github_search_issues"
+    assert stored["provider_id"] == "mcp.github"
+    assert stored["source_type"] == "mcp"
+    assert stored["executor_type"] == "mcp"
+    event = next(item for item in repo.events if item["event_type"] == "tool.calling")
+    assert event["payload"]["provider_id"] == "mcp.github"
+    assert event["payload"]["execution_backend"] == "external_provider"
+
+
 def test_trace_service_records_lead_strategy_lifecycle() -> None:
     repo = FakeTraceRepository()
     service = TraceService(uow_factory=lambda: FakeUow(repo))
@@ -392,6 +504,8 @@ def test_trace_records_tool_schema_bytes_without_persisting_full_schema() -> Non
             response_format=None,
             tool_choice="none",
             capability_groups=["search"],
+            provider_ids=["builtin.search"],
+            tool_ids=["builtin.search.search_web"],
             tool_scope_excluded_count=26,
         )
 
@@ -400,6 +514,10 @@ def test_trace_records_tool_schema_bytes_without_persisting_full_schema() -> Non
         assert stored["request_preview"]["tool_schema_bytes"] == tool_schema_bytes(tools)
         assert stored["request_preview"]["tools"] == ["api_private_search"]
         assert stored["request_preview"]["capability_groups"] == ["search"]
+        assert stored["request_preview"]["provider_ids"] == ["builtin.search"]
+        assert stored["request_preview"]["tool_ids"] == [
+            "builtin.search.search_web"
+        ]
         assert stored["request_preview"]["tool_scope_excluded_count"] == 26
         assert "private schema description" not in str(stored)
 
@@ -407,6 +525,8 @@ def test_trace_records_tool_schema_bytes_without_persisting_full_schema() -> Non
         assert started["payload"]["tool_schema_count"] == 1
         assert started["payload"]["tool_schema_bytes"] == tool_schema_bytes(tools)
         assert started["payload"]["capability_groups"] == ["search"]
+        assert started["payload"]["provider_ids"] == ["builtin.search"]
+        assert started["payload"]["tool_ids"] == ["builtin.search.search_web"]
         assert started["payload"]["tool_scope_excluded_count"] == 26
 
     asyncio.run(run())

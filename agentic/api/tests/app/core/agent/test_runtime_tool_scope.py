@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from app.core.entities.tool_config import ToolConfig
-from app.core.entities.app_config import AgentConfig
+from app.core.entities.app_config import AgentConfig, MCPConfig, MCPServerConfig
 from app.core.agent.planner import PlannerAgent
 from app.core.agent.react import ReActAgent
 from app.core.tools.a2a import A2ATool
 from app.core.tools.factory import ToolFactory
 from app.core.tools.mcp import MCPTool
 from app.core.tools.registry import ToolRegistry
+from app.core.tools.scope import RuntimeToolScope
 from app.services.trace_service import summarize_tool_registry, tool_schema_bytes
 
 
@@ -180,6 +183,155 @@ def test_exact_recovery_scope_restores_only_the_persisted_function() -> None:
         "message_notify_user",
         "shell_execute",
     }
+
+
+def test_scope_snapshot_narrows_capability_by_provider_and_tool_id() -> None:
+    factory = ToolFactory(ToolConfig())
+    tools = factory.build(
+        sandbox=object(),
+        browser=object(),
+        search_engine=object(),
+        mcp_tool=MCPTool(),
+        a2a_tool=A2ATool(),
+    )
+
+    factory.runtime_scope.activate(
+        ["shell"],
+        provider_ids=["builtin.shell"],
+        tool_ids=["builtin.shell.shell_execute"],
+    )
+    snapshot = factory.runtime_scope.snapshot
+    names = {
+        schema["function"]["name"]
+        for tool in tools
+        for schema in tool.get_tools()
+    }
+
+    assert names == {
+        "message_ask_user",
+        "message_notify_user",
+        "shell_execute",
+    }
+    assert snapshot.capabilities == ("shell",)
+    assert snapshot.provider_ids == ("builtin.shell",)
+    assert snapshot.tool_ids == ("builtin.shell.shell_execute",)
+    with pytest.raises(AttributeError):
+        snapshot.tool_ids = ()
+
+
+def test_unknown_or_mismatched_provider_and_tool_ids_never_expand_scope() -> None:
+    factory = ToolFactory(ToolConfig())
+    tools = factory.build(
+        sandbox=object(),
+        browser=object(),
+        search_engine=object(),
+        mcp_tool=MCPTool(),
+        a2a_tool=A2ATool(),
+    )
+
+    factory.runtime_scope.activate(
+        ["shell"],
+        provider_ids=["builtin.file", "missing.provider"],
+        tool_ids=["builtin.shell.shell_execute", "missing.tool"],
+    )
+    names = {
+        schema["function"]["name"]
+        for tool in tools
+        for schema in tool.get_tools()
+    }
+
+    assert names == {"message_ask_user", "message_notify_user"}
+    assert factory.runtime_scope.unknown_provider_ids == ("missing.provider",)
+    assert factory.runtime_scope.unknown_tool_ids == ("missing.tool",)
+
+
+def test_exact_provider_only_constrains_its_own_capability_group() -> None:
+    factory = ToolFactory(ToolConfig())
+    factory.build(
+        sandbox=object(),
+        browser=object(),
+        search_engine=object(),
+        mcp_tool=MCPTool(
+            MCPConfig(
+                mcpServers={
+                    "github": MCPServerConfig(url="https://mcp.example.test")
+                }
+            )
+        ),
+        a2a_tool=A2ATool(),
+    )
+
+    capabilities, provider_ids, tool_ids = factory.registry.resolve_scope_selection(
+        ["shell", "mcp"],
+        tool_ids=["builtin.shell.shell_execute"],
+    )
+    factory.runtime_scope.activate(
+        capabilities,
+        provider_ids=provider_ids,
+        tool_ids=tool_ids,
+    )
+
+    assert provider_ids == ["mcp.github"]
+    assert tool_ids == ["builtin.shell.shell_execute"]
+    assert factory.runtime_scope.allows("shell", "shell_execute") is True
+    assert factory.runtime_scope.allows("shell", "shell_wait") is False
+
+
+@pytest.mark.parametrize(
+    ("provider_ids", "tool_ids"),
+    [
+        (["missing.provider"], ["builtin.shell.shell_execute"]),
+        (["builtin.shell"], ["missing.tool"]),
+    ],
+)
+def test_unknown_only_exact_constraints_never_fall_back_to_capability_scope(
+    provider_ids: list[str],
+    tool_ids: list[str],
+) -> None:
+    factory = ToolFactory(ToolConfig())
+    tools = factory.build(
+        sandbox=object(),
+        browser=object(),
+        search_engine=object(),
+        mcp_tool=MCPTool(),
+        a2a_tool=A2ATool(),
+    )
+
+    factory.runtime_scope.activate(
+        ["shell"],
+        provider_ids=provider_ids,
+        tool_ids=tool_ids,
+    )
+    names = {
+        schema["function"]["name"]
+        for tool in tools
+        for schema in tool.get_tools()
+    }
+
+    assert names == {"message_ask_user", "message_notify_user"}
+
+
+@pytest.mark.parametrize(
+    ("provider_ids", "tool_ids"),
+    [
+        (["missing.provider"], []),
+        ([], ["missing.tool"]),
+    ],
+)
+def test_unknown_exact_constraints_reject_unregistered_runtime_functions(
+    provider_ids: list[str],
+    tool_ids: list[str],
+) -> None:
+    registry = ToolRegistry()
+    scope = RuntimeToolScope(registry)
+
+    scope.activate(
+        ["shell"],
+        provider_ids=provider_ids,
+        tool_ids=tool_ids,
+    )
+
+    assert scope.allows("shell", "runtime_only_shell") is False
 
 
 def _function_names(schemas: list[dict]) -> set[str]:

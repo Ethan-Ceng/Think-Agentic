@@ -34,6 +34,9 @@ class RuntimeToolPolicy(BaseModel):
         default_factory=lambda: ["builtin", "mcp", "a2a", "api"]
     )
     max_tool_iterations: int = Field(default=100, ge=1, le=1000)
+    max_external_tool_schemas: int = Field(default=32, ge=1, le=256)
+    max_external_schema_chars: int = Field(default=60000, ge=1000, le=500000)
+    external_tool_search_top_k: int = Field(default=8, ge=1, le=32)
 
     model_config = ConfigDict(extra="ignore")
 

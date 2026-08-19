@@ -43,6 +43,7 @@ from app.repositories.uow import IUnitOfWork
 from app.core.tools.base import BaseTool
 from app.core.tools.registry import ToolRegistry
 from app.core.tools.scope import RuntimeToolScope
+from app.core.tools.schema_resolver import ToolSchemaResolver
 from app.services.skill_runtime_service import SkillRuntimeContext
 from app.services.trace_service import TraceService, elapsed_ms, model_call_timer
 
@@ -135,12 +136,16 @@ class BaseAgent(ABC):
         self,
         capabilities: List[str] | None,
         *,
+        provider_ids: List[str] | None = None,
+        tool_ids: List[str] | None = None,
         exact_functions: List[str] | None = None,
     ) -> None:
         """Activate the current Step boundary on all shared filtered tools."""
         if self._runtime_tool_scope is not None:
             self._runtime_tool_scope.activate(
                 capabilities,
+                provider_ids=provider_ids,
+                tool_ids=tool_ids,
                 exact_functions=exact_functions,
             )
 
@@ -183,18 +188,14 @@ class BaseAgent(ABC):
 
     def _get_available_tools(self) -> List[Dict[str, Any]]:
         """获取Agent所有可用的工具列表参数声明/Schema"""
-        available_tools = []
-        for tool in self._tools:
-            available_tools.extend(tool.get_tools())
-        return available_tools
+        return ToolSchemaResolver.resolve_tools(self._tools)
 
     def _get_configured_tools(self) -> List[Dict[str, Any]]:
         """Return schemas after ToolConfig but before the current runtime scope."""
-        configured_tools: List[Dict[str, Any]] = []
-        for tool in self._tools:
-            getter = getattr(tool, "get_configured_tools", None)
-            configured_tools.extend(getter() if getter else tool.get_tools())
-        return configured_tools
+        return ToolSchemaResolver.resolve_tools(
+            self._tools,
+            configured_only=True,
+        )
 
     def _get_tool(self, tool_name: str) -> BaseTool:
         """获取对应工具所在的工具集/包"""
@@ -205,6 +206,13 @@ class BaseAgent(ABC):
                 return tool
 
         raise ValueError(f"未知工具: {tool_name}")
+
+    async def _prepare_tool_schemas(self) -> None:
+        """Resolve selected external schemas before a model call, never globally."""
+        for tool in self._tools:
+            prepare = getattr(tool, "prepare_for_scope", None)
+            if prepare is not None:
+                await prepare()
 
     async def _invoke_llm(
             self,
@@ -228,6 +236,7 @@ class BaseAgent(ABC):
             stream_field: str | None = None,
     ) -> AsyncGenerator[ProjectedMessageDelta | ProjectedLLMCompleted, None]:
         """统一处理流式/块响应、重试、Memory 与 Trace。"""
+        await self._prepare_tool_schemas()
         await self._add_to_memory(messages)
         response_format = {"type": format} if format else None
         error = "调用语言模型发生错误"
@@ -251,6 +260,16 @@ class BaseAgent(ABC):
                         tool_choice=self._tool_choice,
                         capability_groups=(
                             list(self._runtime_tool_scope.capabilities)
+                            if self._runtime_tool_scope
+                            else []
+                        ),
+                        provider_ids=(
+                            list(self._runtime_tool_scope.provider_ids)
+                            if self._runtime_tool_scope
+                            else []
+                        ),
+                        tool_ids=(
+                            list(self._runtime_tool_scope.tool_ids)
                             if self._runtime_tool_scope
                             else []
                         ),

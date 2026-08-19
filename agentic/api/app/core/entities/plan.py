@@ -30,13 +30,15 @@ class Step(BaseModel):
     success: bool = False  # 是否执行成功
     attachments: List[str] = Field(default_factory=list)  # 附件列表信息
     capabilities: List[str] = Field(default_factory=list)  # 当前步骤所需能力组
+    provider_ids: List[str] = Field(default_factory=list)  # 当前步骤所选能力来源
+    tool_ids: List[str] = Field(default_factory=list)  # 当前步骤所选稳定工具 ID
     needs_replan: bool = False  # 新事实或阻塞是否要求调整后续计划
     replan_reason: Optional[str] = None  # 可观测的重规划原因摘要
 
-    @field_validator("capabilities")
+    @field_validator("capabilities", "provider_ids", "tool_ids")
     @classmethod
-    def normalize_capabilities(cls, values: List[str]) -> List[str]:
-        """Keep persisted capability groups deterministic and backwards compatible."""
+    def normalize_scope_values(cls, values: List[str]) -> List[str]:
+        """Keep persisted Tool scope values deterministic and compatible."""
         normalized: List[str] = []
         seen: set[str] = set()
         for value in values:

@@ -1,13 +1,13 @@
-# Agent Runtime：HITL 等待态、MCP/A2A 惰性装载与错误隔离
+# Agent Runtime：统一工具平面、Sandbox 按需执行、HITL 与 Provider 可靠性
 
 ## 文档状态
 
 - 状态：`PARTIALLY_IMPLEMENTED`
 - 负责人：Codex
 - 创建日期：2026-08-18
-- 最近更新：2026-08-18
+- 最近更新：2026-08-19
 - 前置设计：`lead-agent-runtime-unification.zh-CN.md`
-- 实施进度：通用 `tool_approval` 移除、历史状态安全收敛、`ask_user` Composer/问题卡统一原子自动续跑已落地；`form_input`、Provider 惰性装载、错误隔离和完整平台 Capability Grant 仍待后续批次
+- 实施进度：通用 `tool_approval` 移除、历史状态安全收敛、`ask_user` Composer/问题卡统一原子自动续跑、Lazy Sandbox Runtime，以及阶段 1A/1B 的统一 Tool Plane 与外部 Provider 惰性接入已落地；阶段 2 的 MCP Provider Actor、跨 Run 有界 Schema Snapshot、类型化错误与取消来源隔离已落地；A2A Card TTL/共享 Client、完整平台 Capability Grant、Durable Finalizer 和完整错误 UX 仍待阶段 3 及后续批次
 
 ## 结论先行
 
@@ -15,12 +15,14 @@
 
 1. 目标架构移除通用 `tool_approval`。`waiting` 只用于 Agent 确实缺少业务输入的 `ask_user`，以及后续可选的多字段 `form_input`；平台安全不能依赖终端用户逐次点击批准。
 2. `WaitEvent` 表示逻辑 Run 正在等待用户业务输入，不表示对话关闭，也不表示必须保留一个活着的协程或 Task。底层执行 Task 可以释放，用户再次输入后由系统自动继续同一逻辑 Run，不暴露“恢复对话”操作。
-3. MCP 是外部 Tool Provider，A2A 是远程 Agent Provider；两者都应位于 Lead 执行层下方的 Provider Runtime，不应在每次 Run 开始时全量连接，也不应把全量 Schema 注入 Lead 决策上下文。
-4. Lead 只读取不含参数 Schema 的静态 Provider/Capability Catalog；选出最小 `capability_groups + provider_ids` 后，执行层才按需取得所选 Provider 的 Tool Schema，并只注入当前步骤需要的部分。
-5. Sandbox 内的 Shell/File/Browser 工具在通过平台隔离策略后默认自动执行；MCP/A2A/API 等外部能力由平台级权限、网络出口和 Provider Policy 决定 allow/deny。无法安全支持的能力直接拒绝，不退化为用户审批。
-6. MCP/A2A 传输失败必须被限制在 Provider 或 Tool Call 边界。它可以触发降级、重试、换 Provider、Replan 或明确的任务失败，但不能伪装成整个 Agent Task 被用户取消。
-7. `asyncio.CancelledError` 是控制流信号，不是通用网络错误。必须记录取消来源；只有用户停止、服务关闭或明确 Run 取消才能成为 `RUN_CANCELLED_*`，Provider 内部 cancel scope 异常应被隔离并转换成 `PROVIDER_*` 错误。
-8. 当前只有字符串的 `ErrorEvent` 无法支撑正确提示和恢复操作。应新增稳定错误码、来源、作用域、是否可重试和恢复动作，同时保留 `error` 字段兼容旧前端。
+3. 内置工具、API、MCP Tool 和 A2A 委派目标共用统一 Catalog、Selection、Scope、Schema Injection 和 Trace；内部/外部只是能力来源与执行方式不同，不能继续维护两套上下文注入链路。
+4. Tool 的来源和执行后端必须拆开表达。`builtin.shell` 的 `source_type=builtin`，但 `execution_backend=sandbox`；Sandbox 是按需取得的隔离运行资源，不是普通 Tool Provider，也不应作为一个含混的万能工具暴露给模型。
+5. Lead 只读取不含参数 Schema 的静态 Provider/Capability Catalog；选出最小 `capability_groups + provider_ids + tool_ids` 后，执行层才解析并注入当前步骤需要的 Schema。目录读取、选择和 Schema 解析均不得启动 Sandbox 或连接外部 Provider。
+6. Sandbox 一律晚激活，但不一律最后选择：通用 Shell/Python/浏览器脚本属于优先使用专用能力后的通用执行后备；用户任务本身明确要求代码执行、文件处理或交互式浏览器时，Sandbox-backed Tool 可以直接成为首选。晚激活与最后手段是两个独立策略。
+7. Sandbox 内的 Shell/File/Browser 工具在通过平台隔离策略后默认自动执行；MCP/A2A/API 等外部能力由平台级权限、网络出口和 Provider Policy 决定 allow/deny。无法安全支持的能力直接拒绝，不退化为用户审批。
+8. MCP/A2A 传输失败必须被限制在 Provider 或 Tool Call 边界。它可以触发降级、重试、换 Provider、Replan 或明确的任务失败，但不能伪装成整个 Agent Task 被用户取消。
+9. `asyncio.CancelledError` 是控制流信号，不是通用网络错误。必须记录取消来源；只有用户停止、服务关闭或明确 Run 取消才能成为 `RUN_CANCELLED_*`，Provider 内部 cancel scope 异常应被隔离并转换成 `PROVIDER_*` 错误。
+10. 当前只有字符串的 `ErrorEvent` 无法支撑正确提示和恢复操作。应新增稳定错误码、来源、作用域、是否可重试和恢复动作，同时保留 `error` 字段兼容旧前端。
 
 ## 背景
 
@@ -31,7 +33,8 @@ Lead Agent 已经能在 `direct / react / plan` 之间选择策略，也能用 C
 这说明当前问题包含四个相互关联的边界：
 
 - HITL：什么时候是正常等待，如何持久化和恢复。
-- Tool Selection：Lead 应看到什么目录，当前步骤应注入什么 Schema。
+- Tool Plane：Lead 应看到什么目录，当前步骤应选择、注入和约束什么 Tool。
+- Execution Backend：选中 Tool 最终在进程内、Sandbox、远端 Provider 还是委派 Runtime 执行。
 - Provider Lifecycle：什么时候连接 MCP/A2A，连接由谁拥有、复用和清理。
 - Failure Semantics：Provider、Tool、Model、Run 和 Cancel 应如何区分。
 
@@ -42,6 +45,8 @@ Lead Agent 已经能在 `direct / react / plan` 之间选择策略，也能用 C
 - 无工具、内置工具或只使用 Shell 的 Run，不连接任何 MCP/A2A Provider。
 - Lead 决策阶段只接收紧凑目录，不接收完整 Tool Schema，也不发起外部 Provider I/O。
 - React/Plan Step 只激活并注入当前选择的 Capability、Provider 和 Tool Schema。
+- Catalog、选择和 Schema 注入不会创建/恢复 Sandbox；只有第一次真实调用 Sandbox-backed Tool 才取得 Sandbox Lease。
+- 内置和外部 Tool 使用同一套 Descriptor、Scope、Context Injection、执行前校验、结果协议和 Trace。
 - 同一进程内复用已连接 Provider 和安全的 Schema/Card 快照，不在每次多轮消息、HITL 恢复时重复全量发现。
 - 单个 MCP/A2A Provider 失败不取消父 Agent Task，不影响无关 Provider。
 - 用户看到与真实原因一致的错误提示和恢复动作，不再把所有错误归为模型故障。
@@ -52,7 +57,7 @@ Lead Agent 已经能在 `direct / react / plan` 之间选择策略，也能用 C
 
 ## 非功能范围
 
-- 不处理 Sandbox 惰性创建；该能力已有独立设计和实现，本批只保持兼容。
+- 不重做 Sandbox 惰性创建；复用现有 `LazySandboxRuntime`，本设计只固定它在统一工具平面中的位置和激活契约。
 - 不实现跨节点、跨进程共享的完整 Tool Gateway 服务。
 - 不实现通用工作流引擎、分布式 Run 恢复或副作用对账。
 - 不把所有 MCP Tool Schema 永久写入对话 Memory。
@@ -65,9 +70,12 @@ Lead Agent 已经能在 `direct / react / plan` 之间选择策略，也能用 C
 | 术语 | 含义 | 是否进入 Lead Prompt |
 | --- | --- | --- |
 | Capability | `shell`、`search`、`mcp`、`a2a` 等粗粒度能力 | 是，仅摘要 |
-| Provider | 一个具体 MCP Server、A2A Agent 或内置执行器 | 是，仅安全元数据 |
+| Provider | Tool/委派能力的来源，例如内置模块、具体 MCP Server、API 集成或 A2A Agent | 是，仅安全元数据 |
+| Source Type | 能力来自 `builtin / api / mcp / a2a`；不决定在哪里执行 | 是，可作为安全元数据 |
+| Execution Backend | `in_process / sandbox / sandbox_browser / remote_http / external_provider / delegation`；决定运行时路由和资源生命周期 | 否，仅进入执行策略 |
 | Tool Schema | 可调用函数及参数 JSON Schema | 否；仅进入选定执行步骤 |
 | Provider Runtime | 连接、发现、缓存、健康状态、调用和清理的运行时 | 否 |
+| Sandbox Runtime | 按需创建/恢复、租用和回收隔离环境的资源 Runtime；不是 Tool Provider | 否 |
 | Interaction | 一次可持久化、可解决的人机动作 | 作为事件，不进入无关 Prompt |
 | Wait | Run 已安全暂停，等待外部人类事件 | 作为状态/事件 |
 | Cancel | Run 被明确终止 | 是终止控制流，不等同于失败或等待 |
@@ -240,6 +248,15 @@ Python 3.12 的 `asyncio.CancelledError` 继承 `BaseException`，MCP 多处 `ex
 
 进程内句柄缺失只能证明“当前进程无法继续这个 Run”，不能单独证明“服务重启”。
 
+### 缺陷七：内置来源与 Sandbox 执行语义混合
+
+当前内置目录将 File/Shell/Browser 标记为 `provider_id=builtin.*`、`executor_type=builtin`，再通过 `requires_sandbox/requires_browser` 补充真实依赖。`ToolFactory` 构造时又直接把 Sandbox/Browser 代理注入这些 Tool。现有 Lazy Runtime 已避免在构造时真正创建 Sandbox，但元数据仍混合了两个独立问题：
+
+- Tool 从哪里定义和注册；
+- Tool 最终在哪里执行、需要哪些运行资源。
+
+如果继续把两者合并，统一工具平面会错误地把 Sandbox 当成 Tool Provider，路由层也无法准确比较“内置进程内 Search”“内置但 Sandbox 执行的 Shell”和“外部 MCP Tool”的成本、隔离与生命周期。
+
 ## 可选方案
 
 ### 方案 A：仅补异常捕获和前端文案
@@ -280,35 +297,71 @@ Python 3.12 的 `asyncio.CancelledError` 继承 `BaseException`，MCP 多处 `ex
 | 部署复杂度 | 低 | 低 | 高 |
 | 当前收益/成本 | 低 | 最高 | 中 |
 
+## Sandbox 定位方案
+
+### 方案 S1：把 Sandbox 当成 Tool Provider
+
+- 表面上可与 MCP/API 使用相同 Provider 接口。
+- 但 Sandbox 本身不提供业务能力，Shell/File/Browser 才是模型可选择的 Tool；把资源容器包装成 Provider 会混淆发现、选择和执行生命周期。
+- 结论：不采用。
+
+### 方案 S2：Sandbox 作为 Execution Backend 和按需资源（推荐）
+
+- Tool 仍按来源注册，例如 `builtin.shell`、`builtin.file`；Descriptor 独立声明 `execution_backend=sandbox` 或 `sandbox_browser`。
+- Catalog、Tool Selection 和 Schema Injection 只处理静态元数据，不启动 Sandbox。
+- Executor Router 在真实 Tool Call 通过 Scope/Policy 校验后，才向 `SandboxRuntime` 取得 Lease；现有 `LazySandboxRuntime` 作为首版实现。
+- 结论：既统一上下文工具管理，又保留 Sandbox 专属的创建、恢复、附件同步、配额、超时和回收语义。
+
+### 方案 S3：只暴露一个万能 Sandbox Tool
+
+- 模型通过一个宽泛 Tool 自行决定命令、文件和浏览器动作，看似工具数量最少。
+- 参数边界、最小权限、结果展示、Trace 和策略判断都会退化，且更容易把简单任务路由到 Shell。
+- 结论：不采用；保留结构化 Shell/File/Browser Tool，通用 Shell/Python 仅作为必要时的通用执行后备。
+
+这里需要严格区分：
+
+- **晚激活**：Sandbox-backed Tool 永远在真实调用前一刻才创建/恢复环境，这是资源策略。
+- **最后手段**：通用 Shell/Python/Browser Script 只在没有更合适的专用能力、专用能力失败可降级，或用户明确要求时选择，这是路由策略。
+
+因此 Sandbox 可以称为 Agent 的“通用执行底座”，但不能整体设置成固定最后一级。对于“运行 Python 分析文件”“修改项目代码”“操作网页”这类任务，它本来就是匹配度最高的执行后端，应直接选择；对于“今天几号”“解释一个概念”“调用已有天气 API”，则不应选择或激活 Sandbox。
+
 ## 推荐架构
 
 ```text
 LeadAgent
   |-- Decide: direct / react / plan
-  |     `-- ProviderCatalog（纯元数据，无网络 I/O、无 Tool 参数 Schema）
+  |     `-- Unified Tool Catalog（纯元数据，无网络 I/O、无 Tool 参数 Schema）
   |
   `-- Execute React / Plan Step
         |-- ToolScopeSelection
         |     |-- capability_groups
         |     |-- provider_ids
-        |     `-- exact_functions（HITL 恢复时使用）
+        |     `-- tool_ids / exact_functions
         |
         |-- ToolSchemaResolver
-        |     `-- 只返回所选 Provider/Step 的 Schema
+        |     `-- 只返回当前 Step 所选 Tool 的 Schema
         |
-        `-- ProviderRuntime
-              |-- Builtin Providers
-              |-- MCPProviderPool
-              |     `-- MCPProviderActor × N（每个 Server 独立拥有连接）
-              `-- A2AProviderPool
-                    |-- Shared HTTP Client
-                    `-- Agent Card Snapshot/TTL
+        `-- ToolExecutorRouter（执行前再次校验 Scope/Policy）
+              |-- InProcessExecutor
+              |     `-- Message / 本地纯函数能力
+              |-- SandboxExecutor
+              |     `-- LazySandboxRuntime -> Shell / File
+              |-- SandboxBrowserExecutor
+              |     `-- LazySandboxRuntime -> Browser
+              |-- ExternalProviderRuntime
+              |     |-- API Executor
+              |     `-- MCPProviderPool
+              |           `-- MCPProviderActor × N
+              `-- DelegationRuntime
+                    `-- A2AProviderPool -> Agent Card Snapshot/TTL
 ```
 
 架构位置说明：
 
 - MCP 位于 Tool 执行层，是外部 Tool Provider。
 - A2A 位于委派执行层，是远程 Agent Provider；它不是 Lead 内部 Planner，也不是本地 Sub Agent Scheduler。
+- Sandbox 位于执行资源层，不进入 Provider 选择；Lead 选择的是 Shell/File/Browser 等能力，Executor Router 再根据 Tool Descriptor 取得 Sandbox。
+- `source_type`、`execution_backend` 和 `resource_requirements` 是三个正交字段，不能再由一个 `executor_type=builtin` 代替。
 - 未来本地 Sub Agent 可以和 A2A 共用 `DelegationTargetCatalog`，但本地进程/上下文/权限仍由独立的 Sub Agent Runtime 管理。
 - Lead 只负责选择和协调，不持有远端连接。
 
@@ -316,7 +369,7 @@ LeadAgent
 
 ### 1. Catalog Plane
 
-Catalog 在应用配置加载/更新时构建，不发起远程连接，内容仅包括：
+Catalog 在应用配置加载/更新时构建，不发起远程连接，也不创建/恢复 Sandbox。内部和外部能力都先归一化为 ProviderDescriptor + ToolDescriptor；Lead 只读取安全摘要，Schema Resolver 才读取具体 Schema。目录内容包括：
 
 - `provider_id`：稳定、命名空间化，例如 `mcp.github`、`a2a.researcher`。
 - `provider_type`：`builtin / mcp / a2a / api`。
@@ -324,19 +377,22 @@ Catalog 在应用配置加载/更新时构建，不发起远程连接，内容�
 - `capability_groups / semantic_tags`：供 Lead 选择。
 - `enabled`、授权是否已配置、是否存在 Schema/Card 快照。
 - 最近健康状态的低基数字段，不含原始 URL、Header、Env 和异常文本。
+- `tool_id / source_type / execution_backend / resource_requirements`：区分能力来源、执行位置和资源依赖。
+- `generality / cost_class`：帮助 Lead 优先匹配专用能力，并识别 Shell/Python 等通用执行后备；它们只影响选择，不是安全授权。
 
 MCP 的 Config `description` 可直接作为首个静态摘要；A2A 首次没有 Agent Card 时使用配置 ID/管理员标签，Card 获取成功后更新安全快照。
 
 ### 2. Runtime Plane
 
-Runtime 只在某个 Step 选择 Provider 后工作：
+Runtime 只在某个 Step 选择 Tool 后工作：
 
-1. 校验 Provider 已启用且属于允许的 Capability。
-2. 读取未过期 Schema/Card 快照；没有快照时仅激活被选 Provider 完成发现。
-3. 将选中且已通过 ToolConfig 的 Schema 注册为 Provider Snapshot。
-4. Runtime Scope 按 `capability + provider + exact function` 三层过滤。
-5. 模型发起 Tool Call 时取得 Provider Handle 并调用。
-6. 调用结束释放 Lease；Provider Actor 可继续存活，超过 idle TTL 后由自身安全关闭。
+1. 校验 Tool 已启用，属于允许的 Capability、Provider 和 Tool Scope。
+2. 解析所选 Tool 的 Schema；外部动态 Tool 没有快照时，仅激活被选 Provider 完成发现。内部静态 Tool 不需要运行资源。
+3. 将通过 ToolConfig/平台 Policy 的 Schema 注入当前模型调用；此步骤仍不得取得 Sandbox Lease。
+4. Runtime Scope 按 `capability + provider + tool_id/function` 三层过滤。
+5. 模型发起 Tool Call 后，Executor Router 再次校验 Scope/Policy，并根据 `execution_backend` 路由。
+6. `sandbox/sandbox_browser` 后端此时才取得 Sandbox Lease；`external_provider/delegation` 后端才取得 Provider Handle；`remote_http` 使用受平台出口策略约束的 HTTP Executor。
+7. 调用结束释放 Lease；Sandbox 是否保留到 Session TTL、Provider Actor 是否保留到 idle TTL，分别由各自 Runtime 管理。
 
 ## 筛选与注入规则
 
@@ -351,6 +407,7 @@ Runtime 只在某个 Step 选择 Provider 后工作：
 | 5 | ToolConfig Binding | 应用 allow/deny、Execution Class、Capability Grant 和租户权限规则 |
 | 6 | Exact Function | Ask/Form 继续时恢复原 Tool Call；普通 Step 可为空 |
 | 7 | Schema 注入预算 | 限制工具数量/Token，必要时二阶段 Tool Search |
+| 8 | 执行前 Scope/Policy | 防止模型或历史 Tool Call 绕过选择结果；通过后才能取得 Sandbox/Provider Lease |
 
 Lead Decision/Plan Step 不再只有 `capabilities`，而是逐步兼容为：
 
@@ -358,6 +415,7 @@ Lead Decision/Plan Step 不再只有 `capabilities`，而是逐步兼容为：
 {
   "capability_groups": ["mcp"],
   "provider_ids": ["mcp.github"],
+  "tool_ids": ["mcp.github.search_issues"],
   "exact_functions": []
 }
 ```
@@ -376,6 +434,20 @@ Lead Decision/Plan Step 不再只有 `capabilities`，而是逐步兼容为：
 3. 下一次模型调用只注入 Top-K Schema。
 
 首期可设置较小的 Provider/Tool 上限，超限时进入二阶段检索，不做静默截断。
+
+### Sandbox-backed Tool 路由规则
+
+Sandbox 不单独出现在 `provider_ids` 中，也不存在让 Lead 选择“是否使用 Sandbox”的额外步骤。Lead 选择具体 Tool，系统根据 Descriptor 确定执行后端：
+
+| 任务意图 | 首选 | Sandbox 策略 |
+| --- | --- | --- |
+| 无需外部事实的解释、改写、闲聊 | `direct` | 不选择、不激活 |
+| 已有专用 API/MCP/Search 能准确完成 | 专用 Tool | 通常不注入通用 Shell；专用能力可恢复失败时才 Replan |
+| 明确要求运行代码、计算、操作项目或处理 Sandbox 文件 | Shell/File 等结构化 Tool | 可直接选择，但仍只在真实调用时激活 |
+| 需要网页交互而非仅搜索结果 | Browser Tool | 可直接选择 Sandbox Browser；不先做无意义 Shell 绕行 |
+| 专用能力缺失或返回可降级错误 | 通用 Shell/Python/Browser Script | Lead/ReAct 记录 `fallback_reason` 后升级一次，受步数与成本预算限制 |
+
+“优先专用能力”由 Tool 的 `generality`、任务匹配度和成本共同决定，不能仅按内部/外部排序。外部 Tool 不天然优于 Sandbox，Sandbox 也不天然比外部 Tool 更可靠。
 
 ## MCP Provider 生命周期
 
@@ -425,6 +497,35 @@ A2A 不需要为每个 Run 连接全部 Agent：
 
 ## 数据结构
 
+### ToolDescriptor
+
+| 字段 | 类型 | 必填 | 说明 | 约束/默认值 |
+| --- | --- | --- | --- | --- |
+| `tool_id` | `str` | 是 | 稳定、命名空间化 Tool ID | 与函数显示名分离 |
+| `provider_id` | `str` | 是 | 能力来源 | 内置示例 `builtin.shell` |
+| `source_type` | enum | 是 | `builtin/api/mcp/a2a` | 不决定执行后端 |
+| `capability_groups` | `list[str]` | 是 | Lead 选择的粗粒度能力 | 至少一个 |
+| `execution_backend` | enum | 是 | `in_process/sandbox/sandbox_browser/remote_http/external_provider/delegation` | Executor Router 的稳定输入 |
+| `resource_requirements` | `list[enum]` | 否 | `sandbox/browser/network/credentials` | 不能隐式推导授权 |
+| `execution_class` | enum | 是 | `sandbox_local/external_read/external_write/delegation` | 平台 Policy 输入 |
+| `generality` | enum | 是 | `specialized/general_fallback` | 只影响路由偏好 |
+| `cost_class` | enum | 是 | `low/medium/high` | 综合启动、网络和付费成本 |
+| `schema_ref` | `str` | 是 | 静态 Schema 或 Provider Snapshot 引用 | Catalog 不展开 Schema |
+| `enabled` | `bool` | 是 | 是否允许进入候选集 | 默认 `true` |
+
+`source_type` 与 `execution_backend` 的典型映射：
+
+| Tool | `source_type` | `execution_backend` | `generality` |
+| --- | --- | --- | --- |
+| `message_ask_user` | `builtin` | `in_process` | `specialized` |
+| `search_web` | `builtin` | `remote_http` | `specialized` |
+| `read_file` | `builtin` | `sandbox` | `specialized` |
+| `shell_execute` | `builtin` | `sandbox` | `general_fallback` |
+| `browser_navigate` | `builtin` | `sandbox_browser` | `specialized` |
+| `browser_console_exec` | `builtin` | `sandbox_browser` | `general_fallback` |
+| MCP Tool | `mcp` | `external_provider` | 默认 `specialized` |
+| `call_remote_agent` | `a2a` | `delegation` | `specialized` |
+
 ### ProviderDescriptor
 
 | 字段 | 类型 | 必填 | 说明 | 约束/默认值 |
@@ -446,6 +547,7 @@ A2A 不需要为每个 Run 连接全部 Agent：
 | --- | --- | --- | --- | --- |
 | `capability_groups` | `list[str]` | 是 | 粗粒度能力 | 旧 `capabilities` 映射至此 |
 | `provider_ids` | `list[str]` | 否 | 具体 Provider | 必须属于所选 Capability |
+| `tool_ids` | `list[str]` | 否 | 当前 Step 选中的稳定 Tool ID | 必须属于所选 Provider/Capability |
 | `exact_functions` | `list[str]` | 否 | 精确函数白名单 | Ask/Form 自动继续时保留原函数 |
 | `selection_reason` | enum | 否 | `explicit/single_match/semantic/resume` | 仅 Trace 使用 |
 
@@ -538,31 +640,32 @@ class WaitEvent(BaseEvent):
 
 ## 接口设计
 
-### ProviderCatalog.list_for_lead
+### UnifiedToolCatalog.list_for_lead
 
 ```python
 def list_for_lead(
     tool_config: ToolConfig,
     user_context: UserContext,
-) -> list[ProviderDescriptor]:
+) -> LeadToolCatalog:
     ...
 ```
 
 - 只读、无网络 I/O。
 - 应用配置、用户权限和 Credential 状态过滤后返回。
-- 不返回 URL、Headers、Env、Tool 参数 Schema 和原始健康错误。
+- 返回 Provider 摘要和 Tool 能力摘要，不返回 URL、Headers、Env、Tool 参数 Schema 和原始健康错误。
+- 内置、API、MCP、A2A 使用同一个 Catalog 接口；实现可以由不同 Adapter 提供描述符。
 
 ### ToolSelectionPolicy.resolve
 
 ```python
 def resolve(
     requested: ToolScopeSelection,
-    catalog: list[ProviderDescriptor],
+    catalog: LeadToolCatalog,
 ) -> ResolvedToolScope:
     ...
 ```
 
-- 确定性校验未知 Capability/Provider、禁用 Provider 和越权选择。
+- 确定性校验未知 Capability/Provider/Tool、禁用 Provider/Tool 和越权选择。
 - 旧 `capabilities` 自动迁移。
 - Ask/Form 自动继续使用持久化 Provider/Function，不重新做语义选择。
 
@@ -582,6 +685,38 @@ async def acquire(
 - 连接失败抛出类型化 `ProviderRuntimeError`，其中包含安全 FailureInfo。
 - MCP Actor 保证连接与清理由同一所有者 Task 执行。
 
+### ToolExecutorRouter.invoke
+
+```python
+async def invoke(
+    tool_call: ToolCall,
+    scope: ResolvedToolScope,
+    context: ExecutionContext,
+) -> ToolResult:
+    ...
+```
+
+- 先根据不可扩大的 Scope Snapshot 和平台 Policy 重新校验 `tool_id`，失败时不得取得任何运行资源。
+- 根据 ToolDescriptor.execution_backend 路由到进程内、Sandbox、Sandbox Browser、外部 Provider 或 Delegation Executor。
+- 只有 Sandbox Executor 可以取得 Sandbox Lease；Catalog、Selector、Schema Resolver 和外部 Provider Adapter 均不得依赖 Sandbox 对象。
+- 所有 Executor 返回统一 ToolResult/FailureInfo，并记录 `tool_id/provider_id/source_type/execution_backend`。
+
+### SandboxRuntime.acquire
+
+```python
+async def acquire(
+    session_id: str,
+    *,
+    requirement: Literal["sandbox", "sandbox_browser"],
+    tool_id: str,
+) -> SandboxLease:
+    ...
+```
+
+- 首版适配现有 `LazySandboxRuntime.get_sandbox/get_browser`，不要求立即重写底层容器实现。
+- 并发首次激活只能创建一个实例；激活失败不写入无效 handle，并允许按错误策略重试。
+- Lease 记录首次触发 Tool、启动耗时、附件同步量和资源预算；不把命令、文件内容或 Secret 写入低权限 Trace。
+
 ### ToolSchemaResolver.resolve
 
 ```python
@@ -594,7 +729,7 @@ async def resolve(
     ...
 ```
 
-- 只返回选中 Provider 的 Schema。
+- 只返回选中 Tool 的 Schema；静态内置 Schema 不需要取得 Sandbox Lease，动态外部 Schema 只允许连接已选 Provider。
 - 返回快照版本、被过滤数量和降级 Provider，供 Trace 使用。
 - 超预算返回明确的二阶段检索要求，不静默注入全量 Schema。
 
@@ -624,7 +759,9 @@ async def resolve(
 
 建议 Trace 事件：
 
-- `tool.scope_selected`：capability_count、provider_count、selection_reason。
+- `tool.scope_selected`：capability_count、provider_count、tool_count、selection_reason、fallback_reason。
+- `tool.execution_started/completed/failed`：tool_id、provider_id、source_type、execution_backend、lease_reused、error_code。
+- `sandbox.activation_started/completed/failed`：first_tool_id、latency_ms、attachment_sync_bytes；Catalog/Schema 阶段若出现该事件应告警。
 - `provider.activation_started/completed/failed`：provider_type、latency_ms、snapshot_hit、error_code。
 - `provider.circuit_opened/closed`：provider_id、error_code、cooldown_ms。
 - `tool.schema_resolved`：provider_count、schema_count、schema_tokens、filtered_count、snapshot_age_ms。
@@ -659,19 +796,29 @@ async def resolve(
 
 该阶段可暂时仍按 Run 持有选中的 Provider，但必须停止全量初始化。
 
-### 阶段 1：静态目录和 Provider 级 Scope（P0）
+### 阶段 1A：统一 Tool Plane 与内置工具迁移（P0，已实施）
 
-1. 从 MCP/A2A 配置构建无网络 I/O 的 Provider Catalog。
-2. 扩展 Lead Decision、Plan Step、Ask/Form Continuation 的 Provider Scope。
-3. 扩展 Registry/FilteredTool，从 Capability 过滤升级为 Capability + Provider + Function。
+1. 新增统一 ToolDescriptor，拆分 `source_type`、`execution_backend`、`resource_requirements` 和 `execution_class`。
+2. 扩展 Registry/FilteredTool/RuntimeToolScope，从 Capability 过滤升级为 Capability + Provider + Tool ID + Function。
+3. 建立统一 ToolSchemaResolver、Context Injector 和 ToolExecutorRouter；模型可见范围与执行允许范围使用同一个不可扩大的 Scope Snapshot。
+4. 先迁移 Message/Search/File/Shell/Browser：它们共用相同注册和注入流程，但分别路由到 In-process、Remote HTTP、Sandbox 和 Sandbox Browser Executor。
+5. 复用现有 `LazySandboxRuntime`。Catalog、选择、Schema 解析和 Tool 构造均断言不会激活 Sandbox；只有通过 Scope/Policy 的真实调用可以取得 Lease。
+6. 给 Shell/Browser Script 标记 `general_fallback`，但显式代码执行、项目操作和交互浏览任务允许直接选择，避免“固定最后一级”损害正确性。
+
+### 阶段 1B：外部 Provider 接入统一 Tool Plane（P0，已实施）
+
+1. 从 API/MCP/A2A 配置构建无网络 I/O 的 Provider/Tool 摘要目录。
+2. 扩展 Lead Decision、Plan Step、Ask/Form Continuation 的 Provider/Tool Scope。
+3. API/MCP/A2A 通过 Adapter 接入同一 Catalog、Schema Resolver、Context Injector、Result 和 Trace，不再拥有平行注入链路。
 4. 删除 `AgentTaskRunner.invoke()` 的全量 MCP/A2A 初始化。
 
-### 阶段 2：MCP Provider Actor 和 Schema Snapshot（P1）
+### 阶段 2：MCP Provider Actor 和 Schema Snapshot（P1，已实施）
 
-1. 每个 MCP Server 独立 Actor、连接锁、退避、熔断和 idle TTL。
-2. 只在选中 Provider 无可用快照时发现 Schema。
-3. Provider 调用使用 Lease/Proxy，不向 Agent 暴露 ClientSession。
-4. 应用关闭时由 Actor 所有者有序清理。
+1. 每个租户/配置代际的 MCP Server 使用独立 Actor，连接、Schema 发现、调用和清理由同一 asyncio Task 所有；Actor 提供连接去重、有界指数退避、操作超时和 idle TTL。
+2. 只在选中 Provider 无可用快照时发现 Schema；Snapshot 按 `user_id + provider_id + config_fingerprint + protocol_version` 隔离，并使用 TTL、容量上限和配置切换失效。
+3. Provider 调用使用 Pool/Actor Proxy，不向 Agent 暴露 ClientSession、AsyncExitStack 或 AnyIO cancel scope；Provider 内部 Cancel 被投影为类型化失败。
+4. 应用关闭时先取消并等待 Run 退出，再关闭共享 Pool；单个 Runner/Sandbox 清理失败不会阻止其他 Runner、Provider Pool、数据库或 Redis 关闭。
+5. `ErrorEvent` 与 `ToolResult` 新增兼容的 `FailureInfo`，前端按 Provider/Tool/Run 类别展示安全信息，不再把所有失败解释为模型配置、余额或网络问题。
 
 ### 阶段 3：A2A Card 惰性刷新和委派目录（P1）
 
@@ -711,6 +858,8 @@ async def resolve(
 | Provider Catalog 描述不足导致选错 | 中 | 中 | 管理员标签、语义 tags、显式点名优先、无法确定时询问 | 多 Provider 路由任务集 |
 | 把真实用户取消转换成 Provider Error | 低中 | 高 | Cancellation Context + Actor shutdown reason | 用户停止/停机/Provider cancel 三分测试 |
 | Tool 数量仍导致 Prompt 膨胀 | 中 | 中高 | Top-K、Token Budget、二阶段 Tool Search | Schema Token 指标和上限测试 |
+| 把 Sandbox 设为固定最后手段导致代码/文件任务绕路 | 中 | 中 | 区分晚激活与路由优先级；显式任务意图可直接选择 Sandbox-backed Tool | 代码执行、文件处理和浏览任务集 |
+| Catalog/Schema 阶段意外激活 Sandbox | 中 | 中高 | Lease 只允许 Executor Router 获取；构造与解析阶段使用零激活断言 | Fake Runtime 调用计数测试 |
 | 旧 Interaction 无 Provider Scope 无法恢复 | 低中 | 高 | 根据命名空间和历史 Tool Call 确定性推导 | 历史 waiting fixture 回归 |
 | 错误码过细且不稳定 | 中 | 中 | 对外稳定小枚举，内部 cause 单独记录 | API 合同测试 |
 | Registry Missing 仍被误报成重启 | 中 | 中 | P0 原子 Finalizer；后续持久化 Run Lease/Heartbeat | 进程存活但 Task 异常结束测试 |
@@ -735,22 +884,27 @@ async def resolve(
 
 ## 验收标准
 
-- [ ] 普通 Direct 问答、Shell-only、File-only 和 Ask User Run 的日志中没有 MCP/A2A 连接尝试。
+- [x] 普通 Direct 问答、Shell-only、File-only 和 Ask User Run 的日志中没有 MCP/A2A 连接尝试。
 - [x] 新 Run 不产生 `tool_approval`；Shell/File/Browser 在现有隔离门禁通过后自动执行，不出现批准弹窗。
 - [x] `risk_level` 不再触发等待；当前平台 `execution_policy=allow|deny` 在工具调用前确定性执行。
 - [ ] Execution Class 和 Capability Grant 在模型调用前确定性执行。
 - [ ] 未满足 Sandbox 隔离基线或外部 Provider 权限的工具直接拒绝，不能通过用户点击绕过。
-- [ ] Lead Decide Prompt 只包含 Capability/Provider 摘要，不包含 Tool 参数 Schema、URL、Header 或凭据。
-- [ ] React/Plan Step 只注入已选 Capability、Provider 和 Tool；同组未选 MCP Server 的 Schema 数量为 0。
-- [ ] 多轮对话和 Ask/Form 自动继续不重复全量初始化 Provider；有效连接/快照可复用。
-- [ ] 一个 MCP Server 连接失败时，父 Agent Task 不收到裸 `CancelledError`，其他 Provider 和无关 Tool 可继续运行。
-- [ ] 用户停止、服务关闭、Provider cancel scope 和客户端断开分别产生正确、可区分的结果。
-- [ ] Provider 失败不会被前端显示为模型余额或模型配置错误。
-- [ ] `ErrorEvent.error` 兼容旧客户端；新客户端能按 `failure.code`、`retryable` 和 `recovery_actions` 渲染。
+- [x] Lead Decide Prompt 只包含 Capability/Provider/Tool 安全摘要，不包含 Tool 参数 Schema、URL、Header 或凭据。
+- [x] React/Plan Step 按已选 Capability、Provider 和 Tool 裁剪 Schema；缺少新字段的历史数据继续按 capability-only 兼容。
+- [x] Tool Descriptor 明确区分来源和执行后端：`builtin.shell` 为 `source_type=builtin + execution_backend=sandbox`，不再用 `executor_type=builtin` 混合表达。
+- [x] Direct、Catalog 构建、Lead 选择和 Schema 解析阶段的 Sandbox create/get/ensure/browser 调用数均为 0。
+- [x] 只有通过当前 Scope/Policy 的真实 File/Shell/Browser Tool Call 才激活 Sandbox；未选 Tool 即使模型构造出调用也被 Executor Router 拒绝且不激活。
+- [x] 路由契约优先选择最小专用 Tool；明确代码执行、文件操作或交互浏览任务可直接选择 Sandbox-backed Tool，不强制先失败一次。
+- [x] 内置、API、MCP Tool 使用相同 Tool ID/Scope/Context Injection/Result/Trace 合同；A2A 共用目录和选择合同但走独立 Delegation Runtime。
+- [x] 多轮对话和 Ask/Form 自动继续不重复全量初始化 Provider；有效连接/快照可复用。
+- [x] 一个 MCP Server 连接失败时，父 Agent Task 不收到裸 `CancelledError`，其他 Provider 和无关 Tool 可继续运行。
+- [x] 用户停止、服务关闭和 Provider cancel scope 产生可区分结果；客户端断开不取消已接受并启动的后台 Run/Continuation。
+- [x] Provider 失败不会被前端显示为模型余额或模型配置错误。
+- [x] `ErrorEvent.error` 兼容旧客户端；新客户端能按 `failure.code`、`retryable` 和 `recovery_actions` 渲染。
 - [x] `ask_user` 只接受 answer；非法提交保留 Session `waiting`；历史 pending Tool Approval 被安全收敛且不执行旧调用。
 - [x] Ask 等待期间没有活跃 Agent Task；刷新后 pending Ask 可见，Composer/问题卡回答均按同一 Action 原子领取并只自动继续一次。
 - [ ] `form_input` 的持久化、刷新展示、结构化校验和自动继续仍待后续批次。
 - [x] 旧 pending Interaction 和旧 Session 历史无需数据库迁移即可读取；旧 Tool Approval 只读且可安全收敛。
 - [ ] Provider 激活失败后 Session/Run/Event/Trace 状态原子收敛，不产生虚假的“服务重启”结论。
-- [ ] 并发首次连接只建立一次；配置更新、idle timeout 和应用关闭均能无泄漏清理 Provider。
+- [x] 并发首次连接只建立一次；配置更新、idle timeout 和应用关闭均能无泄漏清理 Provider。
 - [ ] 定向测试、Agent/Tool/HITL 全量回归、前端类型/组件测试和真实多轮场景通过后，才进入实施完成状态。

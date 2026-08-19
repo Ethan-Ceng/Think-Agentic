@@ -11,7 +11,12 @@ import uuid
 from typing import Optional, Dict
 
 from app.core.message_queue.base import MessageQueue
-from app.core.task.base import Task, TaskRunner
+from app.core.task.base import (
+    RunCancellationContext,
+    RunCancellationReason,
+    Task,
+    TaskRunner,
+)
 from app.core.message_queue.redis_stream_message_queue import RedisStreamMessageQueue
 
 logger = logging.getLogger(__name__)
@@ -28,6 +33,7 @@ class RedisStreamTask(Task):
         self._task_runner = task_runner
         self._id = str(uuid.uuid4())
         self._execution_task: Optional[asyncio.Task] = None  # 定义在后台执行的任务
+        self._cancellation_context: RunCancellationContext | None = None
 
         input_stream_name = f"task:input:{self._id}"
         output_stream_name = f"task:output:{self._id}"
@@ -71,8 +77,18 @@ class RedisStreamTask(Task):
             self._execution_task = asyncio.create_task(self._execute_task())
             logger.info(f"任务[{self._id}]开始执行")
 
-    def cancel(self) -> bool:
+    def cancel(
+        self,
+        *,
+        reason: RunCancellationReason = RunCancellationReason.USER,
+        requested_by: str = "user",
+    ) -> bool:
         """取消当前执行的任务"""
+        if self._cancellation_context is None:
+            self._cancellation_context = RunCancellationContext(
+                reason=reason,
+                requested_by=requested_by,
+            )
         if not self.done:
             # 1.取消任务
             self._execution_task.cancel()
@@ -104,6 +120,10 @@ class RedisStreamTask(Task):
             return True
         return self._execution_task.done()
 
+    @property
+    def cancellation_context(self) -> RunCancellationContext | None:
+        return self._cancellation_context
+
     @classmethod
     def get(cls, task_id: str) -> Optional["Task"]:
         return RedisStreamTask._task_registry.get(task_id)
@@ -118,11 +138,30 @@ class RedisStreamTask(Task):
         # snapshot to ensure every runner is released during service shutdown.
         tasks = list(RedisStreamTask._task_registry.values())
         for task in tasks:
-            task.cancel()
+            task.cancel(
+                reason=RunCancellationReason.SHUTDOWN,
+                requested_by="application",
+            )
 
-            # 1.检测任务是否有任务运行器
-            if task._task_runner:
-                await task._task_runner.destroy()
+        execution_tasks = [
+            getattr(task, "_execution_task")
+            for task in tasks
+            if getattr(task, "_execution_task", None) is not None
+        ]
+        if execution_tasks:
+            await asyncio.gather(*execution_tasks, return_exceptions=True)
+
+        runners = [task._task_runner for task in tasks if task._task_runner]
+        results = await asyncio.gather(
+            *(runner.destroy() for runner in runners),
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, BaseException):
+                logger.error(
+                    "Task runner cleanup failed during shutdown: %r",
+                    result,
+                )
 
         # 2.清除全局变量
         cls._task_registry.clear()

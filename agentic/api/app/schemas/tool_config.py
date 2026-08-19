@@ -40,6 +40,9 @@ class RuntimeToolPolicy(BaseModel):
         default_factory=lambda: ["builtin", "mcp", "a2a", "api"]
     )
     max_tool_iterations: int = Field(default=100, ge=1, le=1000)
+    max_external_tool_schemas: int = Field(default=32, ge=1, le=256)
+    max_external_schema_chars: int = Field(default=60000, ge=1000, le=500000)
+    external_tool_search_top_k: int = Field(default=8, ge=1, le=32)
 
     model_config = ConfigDict(extra="ignore")
 
@@ -49,6 +52,9 @@ class RuntimeToolPolicyUpdate(BaseModel):
         default_factory=lambda: ["builtin", "mcp", "a2a", "api"]
     )
     max_tool_iterations: int = Field(default=100, ge=1, le=1000)
+    max_external_tool_schemas: int = Field(default=32, ge=1, le=256)
+    max_external_schema_chars: int = Field(default=60000, ge=1000, le=500000)
+    external_tool_search_top_k: int = Field(default=8, ge=1, le=32)
 
     model_config = ConfigDict(extra="forbid")
 
@@ -100,6 +106,27 @@ class ToolDescriptor(BaseModel):
     provider_label: str
     group: str
     executor_type: str
+    source_type: Literal["builtin", "api", "mcp", "a2a"] = "builtin"
+    execution_backend: Literal[
+        "in_process",
+        "sandbox",
+        "sandbox_browser",
+        "remote_http",
+        "external_provider",
+        "delegation",
+    ] = "in_process"
+    resource_requirements: List[
+        Literal["sandbox", "browser", "network", "credentials"]
+    ] = Field(default_factory=list)
+    execution_class: Literal[
+        "sandbox_local",
+        "external_read",
+        "external_write",
+        "delegation",
+        "platform_forbidden",
+    ] = "external_read"
+    generality: Literal["specialized", "general_fallback"] = "specialized"
+    cost_class: Literal["low", "medium", "high"] = "low"
     label: str
     description: str
     tool_schema: Dict[str, Any] = Field(alias="schema")
@@ -112,6 +139,116 @@ class ToolDescriptor(BaseModel):
     enabled: bool = True
 
     model_config = ConfigDict(populate_by_name=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_execution_metadata(cls, data):
+        """Derive the new orthogonal metadata from legacy descriptor fields."""
+        if not isinstance(data, dict):
+            return data
+        migrated = dict(data)
+        provider_id = str(migrated.get("provider_id") or "")
+        executor_type = str(migrated.get("executor_type") or "builtin")
+        function_name = str(migrated.get("function_name") or "")
+        requires_sandbox = bool(migrated.get("requires_sandbox"))
+        requires_browser = bool(migrated.get("requires_browser"))
+        requires_credentials = bool(migrated.get("requires_credentials"))
+
+        if "source_type" not in migrated:
+            source_type = executor_type if executor_type in {"api", "mcp", "a2a"} else "builtin"
+            if provider_id.startswith("api."):
+                source_type = "api"
+            elif provider_id.startswith("mcp."):
+                source_type = "mcp"
+            elif provider_id.startswith("a2a."):
+                source_type = "a2a"
+            migrated["source_type"] = source_type
+
+        if "execution_backend" not in migrated:
+            if requires_browser:
+                execution_backend = "sandbox_browser"
+            elif requires_sandbox:
+                execution_backend = "sandbox"
+            elif migrated["source_type"] == "a2a":
+                execution_backend = "delegation"
+            elif migrated["source_type"] == "mcp":
+                execution_backend = "external_provider"
+            elif migrated["source_type"] == "api":
+                execution_backend = "remote_http"
+            else:
+                execution_backend = "in_process"
+            migrated["execution_backend"] = execution_backend
+
+        if "resource_requirements" not in migrated:
+            requirements = []
+            if requires_sandbox or requires_browser:
+                requirements.append("sandbox")
+            if requires_browser:
+                requirements.append("browser")
+            if migrated["execution_backend"] in {
+                "remote_http",
+                "external_provider",
+                "delegation",
+            }:
+                requirements.append("network")
+            if requires_credentials:
+                requirements.append("credentials")
+            migrated["resource_requirements"] = requirements
+
+        if "execution_class" not in migrated:
+            backend = migrated["execution_backend"]
+            if backend in {"sandbox", "sandbox_browser"}:
+                execution_class = "sandbox_local"
+            elif backend == "delegation":
+                execution_class = "delegation"
+            else:
+                execution_class = "external_read"
+            migrated["execution_class"] = execution_class
+
+        if "generality" not in migrated and function_name in {
+            "shell_execute",
+            "browser_console_exec",
+        }:
+            migrated["generality"] = "general_fallback"
+
+        if "cost_class" not in migrated:
+            backend = migrated["execution_backend"]
+            migrated["cost_class"] = (
+                "high"
+                if backend == "sandbox_browser"
+                else "medium"
+                if backend in {"sandbox", "remote_http", "external_provider", "delegation"}
+                else "low"
+            )
+        return migrated
+
+
+class ProviderDescriptor(BaseModel):
+    """Safe Catalog metadata for one execution/delegation provider."""
+
+    provider_id: str
+    provider_type: Literal["builtin", "api", "mcp", "a2a"]
+    label: str
+    description: str = ""
+    capability_groups: List[str] = Field(default_factory=list)
+    semantic_tags: List[str] = Field(default_factory=list)
+    metadata_trust: Literal[
+        "platform_static",
+        "untrusted_configuration",
+    ] = "platform_static"
+    enabled: bool = True
+    credential_state: Literal["not_required", "configured", "missing"] = (
+        "not_required"
+    )
+    snapshot_state: Literal["missing", "fresh", "stale"] = "missing"
+    health_state: Literal[
+        "unknown",
+        "healthy",
+        "degraded",
+        "unhealthy",
+    ] = "unknown"
+
+    model_config = ConfigDict(extra="forbid")
 
 
 class ToolListResponse(BaseModel):

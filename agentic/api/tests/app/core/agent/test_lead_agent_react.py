@@ -104,8 +104,13 @@ class FakeReactAgent:
         language: str,
         capabilities: list[str],
         message: Message,
+        *,
+        provider_ids: list[str] | None = None,
+        tool_ids: list[str] | None = None,
     ) -> AsyncGenerator[BaseEvent, None]:
-        self.execute_calls.append((goal, language, capabilities, message))
+        self.execute_calls.append(
+            (goal, language, capabilities, provider_ids, tool_ids, message)
+        )
         for event in self.events:
             yield event
 
@@ -134,6 +139,8 @@ def make_react_lead(
         language="en",
         goal="Find the primary source",
         capabilities=["search"],
+        provider_ids=["builtin.search"],
+        tool_ids=["builtin.search.search_web"],
     )
     policy = FakeDecisionPolicy(decision)
     legacy = FakeLegacyFlow()
@@ -172,10 +179,12 @@ async def test_react_runs_goal_without_plan_or_step_events() -> None:
     assert [event.type for event in events] == ["title", "tool", "message", "done"]
     assert policy.decide_calls == 1
     assert len(react.execute_calls) == 1
-    assert react.execute_calls[0][0:3] == (
+    assert react.execute_calls[0][0:5] == (
         "Find the primary source",
         "en",
         ["search"],
+        ["builtin.search"],
+        ["builtin.search.search_web"],
     )
     assert repository.statuses == [SessionStatus.RUNNING]
     assert not any(event.type in {"plan", "step"} for event in events)
@@ -208,6 +217,8 @@ async def test_react_interaction_persists_strategy_context_and_waits() -> None:
     assert persisted.lead_goal == "Find the primary source"
     assert persisted.lead_language == "en"
     assert persisted.lead_capabilities == ["search"]
+    assert persisted.lead_provider_ids == ["builtin.search"]
+    assert persisted.lead_tool_ids == ["builtin.search.search_web"]
     assert persisted.skills == [skill_ref]
     assert isinstance(events[-1], WaitEvent)
     assert not any(event.type == "done" for event in events)

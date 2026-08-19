@@ -185,18 +185,16 @@ async def test_unimplemented_strategy_temporarily_delegates_to_legacy() -> None:
     assert legacy.invoke_calls == 1
 
 
-async def test_runtime_context_and_mcp_refresh_reach_internal_strategies() -> None:
+async def test_runtime_context_reaches_strategies_without_manual_mcp_refresh() -> None:
     lead, policy, legacy, _ = make_lead(
         DirectDecision(title="Greeting", language="en", answer="Hello!")
     )
     context = SkillRuntimeContext(prompt_block="temporary")
 
     lead.set_skill_runtime_context(context)
-    lead.refresh_mcp_tools()
-
     assert policy.skill_contexts == [context]
     assert legacy.skill_contexts == [context]
-    assert legacy.refreshed is True
+    assert legacy.refreshed is False
     assert lead.get_available_tool_names() == {"search"}
 
 

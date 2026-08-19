@@ -22,6 +22,10 @@ class BuiltinToolGroup:
     executor_type: str
     category: str
     description: str = ""
+    source_type: str = "builtin"
+    execution_backend: str = "in_process"
+    execution_class: str = "external_read"
+    cost_class: str = "low"
     requires_sandbox: bool = False
     requires_browser: bool = False
     requires_credentials: bool = False
@@ -37,6 +41,9 @@ BUILTIN_TOOL_GROUPS: tuple[BuiltinToolGroup, ...] = (
         executor_type="builtin",
         category="文件",
         description="沙箱文件读取、写入、替换和检索工具",
+        execution_backend="sandbox",
+        execution_class="sandbox_local",
+        cost_class="medium",
         requires_sandbox=True,
     ),
     BuiltinToolGroup(
@@ -48,6 +55,9 @@ BUILTIN_TOOL_GROUPS: tuple[BuiltinToolGroup, ...] = (
         executor_type="builtin",
         category="Shell",
         description="沙箱命令执行、输出读取和进程控制工具",
+        execution_backend="sandbox",
+        execution_class="sandbox_local",
+        cost_class="medium",
         requires_sandbox=True,
     ),
     BuiltinToolGroup(
@@ -59,6 +69,10 @@ BUILTIN_TOOL_GROUPS: tuple[BuiltinToolGroup, ...] = (
         executor_type="builtin",
         category="浏览器",
         description="沙箱浏览器页面查看、导航、点击和控制台工具",
+        execution_backend="sandbox_browser",
+        execution_class="sandbox_local",
+        cost_class="high",
+        requires_sandbox=True,
         requires_browser=True,
     ),
     BuiltinToolGroup(
@@ -70,6 +84,9 @@ BUILTIN_TOOL_GROUPS: tuple[BuiltinToolGroup, ...] = (
         executor_type="builtin",
         category="搜索",
         description="联网搜索工具",
+        execution_backend="remote_http",
+        execution_class="external_read",
+        cost_class="medium",
         requires_credentials=True,
     ),
     BuiltinToolGroup(
@@ -81,6 +98,9 @@ BUILTIN_TOOL_GROUPS: tuple[BuiltinToolGroup, ...] = (
         executor_type="builtin",
         category="用户交互",
         description="向用户发送通知或请求补充输入",
+        execution_backend="in_process",
+        execution_class="external_read",
+        cost_class="low",
     ),
     BuiltinToolGroup(
         name="a2a",
@@ -91,6 +111,10 @@ BUILTIN_TOOL_GROUPS: tuple[BuiltinToolGroup, ...] = (
         executor_type="a2a",
         category="远程 Agent",
         description="A2A 远程 Agent 卡片发现与调用工具",
+        source_type="a2a",
+        execution_backend="delegation",
+        execution_class="delegation",
+        cost_class="medium",
         requires_credentials=True,
     ),
 )
@@ -162,3 +186,9 @@ def risk_for_builtin_function(function_name: str) -> str:
 
 def label_for_builtin_function(function_name: str) -> str:
     return BUILTIN_TOOL_LABELS.get(function_name, function_name)
+
+
+def generality_for_builtin_function(function_name: str) -> str:
+    if function_name in {"shell_execute", "browser_console_exec"}:
+        return "general_fallback"
+    return "specialized"

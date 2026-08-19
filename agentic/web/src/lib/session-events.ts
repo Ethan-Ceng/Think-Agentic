@@ -1,5 +1,6 @@
 import type {
   ChatMessage,
+  FailureInfo,
   InteractionEvent,
   MessageDeltaEvent,
   PlanEvent,
@@ -42,7 +43,14 @@ export type TimelineItem = (
   | { kind: 'tool'; id: string; data: ToolEvent; timeLabel?: string }
   | { kind: 'step'; id: string; data: StepEvent; tools: ToolEvent[] }
   | { kind: 'interaction'; id: string; data: InteractionEvent; timeLabel?: string }
-  | { kind: 'error'; id: string; error: string; timestamp?: number; timeLabel?: string }
+  | {
+      kind: 'error'
+      id: string
+      error: string
+      failure?: FailureInfo
+      timestamp?: number
+      timeLabel?: string
+    }
 ) & TimelineSource
 
 export type AttachmentFile = {
@@ -406,6 +414,7 @@ export function eventsToTimeline(events: SSEEventData[]): TimelineItem[] {
       case 'error': {
         const errorData = ev.data as {
           error?: string
+          failure?: FailureInfo | null
           created_at?: number
           [key: string]: unknown
         }
@@ -414,6 +423,7 @@ export function eventsToTimeline(events: SSEEventData[]): TimelineItem[] {
             kind: 'error',
             id: stableId('error', errorIndex++, String(list.length)),
             error: errorData.error,
+            failure: errorData.failure ?? undefined,
             timestamp: errorData.created_at,
             timeLabel: formatMessageTimeLabel(errorData.created_at),
             sourceEventId: (errorData as { event_id?: string }).event_id,

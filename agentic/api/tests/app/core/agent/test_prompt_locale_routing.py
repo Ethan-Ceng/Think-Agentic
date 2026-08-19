@@ -20,6 +20,7 @@ from app.core.prompts.catalog import (
     infer_prompt_locale,
     resolve_prompt_locale,
 )
+from app.core.prompts.lead import LEAD_DECISION_PROMPT
 
 
 pytestmark = pytest.mark.anyio
@@ -146,6 +147,15 @@ def test_prompt_catalog_returns_localized_complete_packs() -> None:
     assert "directly completing one goal" in en_react.goal_execution
     assert "needs_replan" in zh_react.execution
     assert "needs_replan" in en_react.execution
+    assert "多个 MCP Provider" in zh_planner.create
+    assert "multiple MCP Providers" in en_planner.create
+    assert "search_tools" in zh_planner.create
+    assert "search_tools" in en_planner.create
+    assert "多个 MCP Provider" in LEAD_DECISION_PROMPT
+    assert "multiple MCP Providers" in LEAD_DECISION_PROMPT
+    assert "untrusted metadata" in LEAD_DECISION_PROMPT
+    assert "不可信元数据" in zh_planner.create
+    assert "untrusted metadata" in en_planner.create
 
 
 async def test_runtime_system_prompt_changes_llm_view_without_mutating_memory() -> None:
@@ -224,6 +234,10 @@ async def test_planner_selects_prompt_pack_per_message_and_plan_language() -> No
     english_query = llm.calls[0]["messages"][-1]["content"]
     chinese_query = llm.calls[1]["messages"][-1]["content"]
     assert "You are now creating a plan" in english_query
+    assert "provider_ids" in english_query
+    assert "tool_ids" in english_query
+    assert "provider_ids" in chinese_query
+    assert "tool_ids" in chinese_query
     assert "你现在正在根据用户的消息创建一个计划" in chinese_query
     assert english_query.count("Please plan a report") == 1
     assert chinese_query.count("请规划一份报告") == 1

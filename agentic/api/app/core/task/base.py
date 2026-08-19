@@ -1,9 +1,28 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from enum import Enum
 from typing import Optional, Protocol
 
 from app.core.message_queue.base import MessageQueue
+
+
+class RunCancellationReason(str, Enum):
+    USER = "user"
+    SHUTDOWN = "shutdown"
+    TIMEOUT = "timeout"
+    CLIENT_DISCONNECT = "client_disconnect"
+
+
+@dataclass(frozen=True, slots=True)
+class RunCancellationContext:
+    reason: RunCancellationReason
+    requested_by: str
+    requested_at: datetime = field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
 
 
 class TaskRunner(ABC):
@@ -28,7 +47,16 @@ class Task(Protocol):
     async def invoke(self) -> None:
         ...
 
-    def cancel(self) -> bool:
+    def cancel(
+        self,
+        *,
+        reason: RunCancellationReason = RunCancellationReason.USER,
+        requested_by: str = "user",
+    ) -> bool:
+        ...
+
+    @property
+    def cancellation_context(self) -> RunCancellationContext | None:
         ...
 
     @property

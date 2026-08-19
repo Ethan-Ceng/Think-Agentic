@@ -7,7 +7,9 @@
 """
 from typing import Optional, TypeVar, Generic
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
+
+from .failure import FailureInfo
 
 T = TypeVar("T")
 
@@ -17,6 +19,14 @@ class ToolResult(BaseModel, Generic[T]):
     success: bool = True  # 是否成功调用
     message: Optional[str] = ""  # 额外的信息提示
     data: Optional[T] = None  # 工具的执行结果/数据
+    failure: FailureInfo | None = None
+
+    @model_validator(mode="after")
+    def _project_failure_message(self) -> "ToolResult[T]":
+        if self.failure is not None:
+            self.success = False
+            self.message = self.failure.message
+        return self
 
     @classmethod
     def from_sandbox(cls, code: int, msg: str, data: Optional[T], **kwargs) -> "ToolResult":

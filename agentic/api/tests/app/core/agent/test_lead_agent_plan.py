@@ -207,7 +207,13 @@ def decision() -> PlanDecision:
         goal="Complete the complex task",
         message="Starting the task.",
         steps=[
-            Step(id="step-1", description="First", capabilities=["search"]),
+            Step(
+                id="step-1",
+                description="First",
+                capabilities=["search"],
+                provider_ids=["builtin.search"],
+                tool_ids=["builtin.search.search_web"],
+            ),
             Step(id="step-2", description="Second"),
         ],
     )
@@ -304,6 +310,8 @@ async def test_plan_interaction_resumes_exact_step_without_new_decision() -> Non
     assert pending.lead_mode == "plan"
     assert pending.plan_id == created_plan.id
     assert pending.step_id == "step-1"
+    assert pending.lead_provider_ids == ["builtin.search"]
+    assert pending.lead_tool_ids == ["builtin.search.search_web"]
     resolution = InteractionResolution(
         action_id=pending.action_id,
         interaction_type=pending.interaction_type,
@@ -316,6 +324,8 @@ async def test_plan_interaction_resumes_exact_step_without_new_decision() -> Non
         lead_goal=pending.lead_goal,
         lead_language=pending.lead_language,
         lead_capabilities=pending.lead_capabilities,
+        lead_provider_ids=pending.lead_provider_ids,
+        lead_tool_ids=pending.lead_tool_ids,
         plan_id=pending.plan_id,
         step_id=pending.step_id,
     )

@@ -98,6 +98,19 @@ class LeadDecisionPolicy(BaseAgent):
             return values
         return [value for value in values if value in known]
 
+    def _filter_scope(
+        self,
+        capabilities: list[str],
+        provider_ids: list[str],
+        tool_ids: list[str],
+    ) -> tuple[list[str], list[str], list[str]]:
+        if self._tool_registry is None:
+            return capabilities, provider_ids, tool_ids
+        resolver = getattr(self._tool_registry, "resolve_scope_selection", None)
+        if resolver is None:
+            return self._filter_capabilities(capabilities), [], []
+        return resolver(capabilities, provider_ids, tool_ids)
+
     def _normalize_decision(
         self,
         parsed: Any,
@@ -108,20 +121,35 @@ class LeadDecisionPolicy(BaseAgent):
             self._assert_direct_is_safe(message)
             return decision
         if isinstance(decision, ReactDecision):
+            capabilities, provider_ids, tool_ids = self._filter_scope(
+                decision.capabilities,
+                decision.provider_ids,
+                decision.tool_ids,
+            )
             return decision.model_copy(
                 update={
-                    "capabilities": self._filter_capabilities(decision.capabilities),
+                    "capabilities": capabilities,
+                    "provider_ids": provider_ids,
+                    "tool_ids": tool_ids,
                 }
             )
 
-        normalized_steps = [
-            type(step)(
-                id=step.id,
-                description=step.description,
-                capabilities=self._filter_capabilities(step.capabilities),
+        normalized_steps = []
+        for step in decision.steps:
+            capabilities, provider_ids, tool_ids = self._filter_scope(
+                step.capabilities,
+                step.provider_ids,
+                step.tool_ids,
             )
-            for step in decision.steps
-        ]
+            normalized_steps.append(
+                type(step)(
+                    id=step.id,
+                    description=step.description,
+                    capabilities=capabilities,
+                    provider_ids=provider_ids,
+                    tool_ids=tool_ids,
+                )
+            )
         normalized_plan = decision.model_copy(update={"steps": normalized_steps})
         if len(normalized_plan.steps) == 1:
             step = normalized_plan.steps[0]
@@ -130,6 +158,8 @@ class LeadDecisionPolicy(BaseAgent):
                 language=normalized_plan.language,
                 goal=step.description,
                 capabilities=step.capabilities,
+                provider_ids=step.provider_ids,
+                tool_ids=step.tool_ids,
             )
         return normalized_plan
 

@@ -87,9 +87,16 @@ class ReActAgent(BaseAgent):
         language: str,
         capabilities: list[str],
         message: Message,
+        *,
+        provider_ids: list[str] | None = None,
+        tool_ids: list[str] | None = None,
     ) -> AsyncGenerator[BaseEvent, None]:
         """Execute one tool-using goal without creating Plan/Step events."""
-        self.set_runtime_tool_scope(capabilities)
+        self.set_runtime_tool_scope(
+            capabilities,
+            provider_ids=provider_ids,
+            tool_ids=tool_ids,
+        )
         prompts = get_react_prompts(language)
         self.set_runtime_system_prompt(prompts.system)
         query = prompts.goal_execution.format(
@@ -113,6 +120,8 @@ class ReActAgent(BaseAgent):
         """Resume the exact Tool Call for a persisted React goal."""
         self.set_runtime_tool_scope(
             resolution.lead_capabilities,
+            provider_ids=resolution.lead_provider_ids,
+            tool_ids=resolution.lead_tool_ids,
             exact_functions=[resolution.function_name],
         )
         prompts = get_react_prompts(resolution.lead_language)
@@ -127,7 +136,11 @@ class ReActAgent(BaseAgent):
 
     async def execute_step(self, plan: Plan, step: Step, message: Message) -> AsyncGenerator[BaseEvent, None]:
         """根据传递的消息+规划+子步骤，执行相应的子步骤"""
-        self.set_runtime_tool_scope(step.capabilities)
+        self.set_runtime_tool_scope(
+            step.capabilities,
+            provider_ids=step.provider_ids,
+            tool_ids=step.tool_ids,
+        )
         prompts = get_react_prompts(plan.language)
         self.set_runtime_system_prompt(prompts.system)
         # 1.根据传递的内容生成执行消息
@@ -228,6 +241,8 @@ class ReActAgent(BaseAgent):
         """恢复被结构化询问或工具审批暂停的当前步骤。"""
         self.set_runtime_tool_scope(
             step.capabilities,
+            provider_ids=step.provider_ids,
+            tool_ids=step.tool_ids,
             exact_functions=[resolution.function_name],
         )
         prompts = get_react_prompts(plan.language)

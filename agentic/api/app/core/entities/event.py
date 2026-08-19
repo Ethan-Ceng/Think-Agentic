@@ -13,6 +13,7 @@ from typing import Literal, List, Union, Optional, Any, Dict, Annotated
 from pydantic import BaseModel, Field, model_validator
 
 from .file import File
+from .failure import FailureInfo
 from .plan import Plan, Step
 from .search import SearchResultItem
 from .skill import SkillRef
@@ -86,6 +87,8 @@ class InteractionResolution(BaseModel):
     lead_goal: Optional[str] = None
     lead_language: Optional[str] = None
     lead_capabilities: List[str] = Field(default_factory=list)
+    lead_provider_ids: List[str] = Field(default_factory=list)
+    lead_tool_ids: List[str] = Field(default_factory=list)
     plan_id: Optional[str] = None
     step_id: Optional[str] = None
     lead_replan_count: int = Field(default=0, ge=0)
@@ -227,6 +230,8 @@ class InteractionEvent(BaseEvent):
     lead_goal: Optional[str] = None
     lead_language: Optional[str] = None
     lead_capabilities: List[str] = Field(default_factory=list)
+    lead_provider_ids: List[str] = Field(default_factory=list)
+    lead_tool_ids: List[str] = Field(default_factory=list)
     plan_id: Optional[str] = None
     step_id: Optional[str] = None
     lead_replan_count: int = Field(default=0, ge=0)
@@ -242,6 +247,13 @@ class ErrorEvent(BaseEvent):
     """错误事件"""
     type: Literal["error"] = "error"
     error: str = ""  # 错误信息
+    failure: FailureInfo | None = None
+
+    @model_validator(mode="after")
+    def _project_failure_message(self) -> "ErrorEvent":
+        if self.failure is not None:
+            self.error = self.failure.message
+        return self
 
 
 class DoneEvent(BaseEvent):

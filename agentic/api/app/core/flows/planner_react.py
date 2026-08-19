@@ -26,6 +26,7 @@ from app.core.agent.react import ReActAgent
 from app.core.tools.a2a import A2ATool
 from app.core.tools.factory import ToolFactory
 from app.core.tools.mcp import MCPTool
+from app.core.tools.registry import ToolRegistry
 from app.core.tools.skill_draft import SkillDraftTool
 from app.services.trace_service import TraceService
 from app.services.skill_runtime_service import SkillRuntimeContext
@@ -130,9 +131,9 @@ class PlannerReActFlow(BaseFlow):
     def get_available_tool_names(self) -> set[str]:
         return self.react.get_available_tool_names()
 
-    def refresh_mcp_tools(self) -> None:
-        """Expose MCP tools after their asynchronous initialization completes."""
-        self._tool_factory.refresh_mcp_tools(self._mcp_tool)
+    @property
+    def tool_registry(self) -> ToolRegistry:
+        return self._tool_factory.registry
 
     async def invoke(self, message: Message) -> AsyncGenerator[BaseEvent, None]:
         """传递消息，运行流，在六中调用planner&react智能体组合完成任务并返回对应事件"""

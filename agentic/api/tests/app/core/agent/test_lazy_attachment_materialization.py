@@ -2,21 +2,33 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 
 import pytest
 
+from app.core.agent.lead_decision import LeadDecisionPolicy
+from app.core.entities.app_config import AgentConfig
 from app.core.entities.file import File
+from app.core.entities.lead import DirectDecision
+from app.core.entities.memory import Memory
+from app.core.entities.message import Message
+from app.core.entities.session import BranchContextMessage
 from app.core.entities.tool_result import ToolResult
+from app.core.entities.tool_config import ToolConfig
 from app.core.sandbox.runtime import (
     LazySandboxRuntime,
     SandboxActivation,
     SandboxAttachmentMaterializer,
 )
+from app.core.tools.a2a import A2ATool
+from app.core.tools.factory import ToolFactory
+from app.core.tools.mcp import MCPTool
 
 
 class RecordingSessionRepository:
     def __init__(self) -> None:
         self.sandbox_id: str | None = None
+        self.memories: dict[tuple[str, str], Memory] = {}
 
     async def claim_sandbox_id(
         self,
@@ -29,6 +41,26 @@ class RecordingSessionRepository:
         assert self.sandbox_id == expected_sandbox_id
         self.sandbox_id = candidate_id
         return candidate_id
+
+    async def get_memory(self, session_id: str, agent_name: str) -> Memory:
+        return self.memories.setdefault(
+            (session_id, agent_name),
+            Memory(),
+        ).model_copy(deep=True)
+
+    async def save_memory(
+        self,
+        session_id: str,
+        agent_name: str,
+        memory: Memory,
+    ) -> None:
+        self.memories[(session_id, agent_name)] = memory.model_copy(deep=True)
+
+    async def get_branch_context_seed(
+        self,
+        session_id: str,
+    ) -> list[BranchContextMessage]:
+        return []
 
 
 class FakeUow:
@@ -114,6 +146,30 @@ class RecordingSandboxClass:
         return cls.instance if cls.instance and cls.instance.id == sandbox_id else None
 
 
+class DirectDecisionLlm:
+    model_name = "lazy-activation-test"
+    temperature = 0
+    max_tokens = 128
+
+    async def invoke(self, messages, **kwargs):
+        return {
+            "role": "assistant",
+            "content": json.dumps(
+                {
+                    "mode": "direct",
+                    "title": "Greeting",
+                    "language": "en",
+                    "answer": "Hello!",
+                }
+            ),
+        }
+
+
+class JsonParser:
+    async def invoke(self, value):
+        return json.loads(value) if isinstance(value, str) else value
+
+
 def _file(file_id: str, filename: str, payload: bytes) -> tuple[bytes, File]:
     return payload, File(
         id=file_id,
@@ -160,6 +216,87 @@ def test_manifest_does_not_download_or_start_sandbox() -> None:
     assert activations == []
     assert entries[0].sandbox_path == "/home/ubuntu/upload/contract.txt"
     assert "sandbox_path_after_activation" in entries[0].prompt_text
+
+
+def test_tool_plane_stays_lazy_until_allowed_file_or_browser_invocation() -> None:
+    async def scenario() -> None:
+        runtime, _, _ = make_runtime({})
+        factory = ToolFactory(ToolConfig())
+        tools = factory.build(
+            sandbox=runtime.sandbox,
+            browser=runtime.browser,
+            search_engine=object(),
+            mcp_tool=MCPTool(),
+            a2a_tool=A2ATool(),
+        )
+        file_tool = next(tool for tool in tools if tool.name == "file")
+        browser_tool = next(tool for tool in tools if tool.name == "browser")
+
+        catalog = factory.registry.list_capability_catalog()
+        factory.runtime_scope.activate(
+            ["file"],
+            provider_ids=["builtin.file"],
+            tool_ids=["builtin.file.read_file"],
+        )
+        schemas = [
+            schema
+            for tool in tools
+            for schema in tool.get_tools()
+        ]
+        assert catalog
+        assert {schema["function"]["name"] for schema in schemas} == {
+            "message_ask_user",
+            "message_notify_user",
+            "read_file",
+        }
+        assert RecordingSandboxClass.create_calls == 0
+        assert runtime.is_activated is False
+
+        repository = RecordingSessionRepository()
+        lead = LeadDecisionPolicy(
+            uow_factory=lambda: FakeUow(repository),
+            session_id="session-1",
+            agent_config=AgentConfig(max_retries=2),
+            llm=DirectDecisionLlm(),
+            json_parser=JsonParser(),
+            tools=tools,
+            tool_registry=factory.registry,
+            runtime_tool_scope=factory.runtime_scope,
+        )
+        decision = await lead.decide(Message(message="Say hello"))
+        assert isinstance(decision, DirectDecision)
+        assert RecordingSandboxClass.create_calls == 0
+        assert runtime.is_activated is False
+
+        rejected = await file_tool.invoke("read_file", filepath="/tmp/input.txt")
+        assert rejected.success is False
+        assert RecordingSandboxClass.create_calls == 0
+
+        factory.runtime_scope.activate(
+            ["file"],
+            provider_ids=["builtin.file"],
+            tool_ids=["builtin.file.read_file"],
+        )
+        read_result = await file_tool.invoke(
+            "read_file",
+            filepath="/tmp/input.txt",
+        )
+        assert read_result.success is True
+        assert RecordingSandboxClass.create_calls == 1
+
+        factory.runtime_scope.activate(
+            ["browser"],
+            provider_ids=["builtin.browser"],
+            tool_ids=["builtin.browser.browser_navigate"],
+        )
+        navigate_result = await browser_tool.invoke(
+            "browser_navigate",
+            url="https://example.com",
+        )
+        assert navigate_result.success is True
+        assert RecordingSandboxClass.create_calls == 1
+
+    asyncio.run(scenario())
 
 
 def test_first_sandbox_method_ensures_then_materializes_once() -> None:

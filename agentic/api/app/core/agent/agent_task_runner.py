@@ -28,6 +28,7 @@ from app.core.entities.event import ErrorEvent, Event, MessageDeltaEvent, Messag
     BrowserToolContent, SearchToolContent, ShellToolContent, FileToolContent, MCPToolContent, A2AToolContent, \
     TitleEvent, WaitEvent, DoneEvent
 from app.core.entities.file import File
+from app.core.entities.failure import RunFailureCode, run_failure
 from app.core.entities.message import Message
 from app.core.entities.search import SearchResults
 from app.core.entities.session import NextMessage, SessionStatus
@@ -37,6 +38,8 @@ from app.core.agent.lead import LeadAgent
 from app.core.config import get_settings
 from app.core.tools.a2a import A2ATool
 from app.core.tools.mcp import MCPTool
+from app.core.tools.provider_runtime import MCPProviderPool
+from app.core.tools.provider_runtime import ProviderRuntimeError
 from app.services.trace_service import TraceService
 from app.schemas.skill import SkillSelectionRequest
 from app.services.skill_catalog_service import SkillCatalogService
@@ -76,6 +79,7 @@ class AgentTaskRunner(TaskRunner):
             skill_package_storage: SkillPackageStorage | None = None,
             bundled_skill_service: BundledSkillService | None = None,
             skill_workspace_service: SkillWorkspaceService | None = None,
+            mcp_provider_pool: MCPProviderPool | None = None,
     ) -> None:
         """构造函数，完成Agent任务运行器的创建"""
         self._uow_factory = uow_factory
@@ -92,9 +96,13 @@ class AgentTaskRunner(TaskRunner):
             fail_silently=True,
         )
         self._mcp_config = mcp_config
-        self._mcp_tool = MCPTool()
+        self._mcp_tool = MCPTool(
+            mcp_config,
+            provider_pool=mcp_provider_pool,
+            user_id=user_id,
+        )
         self._a2a_config = a2a_config
-        self._a2a_tool = A2ATool()
+        self._a2a_tool = A2ATool(a2a_config)
         self._file_storage = file_storage
         self._browser = browser
         self._sandbox_runtime.set_activation_observer(
@@ -122,6 +130,7 @@ class AgentTaskRunner(TaskRunner):
             if skill_workspace_service is not None
             else None,
         )
+        self._trace_service.set_tool_registry(self._flow.tool_registry)
         self._skill_runtime_service: SkillRuntimeService | None = None
         if skill_package_storage is not None:
             async def llm_provider(_: str) -> LLM:
@@ -437,7 +446,7 @@ class AgentTaskRunner(TaskRunner):
             logger.warning(f"清理MCP工具资源时出错: {e}")
         try:
             if self._a2a_tool:
-                await self._a2a_tool.manager.cleanup()
+                await self._a2a_tool.cleanup()
         except Exception as e:
             logger.warning(f"清理A2A工具资源时出错: {e}")
 
@@ -479,12 +488,6 @@ class AgentTaskRunner(TaskRunner):
         active_streams: dict[str, int] = {}
         try:
             logger.info("AgentTaskRunner任务处理开始")
-            await self._mcp_tool.initialize(self._mcp_config)
-            flow = getattr(self, "_flow", None)
-            if flow is not None:
-                flow.refresh_mcp_tools()
-            await self._a2a_tool.initialize(self._a2a_config)
-
             current_event: Event | None = None
             final_done_event: DoneEvent | None = None
             while True:
@@ -590,20 +593,55 @@ class AgentTaskRunner(TaskRunner):
 
                 final_done_event = pending_done_event or DoneEvent()
         except asyncio.CancelledError:
-            logger.info("AgentTaskRunner任务运行取消")
+            cancellation = getattr(task, "cancellation_context", None)
+            logger.info(
+                "AgentTaskRunner任务运行取消, reason=%s, requested_by=%s",
+                getattr(cancellation, "reason", "unexpected"),
+                getattr(cancellation, "requested_by", "unknown"),
+            )
             async with self._uow:
                 await self._uow.session.reset_processing_next_message(self._session_id)
                 await self._uow.session.update_status(self._session_id, SessionStatus.COMPLETED)
             await self._abort_active_streams(task, active_streams)
-            await self._put_and_add_event(task, DoneEvent())
-            raise
+            if cancellation is not None:
+                record_cancellation = getattr(
+                    self._trace_service,
+                    "record_run_cancellation",
+                    None,
+                )
+                if record_cancellation is not None:
+                    await record_cancellation(cancellation)
+                await self._put_and_add_event(task, DoneEvent())
+                raise
+            await self._put_and_add_event(
+                task,
+                ErrorEvent(failure=run_failure(RunFailureCode.INTERNAL_ERROR)),
+            )
+        except ProviderRuntimeError as e:
+            logger.warning(
+                "MCP Provider运行失败: code=%s provider_id=%s debug_id=%s",
+                e.failure.code,
+                e.failure.provider_id,
+                e.failure.debug_id,
+            )
+            async with self._uow:
+                await self._uow.session.reset_processing_next_message(self._session_id)
+                await self._uow.session.update_status(
+                    self._session_id,
+                    SessionStatus.COMPLETED,
+                )
+            await self._abort_active_streams(task, active_streams)
+            await self._put_and_add_event(task, ErrorEvent(failure=e.failure))
         except Exception as e:
             logger.exception(f"AgentTaskRunner运行出错: {str(e)}")
             async with self._uow:
                 await self._uow.session.reset_processing_next_message(self._session_id)
                 await self._uow.session.update_status(self._session_id, SessionStatus.COMPLETED)
             await self._abort_active_streams(task, active_streams)
-            await self._put_and_add_event(task, ErrorEvent(error=f"AgentTaskRunner出错: {str(e)}"))
+            await self._put_and_add_event(
+                task,
+                ErrorEvent(failure=run_failure(RunFailureCode.INTERNAL_ERROR)),
+            )
         finally:
             await self._cleanup_tools()
 
@@ -611,12 +649,13 @@ class AgentTaskRunner(TaskRunner):
         """销毁任务运行器并释放资源"""
         # 1.清除沙箱
         logger.info("开始清除销毁AgentTaskRunner资源")
-        if self._sandbox:
-            logger.info("销毁AgentTaskRunner中的沙箱环境")
-            await self._sandbox.destroy()
-
-        # 2.清除mcp和a2a工具（幂等操作，如果invoke()中已清理则不会重复执行）
-        await self._cleanup_tools()
+        try:
+            if self._sandbox:
+                logger.info("销毁AgentTaskRunner中的沙箱环境")
+                await self._sandbox.destroy()
+        finally:
+            # Tool cleanup must still run if Sandbox destruction fails.
+            await self._cleanup_tools()
 
     async def on_done(self, task: Task) -> None:
         """任务结束时执行的回调函数"""

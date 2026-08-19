@@ -46,6 +46,8 @@ class ReactDecision(_DecisionBase):
     mode: Literal["react"] = "react"
     goal: str
     capabilities: list[str] = Field(default_factory=list)
+    provider_ids: list[str] = Field(default_factory=list)
+    tool_ids: list[str] = Field(default_factory=list)
 
     @field_validator("goal")
     @classmethod
@@ -55,9 +57,9 @@ class ReactDecision(_DecisionBase):
             raise ValueError("goal must not be empty")
         return normalized
 
-    @field_validator("capabilities")
+    @field_validator("capabilities", "provider_ids", "tool_ids")
     @classmethod
-    def normalize_capabilities(cls, values: list[str]) -> list[str]:
+    def normalize_scope_values(cls, values: list[str]) -> list[str]:
         normalized: list[str] = []
         for value in values:
             capability = str(value).strip()

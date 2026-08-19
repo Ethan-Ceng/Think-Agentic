@@ -32,6 +32,7 @@ from app.core.sandbox.base import Sandbox
 from app.core.search.base import SearchEngine
 from app.core.tools.a2a import A2ATool
 from app.core.tools.mcp import MCPTool
+from app.core.tools.registry import ToolRegistry
 from app.core.tools.skill_draft import SkillDraftTool
 from app.repositories.uow import IUnitOfWork
 from app.services.skill_runtime_service import SkillRuntimeContext
@@ -151,8 +152,9 @@ class LeadAgent:
     def get_available_tool_names(self) -> set[str]:
         return self._legacy_flow.get_available_tool_names()
 
-    def refresh_mcp_tools(self) -> None:
-        self._legacy_flow.refresh_mcp_tools()
+    @property
+    def tool_registry(self) -> ToolRegistry:
+        return self._legacy_flow.tool_registry
 
     async def _roll_back_legacy(self, message: Message) -> None:
         rollback = getattr(self._legacy_flow, "roll_back", None)
@@ -198,6 +200,8 @@ class LeadAgent:
         goal: str,
         language: str,
         capabilities: list[str],
+        provider_ids: list[str],
+        tool_ids: list[str],
     ) -> AsyncGenerator[BaseEvent, None]:
         completed = False
         async for event in stream:
@@ -206,6 +210,8 @@ class LeadAgent:
                 event.lead_goal = goal
                 event.lead_language = language
                 event.lead_capabilities = list(capabilities)
+                event.lead_provider_ids = list(provider_ids)
+                event.lead_tool_ids = list(tool_ids)
                 event.skills = list(self._skill_refs)
             yield event
             if isinstance(event, (WaitEvent, ErrorEvent)):
@@ -237,12 +243,16 @@ class LeadAgent:
             decision.language,
             decision.capabilities,
             message,
+            provider_ids=decision.provider_ids,
+            tool_ids=decision.tool_ids,
         )
         async for event in self._stream_react(
             stream,
             goal=decision.goal,
             language=decision.language,
             capabilities=decision.capabilities,
+            provider_ids=decision.provider_ids,
+            tool_ids=decision.tool_ids,
         ):
             yield event
 
@@ -260,6 +270,8 @@ class LeadAgent:
             goal=resolution.lead_goal or "",
             language=resolution.lead_language or "",
             capabilities=resolution.lead_capabilities,
+            provider_ids=resolution.lead_provider_ids,
+            tool_ids=resolution.lead_tool_ids,
         ):
             yield event
 
@@ -292,6 +304,8 @@ class LeadAgent:
         event.lead_goal = plan.goal
         event.lead_language = plan.language
         event.lead_capabilities = list(step.capabilities)
+        event.lead_provider_ids = list(step.provider_ids)
+        event.lead_tool_ids = list(step.tool_ids)
         event.plan_id = plan.id
         event.step_id = step.id
         event.lead_replan_count = replan_count

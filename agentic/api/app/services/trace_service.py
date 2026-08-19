@@ -32,6 +32,7 @@ from app.core.entities.event import (
 from app.core.entities.tool_config import ToolConfig
 from app.core.entities.skill import RunSkill, SelectedSkill
 from app.core.tools.registry import ToolRegistry
+from app.core.task.base import RunCancellationContext
 from app.repositories.uow import IUnitOfWork
 from app.schemas.exceptions import NotFoundError
 from app.schemas.skill import SkillSelectionRequest, SkillSelectionResult
@@ -85,6 +86,10 @@ class TraceService:
         self._active_run_step_id: str | None = None
         self._tool_started_at: Dict[str, datetime] = {}
         self._terminal_failed = False
+
+    def set_tool_registry(self, registry: ToolRegistry) -> None:
+        """Share the live Agent registry so lazy Provider metadata stays exact."""
+        self._registry = registry
 
     async def start_run(
         self,
@@ -177,6 +182,28 @@ class TraceService:
                         else "sandbox.activation_failed"
                     ),
                     payload=payload,
+                )
+            )
+
+        await self._write(write)
+
+    async def record_run_cancellation(
+        self,
+        context: RunCancellationContext,
+    ) -> None:
+        """Record explicit cancellation provenance without inferring from exceptions."""
+        if not self.run_id:
+            return
+
+        async def write(uow: IUnitOfWork) -> None:
+            await uow.trace.append_event(
+                self._trace_event_data(
+                    event_type="run.cancellation_requested",
+                    payload={
+                        "reason": context.reason.value,
+                        "requested_by": context.requested_by,
+                        "requested_at": context.requested_at.isoformat(),
+                    },
                 )
             )
 
@@ -304,6 +331,8 @@ class TraceService:
         response_format: Dict[str, Any] | None,
         tool_choice: str | None,
         capability_groups: List[str] | None = None,
+        provider_ids: List[str] | None = None,
+        tool_ids: List[str] | None = None,
         tool_scope_excluded_count: int = 0,
     ) -> str | None:
         """Insert a started model call and return its id."""
@@ -322,6 +351,8 @@ class TraceService:
             "tools": [_tool_name(tool) for tool in tools],
             "tool_schema_bytes": schema_bytes,
             "capability_groups": list(capability_groups or []),
+            "provider_ids": list(provider_ids or []),
+            "tool_ids": list(tool_ids or []),
             "tool_scope_excluded_count": tool_scope_excluded_count,
         }
         data = {
@@ -357,6 +388,8 @@ class TraceService:
                         "tool_schema_count": len(tools or []),
                         "tool_schema_bytes": schema_bytes,
                         "capability_groups": list(capability_groups or []),
+                        "provider_ids": list(provider_ids or []),
+                        "tool_ids": list(tool_ids or []),
                         "tool_scope_excluded_count": tool_scope_excluded_count,
                         "message_count": len(messages or []),
                     },
@@ -557,11 +590,34 @@ class TraceService:
 
     async def _project_event(self, uow: IUnitOfWork, event: BaseEvent) -> None:
         event_type = _event_type(event)
+        payload = _event_payload(event)
+        if isinstance(event, ToolEvent):
+            metadata = self._tool_metadata(event)
+            failure = (
+                event.function_result.failure
+                if event.function_result is not None
+                else None
+            )
+            payload.update(
+                {
+                    "tool_id": metadata["tool_id"],
+                    "provider_id": metadata.get("provider_id"),
+                    "source_type": metadata.get("source_type"),
+                    "execution_backend": metadata.get("execution_backend"),
+                    "execution_class": metadata.get("execution_class"),
+                    "generality": metadata.get("generality"),
+                    "cost_class": metadata.get("cost_class"),
+                    "error_code": failure.code if failure is not None else None,
+                    "failure_category": (
+                        failure.category.value if failure is not None else None
+                    ),
+                }
+            )
         await uow.trace.append_event(
             self._trace_event_data(
                 event_type=event_type,
                 event_id=event.id,
-                payload=_event_payload(event),
+                payload=payload,
                 created_at=event.created_at,
             )
         )
@@ -709,22 +765,27 @@ class TraceService:
         descriptor = self._registry.get_by_function_name(event.function_name, self._tool_config)
         provider_id = descriptor.provider_id if descriptor else None
         registration_id = provider_id
-        source_type = "builtin"
-        if executor_type == "api":
-            source_type = "api"
+        source_type = descriptor.source_type if descriptor else "builtin"
+        if source_type == "api":
             registration = self._registration_for_provider(provider_id)
             if registration:
                 registration_id = registration.registration_id
-        elif executor_type == "mcp":
-            source_type = "mcp"
-        elif executor_type == "a2a":
-            source_type = "a2a"
         return {
             "tool_id": tool_id,
             "provider_id": provider_id,
             "registration_id": registration_id,
             "source_type": source_type,
             "executor_type": executor_type,
+            "execution_backend": (
+                descriptor.execution_backend if descriptor else "in_process"
+            ),
+            "execution_class": (
+                descriptor.execution_class if descriptor else "external_read"
+            ),
+            "generality": (
+                descriptor.generality if descriptor else "specialized"
+            ),
+            "cost_class": descriptor.cost_class if descriptor else "low",
             "risk_level": binding.risk_level,
             "enabled_effective": bool(source_enabled and binding.enabled),
             "requires_sandbox": bool(descriptor.requires_sandbox) if descriptor else False,
