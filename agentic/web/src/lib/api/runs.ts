@@ -26,7 +26,7 @@ export const runsApi = {
   },
 
   listSkills: (runId: string): Promise<RunSkill[]> => {
-    return get<RunSkill[]>(`/runs/${runId}/skills`)
+    return get<{ skills: RunSkill[] }>(`/runs/${runId}/skills`).then((data) => data.skills || [])
   },
 
   listEvents: (runId: string, params?: { after?: number; limit?: number }): Promise<RunEventsData> => {

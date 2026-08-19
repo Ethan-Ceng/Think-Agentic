@@ -11,9 +11,9 @@
 ## 当前进度
 
 - 整体状态：`IN_PROGRESS`
-- 当前阶段：T4 TracePanel convergence
-- 当前任务：Task 4
-- 已完成：3 / 5
+- 当前阶段：最终验证与代码审查
+- 当前任务：Task 5
+- 已完成：4 / 5
 - 阻塞问题：无
 - 最近更新时间：2026-08-19（Asia/Shanghai）
 
@@ -38,6 +38,7 @@
 | 2026-08-19（Asia/Shanghai） | `IN_PROGRESS` | Task 2 | T1 安全投影、游标分页和非破坏性迁移已完成并验证，进入统一 Execution View 合同与 API |
 | 2026-08-19（Asia/Shanghai） | `IN_PROGRESS` | Task 3 | T2 版本化节点合同、Planner 投影和增量 execution API 已完成，进入聊天页实时执行详情 |
 | 2026-08-19（Asia/Shanghai） | `IN_PROGRESS` | Task 4 | T3 transport-only 实时更新和消息级执行卡已完成，进入 TracePanel 合同收敛与按需诊断 |
+| 2026-08-19（Asia/Shanghai） | `IN_PROGRESS` | Task 5 | T4 TracePanel 已统一 Execution View，并完成按需诊断、独立游标与安全展示，进入全量验证和代码审查 |
 
 ## Task 1：T1 Trace 安全、游标、分页与迁移
 
@@ -236,7 +237,7 @@
 
 ## Task 4：T4 TracePanel 统一执行链重构
 
-状态：in_progress
+状态：completed
 
 ### 目标
 
@@ -287,11 +288,15 @@
 
 ### 执行结果
 
-待执行。
+TracePanel 已改为以 `RunExecutionView` 为唯一首屏数据源，并复用聊天页 `ExecutionTree` 展示执行链。工具、模型、Skills 和技术事件均在切换页签后按需加载；工具、模型和事件各自维护独立 cursor，Skills 在同一 Run 生命周期内只请求一次。模型视图分别展示 TTFT 与总耗时，技术事件仅展示事件类型、cursor、摘要、节点关系与时间，不再渲染原始 payload JSON。旧的 `getRun + listSkills` 首屏并发请求已移除，Skills API 客户端已按后端 envelope 解包，Skills 组件不再显示内部 reason 或 sandbox path。
 
 ### 验证证据
 
-待执行。
+- `pnpm test:run -- src/components/TracePanel.spec.ts src/components/chat/ExecutionTree.spec.ts src/components/chat/RunProcessBlock.spec.ts src/components/skills/RunSkillsPanel.spec.ts src/lib/api/runs.spec.ts`：5 files / 12 tests passed。
+- `pnpm type-check`：退出 0。
+- `pnpm build`：退出 0，Vite production build 成功。
+- `uv run pytest tests/app/controllers/test_runs.py tests/app/services/test_execution_view.py -q`：5 passed。
+- `git diff --check`：退出 0。
 
 ## Task 5：完整验证、代码审查、整改与远端推送
 

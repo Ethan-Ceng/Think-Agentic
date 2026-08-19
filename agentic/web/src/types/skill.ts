@@ -125,8 +125,8 @@ export type RunSkill = {
   selection_mode: SkillSelectionMode
   content_sha256: string
   confidence: number | null
-  reason: string
-  sandbox_path: string
+  reason?: string
+  sandbox_path?: string
   created_at: string
 }
 

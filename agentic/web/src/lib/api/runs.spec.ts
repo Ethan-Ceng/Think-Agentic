@@ -36,4 +36,11 @@ describe('runsApi', () => {
       limit: 12,
     })
   })
+
+  it('unwraps the run skills envelope', async () => {
+    vi.mocked(get).mockResolvedValue({ skills: [{ id: 'skill-1' }] })
+
+    await expect(runsApi.listSkills('run-1')).resolves.toEqual([{ id: 'skill-1' }])
+    expect(get).toHaveBeenCalledWith('/runs/run-1/skills')
+  })
 })

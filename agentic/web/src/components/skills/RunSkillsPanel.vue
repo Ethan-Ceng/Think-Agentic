@@ -35,17 +35,15 @@ function eventName(event: TraceEventRecord): string {
         <dt>版本</dt><dd>{{ skill.skill_version_id || '随应用发布' }}</dd>
         <dt>内容哈希</dt><dd><code :title="skill.content_sha256">{{ shortHash(skill.content_sha256) }}</code></dd>
         <template v-if="skill.confidence != null"><dt>置信度</dt><dd>{{ Math.round(skill.confidence * 100) }}%</dd></template>
-        <dt>原因</dt><dd>{{ skill.reason }}</dd>
-        <dt>Sandbox</dt><dd><code>{{ skill.sandbox_path }}</code></dd>
       </dl>
-      <footer><CheckCircle2 :size="13" />已物化并注入本次 Run</footer>
+      <footer><CheckCircle2 :size="13" />已用于本次 Run</footer>
     </article>
 
     <article v-for="event in skipped" :key="event.id" class="run-skill-outcome skipped">
-      <Ban :size="16" /><div><strong>{{ eventName(event) }} · {{ event.payload.code }}</strong><p>{{ event.payload.reason }}</p></div>
+      <Ban :size="16" /><div><strong>{{ eventName(event) }} · {{ event.payload.code }}</strong><p>该 Skill 未用于本次 Run。</p></div>
     </article>
     <article v-for="event in failures" :key="event.id" class="run-skill-outcome failed">
-      <AlertTriangle :size="16" /><div><strong>{{ event.payload.error_type || 'Skill selection failed' }}</strong><p>{{ event.payload.message }}</p></div>
+      <AlertTriangle :size="16" /><div><strong>{{ event.payload.error_type || 'Skill selection failed' }}</strong><p>Skill 选择或准备未完成。</p></div>
     </article>
 
     <div v-if="skills.length === 0 && skipped.length === 0 && failures.length === 0" class="run-skills-empty">

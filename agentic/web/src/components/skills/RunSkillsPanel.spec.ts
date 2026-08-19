@@ -32,7 +32,7 @@ describe('RunSkillsPanel', () => {
     expect(wrapper.text()).toContain('version-3')
     expect(wrapper.text()).toContain('aaaaaaaaaaaa')
     expect(wrapper.text()).toContain('91%')
-    expect(wrapper.text()).toContain('Matched PDF attachment.')
+    expect(wrapper.text()).not.toContain('Matched PDF attachment.')
   })
 
   it('shows missing-tool skips and sanitized selection failures', () => {
@@ -47,7 +47,7 @@ describe('RunSkillsPanel', () => {
     })
     expect(wrapper.text()).toContain('shell-helper')
     expect(wrapper.text()).toContain('missing_tools')
-    expect(wrapper.text()).toContain('Required tools are unavailable: shell.')
-    expect(wrapper.text()).toContain('Skill selection or materialization failed.')
+    expect(wrapper.text()).toContain('该 Skill 未用于本次 Run。')
+    expect(wrapper.text()).toContain('Skill 选择或准备未完成。')
   })
 })
