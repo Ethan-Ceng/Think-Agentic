@@ -3,6 +3,7 @@
 ## 关联设计
 
 - 设计文档：`docs/autonomous-agent-upgrade-architecture.zh-CN.md`
+- 路线决策：`agentic/docs/designs/post-lead-foundation-system-roadmap.zh-CN.md`
 - 前置计划：`agentic/docs/plans/agent-runtime-lazy-sandbox-plan.md`
 - 前置计划：`agentic/docs/plans/lead-agent-runtime-unification-plan.md`（先稳定 Lead 顶层接口与 Direct/ReAct/Plan 行为，再接入 Durable Harness）
 - 开发分支：`feature/durable-solo-lead-runtime`（实施开始时从最新 `develop` 创建）
@@ -11,12 +12,18 @@
 
 ## 当前进度
 
-- 整体状态：`PLAN_READY`
-- 当前阶段：planning
+- 整体状态：`DEFERRED`
+- 当前阶段：deferred
 - 当前任务：无
 - 已完成：0 / 10
-- 阻塞问题：无
-- 最近更新时间：2026-08-17（Asia/Shanghai）
+- 阻塞问题：无；产品路线主动延后，恢复前必须按当前统一 Lead、无终端 Tool Approval 和最新 Provider Runtime 重新设计
+- 最近更新时间：2026-08-19（Asia/Shanghai）
+
+## 暂缓说明
+
+本计划没有取消。当前统一 Lead 的普通多轮、Direct/ReAct/Plan、Ask-only WAITING、Lazy Sandbox、统一 Tool Plane、MCP/A2A Runtime 和 Provider 诊断已经稳定，下一阶段先建设质量反馈、Project Knowledge Workspace 与平台治理。
+
+本计划形成时间早于上述全部改造，正文仍含旧 `PlannerReActFlow`、Profile/Snapshot 假设和已经移除的终端 Tool Approval 语义，不能按当前内容直接进入实施。恢复条件见 `post-lead-foundation-system-roadmap.zh-CN.md`；恢复时先返回 brainstorming 更新设计，再重写计划和验收门禁。
 
 ## 本批交付边界
 
@@ -75,6 +82,7 @@
 | 日期时间 | 整体状态 | 当前任务 | 变更原因 |
 | --- | --- | --- | --- |
 | 2026-08-17（Asia/Shanghai） | `PLAN_READY` | 无 | 总体架构已确认，按 Lead 优先原则拆出 Durable Solo Lead 独立批次 |
+| 2026-08-19（Asia/Shanghai） | `DEFERRED` | 无 | Lead 基础与多轮体验已稳定，先补质量反馈、Project Knowledge 和平台治理；本计划恢复前重新设计 |
 
 ## Task 1：建立内置 Profile Registry 与不可变 Effective Snapshot
 
@@ -737,7 +745,7 @@ git diff --check
 - [ ] RunCoordinator 是 Durable Run/Execution/Interaction/Verification 状态的唯一写入者。
 - [ ] PostgreSQL 是规范事实源；进程内 Task 丢失、Worker Kill、Redis Loss 和 SSE 断线后 Run 能从 Safe Point 恢复。
 - [ ] 规范 Event 的 `run_seq` 连续唯一，Outbox 最终投影到 Session/Trace，重连补拉不重不漏。
-- [ ] 高风险 Tool 经 Approval 和 Side-effect Ledger；unknown 副作用不会盲目重试。
+- [ ] 外部副作用 Tool 经平台确定性策略和 Side-effect Ledger；unknown 副作用不会盲目重试，不创建终端用户 Tool Approval。
 - [ ] 模型自报完成不能直接结束 Run；确定性 Verification 通过后 Coordinator 才能 completed。
 - [ ] 持久化和日志不包含 API Key、明文凭据、完整动态 Tool Schema或隐藏思维链。
 - [ ] 普通文本、Knowledge 和 Context Run 保持零 Sandbox；Shell/Browser/File 首次需要时只激活一个实例。
@@ -759,4 +767,4 @@ git diff --check
 
 ### 最终状态
 
-`READY_TO_MERGE / BLOCKED / FAILED`（尚未判定；完成 Task 1–10 和最终验证后填写）
+`DEFERRED`。恢复前必须先更新设计与本计划，不能直接执行当前 Task 1–10。
