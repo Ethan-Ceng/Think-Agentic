@@ -10,10 +10,10 @@
 
 ## 当前进度
 
-- 整体状态：`IN_PROGRESS`
-- 当前阶段：最终验证与代码审查
-- 当前任务：Task 5
-- 已完成：4 / 5
+- 整体状态：`READY_TO_MERGE`
+- 当前阶段：已完成
+- 当前任务：无
+- 已完成：5 / 5
 - 阻塞问题：无
 - 最近更新时间：2026-08-19（Asia/Shanghai）
 
@@ -39,6 +39,7 @@
 | 2026-08-19（Asia/Shanghai） | `IN_PROGRESS` | Task 3 | T2 版本化节点合同、Planner 投影和增量 execution API 已完成，进入聊天页实时执行详情 |
 | 2026-08-19（Asia/Shanghai） | `IN_PROGRESS` | Task 4 | T3 transport-only 实时更新和消息级执行卡已完成，进入 TracePanel 合同收敛与按需诊断 |
 | 2026-08-19（Asia/Shanghai） | `IN_PROGRESS` | Task 5 | T4 TracePanel 已统一 Execution View，并完成按需诊断、独立游标与安全展示，进入全量验证和代码审查 |
+| 2026-08-19（Asia/Shanghai） | `READY_TO_MERGE` | 无 | 全量门禁、迁移往返、正式审查、整改与远端功能分支建立均已完成 |
 
 ## Task 1：T1 Trace 安全、游标、分页与迁移
 
@@ -300,7 +301,7 @@ TracePanel 已改为以 `RunExecutionView` 为唯一首屏数据源，并复用�
 
 ## Task 5：完整验证、代码审查、整改与远端推送
 
-状态：in_progress
+状态：completed
 
 ### 目标
 
@@ -348,7 +349,7 @@ TracePanel 已改为以 `RunExecutionView` 为唯一首屏数据源，并复用�
 
 ### 执行结果
 
-四阶段实现已完成全量验证和正式代码审查。首次无隔离依赖的后端全量测试中，590 项通过、24 项失败和 1 项错误均由 `.env` 指向未启动的 PostgreSQL/Redis 测试端口导致；在独立 PostgreSQL 数据库与 Redis DB 15 中重跑后全部通过。审查发现并修复节点生命周期字段丢失、异步诊断请求串 Run、TracePanel 缺少运行中/终态补拉、Lead 失败被投影成功、历史 failure 子对象透传，以及 SSE cursor 提前推进问题。审查结论为 `APPROVED`，当前仅剩提交、远端推送与 upstream 核对。
+四阶段实现已完成全量验证和正式代码审查。首次无隔离依赖的后端全量测试中，590 项通过、24 项失败和 1 项错误均由 `.env` 指向未启动的 PostgreSQL/Redis 测试端口导致；在独立 PostgreSQL 数据库与 Redis DB 15 中重跑后全部通过。审查发现并修复节点生命周期字段丢失、异步诊断请求串 Run、TracePanel 缺少运行中/终态补拉、Lead 失败被投影成功、历史 failure 子对象透传，以及 SSE cursor 提前推进问题。审查结论为 `APPROVED`，审查整改提交为 `4764224`；远端 `origin/feature/run-execution-view` 已建立并配置 upstream。
 
 ### 验证证据
 
@@ -360,6 +361,7 @@ TracePanel 已改为以 `RunExecutionView` 为唯一首屏数据源，并复用�
 - 数据库：隔离 PostgreSQL 17 从空库 upgrade 到 head，随后 downgrade `20260818_0001`、re-upgrade，最终 `20260819_0001 (head)`。
 - 安全与 Git：公共字段扫描和 `git diff --check` 通过。
 - 代码审查：`docs/reviews/run-trace-execution-chain-review.md`，结论 `APPROVED`，无未处理 blocking/major/minor。
+- 远端：`git push -u origin feature/run-execution-view` 退出 0，远端同名功能分支与 upstream 已建立。
 
 ## 计划变更
 
@@ -387,30 +389,30 @@ git log --oneline develop..HEAD
 
 ### 执行结果
 
-- 单元测试：待执行。
-- 集成测试：待执行。
-- 静态检查：待执行。
-- 类型检查：待执行。
-- 构建：待执行。
-- 数据库迁移：待执行。
-- 手工验证：待执行。
-- 代码审查：待执行。
+- 单元/集成测试：后端 618 passed；前端 53 files / 222 tests passed。
+- 静态检查：Ruff、compileall 与 `git diff --check` 全部退出 0。
+- 类型检查：`pnpm type-check` 退出 0。
+- 构建：`pnpm build` 退出 0。
+- 数据库迁移：隔离 PostgreSQL 17 空库 upgrade、downgrade、re-upgrade 通过，最终 head 为 `20260819_0001`。
+- 手工验证：TracePanel 首屏、按需页签、敏感字段扫描、运行中轮询、终态补拉和跨 Run 失效逻辑已核对。
+- 代码审查：`APPROVED`，无未解决 blocking、major 或 minor。
+- 远端：`origin/feature/run-execution-view` 已建立，最终计划提交后再次推送并核对本地/远端 HEAD。
 
 ### 验收标准检查
 
-- [ ] Direct、ReAct、Plan 和 Ask/Resume 生成稳定、可增量恢复的 Execution View。
-- [ ] Planner 在对应消息 Run 内展示，Plan 更新按稳定 Step 覆盖并显示 Replan 次数。
-- [ ] 新 Trace 与公共 API 不保存或返回隐藏 reasoning、完整 Prompt/响应、完整 URL、凭据或未治理 Tool 原始数据。
-- [ ] 历史敏感字段不再通过 API 暴露；物理清理已明确标记为需单独授权的运维步骤。
-- [ ] execution API 支持 cursor、limit、幂等节点覆盖和当前用户隔离。
-- [ ] 聊天页与 TracePanel 使用相同 ExecutionNode 合同，实时、断线和历史加载一致。
-- [ ] Trace 故障不终止 Agent，页面能区分 Run 失败与记录不完整。
-- [ ] 迁移、全量测试、静态检查、类型检查、构建和审查全部通过。
+- [x] Direct、ReAct、Plan 和 Ask/Resume 生成稳定、可增量恢复的 Execution View。
+- [x] Planner 在对应消息 Run 内展示，Plan 更新按稳定 Step 覆盖并显示 Replan 次数。
+- [x] 新 Trace 与公共 API 不保存或返回隐藏 reasoning、完整 Prompt/响应、完整 URL、凭据或未治理 Tool 原始数据。
+- [x] 历史敏感字段不再通过 API 暴露；物理清理已明确标记为需单独授权的运维步骤。
+- [x] execution API 支持 cursor、limit、幂等节点覆盖和当前用户隔离。
+- [x] 聊天页与 TracePanel 使用相同 ExecutionNode 合同，实时、断线和历史加载一致。
+- [x] Trace 故障不终止 Agent，页面能区分 Run 失败与记录不完整。
+- [x] 迁移、全量测试、静态检查、类型检查、构建和审查全部通过。
 
 ### 未通过项目
 
-待执行。
+无。
 
 ### 最终状态
 
-`READY_TO_MERGE / BLOCKED / FAILED`
+`READY_TO_MERGE`
