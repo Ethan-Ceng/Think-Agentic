@@ -51,6 +51,19 @@ class TraceRepository(Protocol):
     async def get_run(self, user_id: str, run_id: str) -> Optional[Dict[str, Any]]:
         ...
 
+    async def get_waiting_run_for_interaction(
+        self,
+        user_id: str,
+        session_id: str,
+        action_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return the waiting Run that owns one pending Interaction."""
+        ...
+
+    async def get_step(self, run_id: str, step_id: str) -> Optional[Dict[str, Any]]:
+        """Return one materialized Step within a Run."""
+        ...
+
     async def list_trace_events(
         self,
         run_id: str,

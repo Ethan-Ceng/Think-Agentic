@@ -152,6 +152,51 @@ class TraceService:
         await self._write(write)
         return self.run_id
 
+    async def resume_interaction_run(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        task_id: str | None,
+        resolution: InteractionResolution,
+    ) -> str | None:
+        """Bind a rebuilt Task to the logical Run paused by an Interaction."""
+        uow = self._uow_factory()
+        async with uow:
+            run = await uow.trace.get_waiting_run_for_interaction(
+                user_id,
+                session_id,
+                resolution.action_id,
+            )
+            if run is None:
+                return None
+            step = (
+                await uow.trace.get_step(run["id"], resolution.step_id)
+                if resolution.step_id
+                else None
+            )
+            await uow.trace.update_run(
+                run["id"],
+                {
+                    "status": "running",
+                    "task_id": task_id,
+                    "finished_at": None,
+                    "error": None,
+                },
+            )
+
+        self.run_id = str(run["id"])
+        self.trace_id = str(run["trace_id"])
+        self.session_id = session_id
+        self.user_id = user_id
+        self._active_plan_id = resolution.plan_id
+        self._active_step_id = resolution.step_id
+        self._active_run_step_id = str(step["id"]) if step else None
+        self._replan_count = max(0, int(resolution.lead_replan_count))
+        self._tool_started_at = {}
+        self._terminal_failed = False
+        return self.run_id
+
     async def record_sandbox_activation(
         self,
         *,

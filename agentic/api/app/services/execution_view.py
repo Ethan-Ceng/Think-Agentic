@@ -296,7 +296,10 @@ class ExecutionViewAssembler:
                 )
             ], None
 
-        if event_type.startswith("interaction.") or event_type == "wait.created":
+        if event_type == "wait.created":
+            return [], None
+
+        if event_type.startswith("interaction."):
             resolved = event_type.endswith("resolved")
             action_id = str(payload.get("action_id") or node_id.removeprefix("interaction:"))
             return [

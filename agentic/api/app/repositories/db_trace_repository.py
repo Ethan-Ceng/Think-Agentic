@@ -196,6 +196,38 @@ class DBTraceRepository(TraceRepository):
         record = result.scalar_one_or_none()
         return self._to_dict(record) if record is not None else None
 
+    async def get_waiting_run_for_interaction(
+        self,
+        user_id: str,
+        session_id: str,
+        action_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        result = await self.db_session.execute(
+            select(AgentRunModel)
+            .join(TraceEventModel, TraceEventModel.run_id == AgentRunModel.id)
+            .where(
+                AgentRunModel.user_id == user_id,
+                AgentRunModel.session_id == session_id,
+                AgentRunModel.status == "waiting",
+                TraceEventModel.event_type == "interaction.pending",
+                TraceEventModel.payload["action_id"].astext == action_id,
+            )
+            .order_by(TraceEventModel.ingest_seq.desc())
+            .limit(1)
+        )
+        record = result.scalar_one_or_none()
+        return self._to_dict(record) if record is not None else None
+
+    async def get_step(self, run_id: str, step_id: str) -> Optional[Dict[str, Any]]:
+        result = await self.db_session.execute(
+            select(RunStepModel).where(
+                RunStepModel.run_id == run_id,
+                RunStepModel.step_id == step_id,
+            )
+        )
+        record = result.scalar_one_or_none()
+        return self._to_dict(record) if record is not None else None
+
     async def list_trace_events(
         self,
         run_id: str,

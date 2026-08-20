@@ -455,14 +455,23 @@ class AgentTaskRunner(TaskRunner):
     async def _prepare_skill_runtime(
         self, task: Task, event: MessageEvent
     ) -> SkillRuntimeContext:
-        """Start a fresh trace Run, then select and materialize its Skills."""
+        """Bind the logical trace Run, then select and materialize its Skills."""
         self._flow.set_skill_runtime_context(SkillRuntimeContext())
-        run_id = await self._trace_service.start_run(
-            user_id=self._user_id,
-            session_id=self._session_id,
-            task_id=task.id,
-            input_event=event,
-        )
+        run_id = None
+        if event.interaction_response is not None:
+            run_id = await self._trace_service.resume_interaction_run(
+                user_id=self._user_id,
+                session_id=self._session_id,
+                task_id=task.id,
+                resolution=event.interaction_response,
+            )
+        if run_id is None:
+            run_id = await self._trace_service.start_run(
+                user_id=self._user_id,
+                session_id=self._session_id,
+                task_id=task.id,
+                input_event=event,
+            )
         self._last_execution_cursor = None
         self._execution_poll_at = 0.0
         if self._skill_runtime_service is None:
