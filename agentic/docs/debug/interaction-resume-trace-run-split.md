@@ -1,6 +1,6 @@
 # Interaction 回复后原执行仍显示等待
 
-诊断状态：`VERIFYING`
+诊断状态：`READY_TO_MERGE`
 
 真实 Session `2d5831ca-4aea-469d-8103-ad0a5c1b4c0a` 已完成并产生最终回复，但原可见输入对应的 Run `d8a0afc1-6a69-41e4-be12-48d3b8ab2d48` 保持 `waiting`；回答后的 `interaction.resolved` 与 `done.created` 被写入新 Run `d7ce056c-a802-4e72-8db8-be430f8d6436`。
 

@@ -9,10 +9,10 @@
 
 ## 当前进度
 
-- 整体状态：`IN_PROGRESS`
-- 当前阶段：verification-and-delivery
-- 当前任务：Task 3
-- 已完成：2 / 3
+- 整体状态：`READY_TO_MERGE`
+- 当前阶段：complete
+- 当前任务：全部完成
+- 已完成：3 / 3
 - 阻塞问题：无
 - 最近更新时间：2026-08-20（Asia/Shanghai）
 
@@ -107,7 +107,7 @@ Repository 已按 user/session/action_id 定位原 waiting Run；TraceService �
 
 ## Task 3：真实数据收敛、验证、审查、提交、推送与重启
 
-状态：in_progress
+状态：completed
 
 ### 目标
 
@@ -145,18 +145,19 @@ Repository 已按 user/session/action_id 定位原 waiting Run；TraceService �
 
 ### 执行结果
 
-待执行。
+修复代码已完成验证与审查；目标 Session 的原 waiting Run 已精确收敛为 completed，continuation 历史记录保留；API/Web 已重启并通过健康检查。代码提交 `20c8b5d` 已推送至远端分支 `origin/feature/run-execution-view`。
 
 ### 验证证据
 
-待执行。
+新增回归 3 passed，相关后端测试 58 passed，隔离 PostgreSQL 全量 627 passed，前端相关 14 passed；Ruff、compileall 与 git diff check 通过；审查结论 `APPROVED` 且无 blocking/major。`/api/status` 返回 ok，目标 Session 页面 HTTP 200，原 Run `d8a0afc1-6a69-41e4-be12-48d3b8ab2d48` 已包含 resolved/done 并为 completed。
 
 ## 最终验证
 
-- 单元与集成测试：待执行。
-- 静态检查：待执行。
-- 类型/编译：待执行。
-- 数据库迁移：不适用。
-- 手工/API：待执行。
-- 审查：待执行。
-- 最终状态：`IN_PROGRESS`。
+- 单元与集成测试：新增回归 3 passed；相关后端 58 passed；隔离 PostgreSQL 后端全量 627 passed；前端相关 14 passed。
+- 静态检查：`uv run ruff check app tests` 与 `git diff --check` 通过。
+- 类型/编译：`uv run python -m compileall -q app tests` 通过；本次未改前端源码，相关前端测试通过。
+- 数据库迁移：无 Schema 变更；隔离测试库已迁移至现有 head 并完成全量测试，随后删除。
+- 手工/API：`/api/status` 返回 ok；目标 Session 页面 HTTP 200；原 waiting Run 已精确收敛为 completed。
+- 审查：`APPROVED`，无 blocking/major；仅记录历史分裂数据不做全库自动迁移的 minor 限制。
+- 提交与推送：代码提交 `20c8b5d` 已推送至 `origin/feature/run-execution-view`。
+- 最终状态：`READY_TO_MERGE`。
